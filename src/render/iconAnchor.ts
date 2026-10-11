@@ -77,8 +77,15 @@ export function computeIconAnchor(
  * real image size, grid offset, and scale), so a Large/Huge creature
  * actually needs more of itself in range than a 1×1 token, instead of
  * everyone being measured as if they were the same fixed half-square.
+ *
+ * On an axonometric grid (see axonometry.ts) a token stands on its cell
+ * rather than covering it: as wide as the cell's rhombus is one cell
+ * across, and how tall its image is says nothing about the floor it takes.
  */
-export function getTokenRadius(token: Image, dpi: number): number {
+export function getTokenRadius(token: Image, dpi: number, axonometry: number): number {
   const { scaledWidth, scaledHeight } = getTokenBounds(token, dpi);
+  if (axonometry) {
+    return Math.abs(scaledWidth) / (axonometry * dpi) / 2;
+  }
   return Math.max(scaledWidth, scaledHeight) / dpi / 2;
 }

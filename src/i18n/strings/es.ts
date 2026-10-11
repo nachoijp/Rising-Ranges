@@ -146,6 +146,12 @@ const es = {
   "settings.altura.distanceTooltip": "Separación entre el marcador y el token.",
   "settings.altura.hotkeys": "Atajos durante la Medición",
   "settings.altura.hotkeysTooltip": "Teclas para subir, bajar o volver al suelo el Origen mientras medís.",
+  "settings.altura.iso": "Vista isométrica",
+  "settings.altura.isoTooltip": "Solo en grillas isométricas o dimétricas: para que se distinga si un token está alto o lejos.",
+  "settings.altura.isoLift": "Dibujar los tokens a su altura",
+  "settings.altura.isoLiftHint": "Mueve la imagen del token hacia arriba (o abajo) según su altura; el token sigue en su casilla. Necesita un GM en la sala, que lo deshace al apagarlo o al cambiar de grilla: apagalo antes de quitar la extensión.",
+  "settings.altura.isoShadow": "Sombra en el suelo (luz si está bajo el suelo)",
+  "settings.altura.isoTether": "Línea entre el suelo y el token",
   "settings.general.activateTooltip": "Tecla que activa la herramienta.",
 
   "tokenHeight.selectToken": "Seleccioná un token.",

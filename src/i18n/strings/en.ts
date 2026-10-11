@@ -149,6 +149,12 @@ const en: Record<TranslationKey, string> = {
   "settings.altura.distanceTooltip": "Gap between the marker and the token.",
   "settings.altura.hotkeys": "Hotkeys while measuring",
   "settings.altura.hotkeysTooltip": "Keys to raise, lower or ground the Origin while measuring.",
+  "settings.altura.iso": "Isometric view",
+  "settings.altura.isoTooltip": "Only on isometric or dimetric grids: so you can tell whether a token is high up or far away.",
+  "settings.altura.isoLift": "Draw tokens at their height",
+  "settings.altura.isoLiftHint": "Moves the token's image up (or down) by its height; the token stays on its square. Needs a GM in the room, who undoes it when it's turned off or the grid changes: turn it off before removing the extension.",
+  "settings.altura.isoShadow": "Shadow on the floor (a light when below it)",
+  "settings.altura.isoTether": "Line between the floor and the token",
   "settings.general.activateTooltip": "Key that activates the tool.",
 
   "tokenHeight.selectToken": "Select a token.",

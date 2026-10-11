@@ -3,6 +3,7 @@ import { getTokenRadius } from "./iconAnchor";
 import type { LecturaState } from "./lecturaItems";
 import { DEFAULT_TOLERANCE, bodyCenterHeight, bodyDistance, excessRadius, matchedDistance } from "../engine/distance";
 import { findBandIndex } from "../engine/bands";
+import { toFloor } from "../engine/axonometry";
 import { bandAtHeight, heightStepOf } from "../engine/heights";
 import { BandSet } from "../engine/types";
 import { formatDistance } from "../util/flattenGridScale";
@@ -26,6 +27,8 @@ export type LecturaOrigin = {
 export type LecturaParams = {
   bandSet: BandSet;
   dpi: number;
+  /** The grid's rhombus ratio, 0 on a flat grid (see axonometry.ts). */
+  axonometry: number;
   display: DisplaySettings | null;
   /** Whether Lectura labels show the distance, so each state carries it. */
   showDistance: boolean;
@@ -41,11 +44,14 @@ function lecturaDistance(
   position: Vector2,
   tokenHeight: number,
   origin: LecturaOrigin,
-  { bandSet, dpi }: LecturaParams
+  { bandSet, dpi, axonometry }: LecturaParams
 ): { matched: number; shown: number } {
-  const dx = (position.x - origin.center.x) / dpi;
-  const dy = (position.y - origin.center.y) / dpi;
-  const tokenRadius = getTokenRadius(token, dpi);
+  const { x: dx, y: dy } = toFloor(
+    (position.x - origin.center.x) / dpi,
+    (position.y - origin.center.y) / dpi,
+    axonometry
+  );
+  const tokenRadius = getTokenRadius(token, dpi, axonometry);
   const dz = bodyCenterHeight(tokenHeight, tokenRadius) - bodyCenterHeight(origin.height, origin.radius);
   const excessRadiusSum = excessRadius(origin.radius) + excessRadius(tokenRadius);
   const { distance } = bodyDistance(dx, dy, dz, excessRadiusSum, bandSet.metric);

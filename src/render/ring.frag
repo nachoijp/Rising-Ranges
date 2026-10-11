@@ -8,6 +8,8 @@ uniform mat3 data6;
 uniform float minFalloff;
 uniform float maxFalloff;
 uniform int type;
+// The grid's rhombus width/height ratio, 0 on a flat grid (see axonometry.ts).
+uniform float axonometry;
 
 float circle(vec2 p) {
   return length(p);
@@ -30,6 +32,9 @@ void addRing(inout vec3 color, inout float alpha, vec3 ringColor, float radius, 
 
 half4 main(float2 coord) {
   vec2 worldCoord = (model * vec3(coord, 1.0)).xy;
+  if (axonometry > 0.0) {
+    worldCoord = vec2(worldCoord.y + worldCoord.x / axonometry, worldCoord.y - worldCoord.x / axonometry);
+  }
   float dist = type == 0 ? circle(worldCoord) : square(worldCoord);
 
   vec3 color = vec3(0.0);

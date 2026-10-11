@@ -1,7 +1,6 @@
 import {
   buildEffect,
   buildShape,
-  Math2,
   type GridScale,
   type Item,
   type Matrix,
@@ -15,6 +14,8 @@ import { flattenGridScale } from "../util/flattenGridScale";
 import { Theme } from "../theme/themes";
 import { BandSet } from "../engine/types";
 import { DEFAULT_TOLERANCE, excessRadius } from "../engine/distance";
+import { floorExtent } from "../engine/axonometry";
+import { buildFloorShape } from "./floorShape";
 import { showsBandName, showsDistance, type RingLabel } from "../settings/display";
 import { getBandLabel } from "./lecturaItems";
 
@@ -37,29 +38,24 @@ export function ringRadius(radius: number, dpi: number, bandSet: BandSet, origin
 
 function buildRing(
   center: Vector2,
-  offset: Vector2,
-  size: number,
+  radius: number,
   name: string,
   color: string,
-  shape: BandSet["shape"]
+  shape: BandSet["shape"],
+  axonometry: number
 ) {
-  return buildShape()
-    .fillOpacity(0)
-    .strokeWidth(2)
-    .strokeOpacity(0.9)
-    .strokeColor(color)
-    .strokeDash([10, 10])
-    .shapeType(shape === "square" ? "RECTANGLE" : "CIRCLE")
-    .position(Math2.subtract(center, offset))
-    .width(size)
-    .height(size)
-    .name(name)
-    // Each ring and label keeps its offset from the Origen, so moving them
-    // all is just "Origen minus offset" (see refreshBandPositions).
-    .metadata({ [getPluginId("offset")]: offset })
-    .disableHit(true)
-    .layer("POPOVER")
-    .build();
+  const { item, offset } = buildFloorShape(center, radius, shape, axonometry, {
+    fillOpacity: 0,
+    strokeWidth: 2,
+    strokeOpacity: 0.9,
+    strokeColor: color,
+    strokeDash: [10, 10],
+  });
+  item.name = name;
+  // Each ring and label keeps its offset from the Origen, so moving them
+  // all is just "Origen minus offset" (see refreshBandPositions).
+  item.metadata = { [getPluginId("offset")]: offset };
+  return item;
 }
 
 /**
@@ -91,16 +87,15 @@ export function buildBandRingItems(
   gridScale: GridScale,
   ringLabel: RingLabel,
   ringLabelSize: number,
-  originRadius: number
+  originRadius: number,
+  axonometry: number
 ): Item[] {
   const items: Item[] = [];
   bandSet.bands.forEach((band, i) => {
     const baseColor = theme.colors[i % theme.colors.length];
     const color = getColorString(baseColor);
     const radius = ringRadius(band.radius, dpi, bandSet, originRadius);
-    // A circle is positioned by its center, a rectangle by its corner.
-    const offset = bandSet.shape === "square" ? { x: radius, y: radius } : { x: 0, y: 0 };
-    items.push(buildRing(center, offset, radius * 2, band.name, color, bandSet.shape));
+    items.push(buildRing(center, radius, band.name, color, bandSet.shape, axonometry));
 
     const parts: string[] = [];
     if (showsBandName(ringLabel)) {
@@ -110,7 +105,8 @@ export function buildBandRingItems(
       parts.push(flattenGridScale(gridScale, band.radius));
     }
     if (parts.length > 0) {
-      const labelOffset = { x: 0, y: radius + LABEL_OFFSET };
+      const { halfHeight } = floorExtent(radius, bandSet.shape, axonometry);
+      const labelOffset = { x: 0, y: halfHeight + LABEL_OFFSET };
       items.push(getBandLabel(center, labelOffset, parts.join(" "), baseColor, 1, ringLabelSize));
     }
   });
@@ -121,14 +117,16 @@ export function buildBandRingItems(
  * The darkening and the colored gradient behind the rings: two viewport
  * shaders. ring.frag takes up to 12 Bandas as six mat3 uniforms, each
  * holding two: [r1, r2, 0, R1, G1, B1, R2, G2, B2] (radius in px, colors
- * 0-1).
+ * 0-1). On an axonometric grid it measures on the floor (see axonometry.ts),
+ * so the gradient follows the rings' ellipses or rhombuses.
  */
 export function buildGradientShaders(
   center: Vector2,
   theme: Theme,
   bandSet: BandSet,
   dpi: number,
-  originRadius: number
+  originRadius: number,
+  axonometry: number
 ): Item[] {
   const uniforms: Uniform[] = [];
   for (let pair = 0; pair < 6; pair++) {
@@ -177,6 +175,7 @@ half4 main(float2 coord) {
       { name: "minFalloff", value: 0.1 },
       { name: "maxFalloff", value: 0.6 },
       { name: "type", value: bandSet.shape === "square" ? 1 : 0 },
+      { name: "axonometry", value: axonometry },
     ])
     .build();
 

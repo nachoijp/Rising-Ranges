@@ -30,6 +30,8 @@ import { bandSetFromMetadata } from "../bandSets/bandSets";
 import { globalSettingsFromMetadata } from "../settings/globalSettings";
 import { isTokenHeightMarker, tokenHeightsFromMarkers } from "../tokenHeight/markers";
 import { computeDistanceRows, tokenName } from "./rows";
+import { axonometryOf } from "../engine/axonometry";
+import { getGridAxonometry } from "../util/gridAxonometry";
 import {
   DISTANCES_POPOVER_ID,
   PANEL_MAX_HEIGHT,
@@ -39,7 +41,8 @@ import {
   closeDistancesPanel,
 } from "./panelPopover";
 
-type Grid = { dpi: number; scale: GridScale };
+/** `axonometry`: the grid's rhombus ratio, 0 on a flat grid (see axonometry.ts). */
+type Grid = { dpi: number; scale: GridScale; axonometry: number };
 
 // Five columns in a narrow popover: tighter than MUI's small-table padding.
 const cellSx = { px: 0.75, py: 0.5 };
@@ -164,16 +167,17 @@ export function DistancePanel() {
       OBR.scene.items.getItems(),
       OBR.scene.grid.getDpi(),
       OBR.scene.grid.getScale(),
+      getGridAxonometry(),
       OBR.player.getRole(),
       OBR.player.getSelection(),
     ])
-      .then(([metadata, items, dpi, scale, role, selection]) => {
+      .then(([metadata, items, dpi, scale, axonometry, role, selection]) => {
         if (!mounted) {
           return;
         }
         setMetadata(metadata);
         setItems(items);
-        setGrid({ dpi, scale });
+        setGrid({ dpi, scale, axonometry });
         setRole(role);
         setSelection(selection ?? []);
       })
@@ -181,9 +185,13 @@ export function DistancePanel() {
     const unsubscribers = [
       OBR.scene.onMetadataChange(setMetadata),
       OBR.scene.items.onChange(setItems),
-      OBR.scene.grid.onChange(async () => {
-        const [dpi, scale] = await Promise.all([OBR.scene.grid.getDpi(), OBR.scene.grid.getScale()]);
-        setGrid({ dpi, scale });
+      OBR.scene.grid.onChange(async (grid) => {
+        const [dpi, scale, axonometry] = await Promise.all([
+          OBR.scene.grid.getDpi(),
+          OBR.scene.grid.getScale(),
+          axonometryOf(grid.type),
+        ]);
+        setGrid({ dpi, scale, axonometry });
       }),
       OBR.player.onChange((player) => {
         setRole(player.role);
@@ -300,7 +308,8 @@ export function DistancePanel() {
         tokens.filter((token) => token.id !== origin.id),
         heights,
         bandSet,
-        grid.dpi
+        grid.dpi,
+        grid.axonometry
       )
     : [];
   const theme = getStoredTheme();

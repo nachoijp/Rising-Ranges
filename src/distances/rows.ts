@@ -8,6 +8,7 @@ import {
   matchedDistance,
 } from "../engine/distance";
 import { findBandIndex } from "../engine/bands";
+import { toFloor } from "../engine/axonometry";
 import { getTokenRadius } from "../render/iconAnchor";
 
 export type DistanceRow = {
@@ -33,16 +34,20 @@ export function computeDistanceRows(
   others: Image[],
   heights: Map<string, number>,
   bandSet: BandSet,
-  dpi: number
+  dpi: number,
+  axonometry: number
 ): DistanceRow[] {
-  const originRadius = getTokenRadius(origin, dpi);
+  const originRadius = getTokenRadius(origin, dpi, axonometry);
   const originCenter = bodyCenterHeight(heights.get(origin.id) ?? 0, originRadius);
   const originExcess = excessRadius(originRadius);
   const tolerance = (bandSet.tolerance ?? DEFAULT_TOLERANCE) / 100;
   const rows = others.map((token): DistanceRow => {
-    const dx = (token.position.x - origin.position.x) / dpi;
-    const dy = (token.position.y - origin.position.y) / dpi;
-    const tokenRadius = getTokenRadius(token, dpi);
+    const { x: dx, y: dy } = toFloor(
+      (token.position.x - origin.position.x) / dpi,
+      (token.position.y - origin.position.y) / dpi,
+      axonometry
+    );
+    const tokenRadius = getTokenRadius(token, dpi, axonometry);
     const dz = bodyCenterHeight(heights.get(token.id) ?? 0, tokenRadius) - originCenter;
     const excessSum = originExcess + excessRadius(tokenRadius);
     const { distance, horizontal, vertical } = bodyDistance(dx, dy, dz, excessSum, bandSet.metric);

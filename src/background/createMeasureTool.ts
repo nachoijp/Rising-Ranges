@@ -30,6 +30,7 @@ import { clearFixedMedicion, hasFixedMedicion, pinFixedMedicion, setFixedLive } 
 import { setDraggedToken } from "./heightOverlays";
 import { sameLecturaState, type LecturaContext, type LecturaState } from "../render/lecturaItems";
 import { buildBandRingItems, buildGradientShaders, buildOriginAnchor } from "../render/bandRings";
+import { getGridAxonometry, prefetchGridAxonometry } from "../util/gridAxonometry";
 import { getTokenRadius } from "../render/iconAnchor";
 import { getPluginId } from "../util/getPluginId";
 import { getMetadata } from "../util/getMetadata";
@@ -106,6 +107,8 @@ let activeLecturasEnabled = true;
 let activeShowDistance = false;
 let activeMarkerLook: MarkerLook | null = null;
 let activeDpi = 0;
+/** The grid's rhombus ratio, 0 on a flat grid (see axonometry.ts). */
+let activeAxonometry = 0;
 let activeGridScale: GridScale | null = null;
 /** The Origen token's radius in grid units, 0 from a point. */
 let activeOriginRadius = 0;
@@ -240,7 +243,7 @@ function computeLecturaState(token: Image, bandSet: BandSet): LecturaState {
     token.position,
     activeTokenHeights.get(token.id) ?? 0,
     { center: activeLecturaCenter, height: originHeight, radius: activeOriginRadius },
-    { bandSet, dpi: activeDpi, display: activeDisplay, showDistance: activeShowDistance }
+    { bandSet, dpi: activeDpi, axonometry: activeAxonometry, display: activeDisplay, showDistance: activeShowDistance }
   );
 }
 
@@ -551,10 +554,11 @@ async function startFixedDrag(event: ToolEvent) {
   // waits for it (downTargetCheck), and its Lectura would otherwise be
   // measured from the ground meanwhile.
   const ready = (async () => {
-    const [canUpdate, sceneMetadata, dpi, heightMarkers] = await Promise.all([
+    const [canUpdate, sceneMetadata, dpi, axonometry, heightMarkers] = await Promise.all([
       canUpdateItem(target),
       OBR.scene.getMetadata(),
       OBR.scene.grid.getDpi(),
+      getGridAxonometry(),
       getAllTokenHeightMarkers(),
     ]);
     if (generation !== toolDownGeneration || !canUpdate) {
@@ -565,6 +569,7 @@ async function startFixedDrag(event: ToolEvent) {
     activeAltitudeEnabled = activeSettings.enableAltitude ?? true;
     activeMarkerLook = markerLookFromMetadata(sceneMetadata);
     activeDpi = dpi;
+    activeAxonometry = axonometry;
     if (activeAltitudeEnabled) {
       const marker = heightMarkers.find((m) => m.attachedTo === target.id);
       originHeight = (marker && getTokenHeight(marker, activeBandSet)) || 0;
@@ -583,6 +588,7 @@ async function startFixedDrag(event: ToolEvent) {
 }
 
 export function createMeasureTool(language: Language, settings: GlobalSettings) {
+  prefetchGridAxonometry();
   OBR.tool.createMode({
     id: getPluginId("mode/measure"),
     icons: [
@@ -634,10 +640,11 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
             : Promise.resolve();
         downTargetCheck = permissionCheck.catch(() => {});
         const writesBeforeFetch = writesSoFar();
-        const [sceneMetadata, dpi, gridScale, characterImages, allHeightMarkers, role] = await Promise.all([
+        const [sceneMetadata, dpi, gridScale, axonometry, characterImages, allHeightMarkers, role] = await Promise.all([
           OBR.scene.getMetadata(),
           OBR.scene.grid.getDpi(),
           OBR.scene.grid.getScale(),
+          getGridAxonometry(),
           OBR.scene.items.getItems<Image>((item): item is Image => isImage(item) && item.layer === "CHARACTER"),
           getAllTokenHeightMarkers(),
           OBR.player.getRole(),
@@ -661,11 +668,12 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
         activeShowDistance = showsDistance(activeDisplay.lecturaLabel);
         activeMarkerLook = markerLookFromMetadata(sceneMetadata);
         activeDpi = dpi;
+        activeAxonometry = axonometry;
         activeGridScale = gridScale;
-        activeOriginRadius = downTarget && isImage(downTarget) ? getTokenRadius(downTarget, dpi) : 0;
+        activeOriginRadius = downTarget && isImage(downTarget) ? getTokenRadius(downTarget, dpi, axonometry) : 0;
 
         // Added while the rings' interaction starts below, not before it.
-        const shaders = buildGradientShaders(initialPosition, theme, bandSet, dpi, activeOriginRadius);
+        const shaders = buildGradientShaders(initialPosition, theme, bandSet, dpi, activeOriginRadius, axonometry);
         originItems = shaders;
         const shadersAdded = OBR.scene.local.addItems(shaders);
 
@@ -707,7 +715,8 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
           gridScale,
           activeDisplay.ringLabel,
           activeDisplay.ringLabelSize,
-          activeOriginRadius
+          activeOriginRadius,
+          axonometry
         );
         const anchor = buildOriginAnchor(activeCenter);
         if (secretMedicion) {
@@ -737,6 +746,7 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
           bandSet,
           theme,
           dpi,
+          axonometry,
           language,
           gridScale,
           showDistance: activeShowDistance,

@@ -2,6 +2,7 @@ import Stack from "@mui/material/Stack";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Tooltip from "@mui/material/Tooltip";
+import Typography from "@mui/material/Typography";
 import { IconShape } from "../engine/types";
 import { ICON_SHAPES } from "../render/iconStack";
 import { FieldLabel } from "./FieldLabel";
@@ -172,6 +173,34 @@ export function AlturaTab({
                 onChange={(hotkeyGround) => onChangeSettings({ hotkeyGround })}
               />
             </Stack>
+          </Stack>
+
+          <Stack>
+            <Stack sx={{ px: 1 }}>
+              <FieldLabel id="iso-view-label" tooltip={t("settings.altura.isoTooltip")}>
+                {t("settings.altura.iso")}
+              </FieldLabel>
+            </Stack>
+            <SettingSwitch
+              label={t("settings.altura.isoLift")}
+              checked={settings.isoLift ?? false}
+              onChange={(isoLift) => onChangeSettings({ isoLift })}
+            />
+            <Typography variant="caption" color="text.secondary" sx={{ px: 1 }}>
+              {t("settings.altura.isoLiftHint")}
+            </Typography>
+            <SettingSwitch
+              label={t("settings.altura.isoShadow")}
+              checked={settings.isoShadow ?? true}
+              disabled={!settings.isoLift}
+              onChange={(isoShadow) => onChangeSettings({ isoShadow })}
+            />
+            <SettingSwitch
+              label={t("settings.altura.isoTether")}
+              checked={settings.isoTether ?? true}
+              disabled={!settings.isoLift}
+              onChange={(isoTether) => onChangeSettings({ isoTether })}
+            />
           </Stack>
         </>
       )}

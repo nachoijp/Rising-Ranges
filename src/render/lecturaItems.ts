@@ -1,7 +1,6 @@
 import {
   buildLabel,
   buildPath,
-  buildShape,
   isLabel,
   isPath,
   isShape,
@@ -17,7 +16,9 @@ import { Color, Theme } from "../theme/themes";
 import { applyLabelTextStyle, getColorString, getIconStrokeColor } from "../util/color";
 import { BandSet } from "../engine/types";
 import { buildIconStackCommands, getStrokeWidthRatio, type Direction } from "./iconStack";
-import { computeIconAnchor, getTokenBounds, oppositeIconPosition } from "./iconAnchor";
+import { computeIconAnchor, getTokenBounds, getTokenRadius, oppositeIconPosition } from "./iconAnchor";
+import { buildFloorShape } from "./floorShape";
+import { activeLift, asDrawn, onFloor } from "../tokenHeight/lift";
 import { type Language } from "../i18n/language";
 import { translate } from "../i18n/translate";
 import { measuredBands } from "../engine/bands";
@@ -44,6 +45,8 @@ export type LecturaContext = {
   showDistance?: boolean;
   /** The room's display settings, resolved by the measuring client. Missing from clients before 0.6.0. */
   display?: DisplaySettings;
+  /** The grid's rhombus ratio (see axonometry.ts). Missing from clients before 1.4.0, which only measured flat. */
+  axonometry?: number;
 };
 
 /** JSON-safe (it's broadcast): null, not undefined, for "out of range". */
@@ -182,19 +185,20 @@ function lecturaColorFor(index: number | null, theme: Theme): Color {
   return index === null ? lecturaColor : theme.colors[index % theme.colors.length];
 }
 
-/** Center + size of the ring and circle styles: the token's own footprint (the circle style scales it). */
-function lecturaShapeGeometry(token: Image, dpi: number, scale: number) {
-  const { topLeft, scaledWidth, scaledHeight } = getTokenBounds(token, dpi);
+/**
+ * Center + size of the ring and circle styles: the token's own footprint
+ * (the circle style scales it), on the floor even when its image is drawn
+ * raised (see lift.ts).
+ */
+function lecturaShapeGeometry(token: Image, dpi: number, axonometry: number, scale: number) {
+  const floor = onFloor(token);
+  const { topLeft, scaledWidth, scaledHeight } = getTokenBounds(floor, dpi);
   return {
-    center: { x: topLeft.x + scaledWidth / 2, y: topLeft.y + scaledHeight / 2 },
-    size: Math.max(scaledWidth, scaledHeight) * scale,
+    // On an axonometric grid a token stands where its position is (often
+    // its image's feet), which is where it's measured from.
+    center: axonometry ? floor.position : { x: topLeft.x + scaledWidth / 2, y: topLeft.y + scaledHeight / 2 },
+    size: 2 * getTokenRadius(floor, dpi, axonometry) * dpi * scale,
   };
-}
-
-/** Top-left position for a Shape item of the given size/center, accounting for RECTANGLE anchoring at its corner vs CIRCLE at its center. */
-function lecturaShapePosition(center: Vector2, size: number, bandShape: BandSet["shape"]): Vector2 {
-  const offset = bandShape === "square" ? { x: size / 2, y: size / 2 } : { x: 0, y: 0 };
-  return Math2.subtract(center, offset);
 }
 
 function withLecturaMetadata(item: Item, tokenId: string, role: "visual" | "label"): Item {
@@ -236,7 +240,8 @@ function iconCommands(state: LecturaState, ctx: LecturaContext) {
 
 function iconAnchor(token: Image, ctx: LecturaContext) {
   const { marker } = displayOf(ctx);
-  return computeIconAnchor(token, ctx.dpi, oppositeIconPosition(marker.position), marker.distance);
+  // Beside the token's image, raised or not (see lift.ts).
+  return computeIconAnchor(asDrawn(token), ctx.dpi, oppositeIconPosition(marker.position), marker.distance);
 }
 
 function buildLecturaVisualItem(token: Image, state: LecturaState, ctx: LecturaContext): Item {
@@ -262,38 +267,26 @@ function buildLecturaVisualItem(token: Image, state: LecturaState, ctx: LecturaC
     return withLecturaMetadata(item, token.id, "visual");
   }
 
-  const shapeType = bandSet.shape === "square" ? "RECTANGLE" : "CIRCLE";
+  const axonometry = ctx.axonometry ?? 0;
 
   if (display.lecturaStyle === "ring") {
-    const { center, size } = lecturaShapeGeometry(token, dpi, 1);
-    const item = buildShape()
-      .shapeType(shapeType)
-      .fillOpacity(0)
-      .strokeColor(color)
-      .strokeOpacity((state.index === null ? 0 : display.lecturaRing.opacity) * opacityScale)
-      .strokeWidth(dpi * display.lecturaRing.size)
-      .position(lecturaShapePosition(center, size, bandSet.shape))
-      .width(size)
-      .height(size)
-      .disableHit(true)
-      .layer("POPOVER")
-      .build();
+    const { center, size } = lecturaShapeGeometry(token, dpi, axonometry, 1);
+    const { item } = buildFloorShape(center, size / 2, bandSet.shape, axonometry, {
+      fillOpacity: 0,
+      strokeColor: color,
+      strokeOpacity: (state.index === null ? 0 : display.lecturaRing.opacity) * opacityScale,
+      strokeWidth: dpi * display.lecturaRing.size,
+    });
     return withLecturaMetadata(item, token.id, "visual");
   }
 
   // circle
-  const { center, size } = lecturaShapeGeometry(token, dpi, display.lecturaCircle.size);
-  const item = buildShape()
-    .shapeType(shapeType)
-    .fillColor(color)
-    .fillOpacity((state.index === null ? 0 : display.lecturaCircle.opacity) * opacityScale)
-    .strokeOpacity(0)
-    .position(lecturaShapePosition(center, size, bandSet.shape))
-    .width(size)
-    .height(size)
-    .disableHit(true)
-    .layer("POPOVER")
-    .build();
+  const { center, size } = lecturaShapeGeometry(token, dpi, axonometry, display.lecturaCircle.size);
+  const { item } = buildFloorShape(center, size / 2, bandSet.shape, axonometry, {
+    fillColor: color,
+    fillOpacity: (state.index === null ? 0 : display.lecturaCircle.opacity) * opacityScale,
+    strokeOpacity: 0,
+  });
   return withLecturaMetadata(item, token.id, "visual");
 }
 
@@ -303,8 +296,10 @@ function buildLecturaLabelItem(token: Image, state: LecturaState, ctx: LecturaCo
   // a filtered-out token's label is hidden outright — the Filtro is meant
   // to answer "which tokens match", and a dimmed label is still readable
   // clutter for tokens that don't.
+  // With the token's image, raised or not (see lift.ts).
+  const lift = activeLift(token);
   const item = getBandLabel(
-    token.position,
+    { x: token.position.x, y: token.position.y - lift },
     lecturaLabelOffset,
     getLecturaLabelText(state, ctx),
     color,
@@ -362,7 +357,8 @@ export function applyLecturaState(
     item.style.strokeColor = getIconStrokeColor(baseColor);
     item.style.strokeOpacity = 0.65 * opacity * opacityScale;
     item.style.strokeWidth = dpi * getStrokeWidthRatio(iconShapeFor(state, ctx));
-  } else if (isShape(item)) {
+  } else if (isShape(item) || isPath(item)) {
+    // A Path here is a rhombus (see buildFloorShape), not an icon.
     if (display.lecturaStyle === "ring") {
       item.style.strokeColor = color;
       item.style.strokeOpacity = (state.index === null ? 0 : display.lecturaRing.opacity) * opacityScale;

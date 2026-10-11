@@ -4,6 +4,7 @@ import { startMeasureMirrorReceiver } from "./measureMirror";
 import { startHeightOverlays } from "./heightOverlays";
 import { startMarkerRefresh } from "./markerRefresh";
 import { startFixedMedicion } from "./fixedMedicion";
+import { startIsoLift } from "./isoLift";
 import { registerToolbar, watchToolbar } from "./toolbar";
 
 async function waitUntilOBRReady() {
@@ -73,6 +74,9 @@ async function init() {
   });
   startFixedMedicion().catch((error) => {
     console.error("Rising Ranges: failed to start the Medición fija", error);
+  });
+  startIsoLift().catch((error) => {
+    console.error("Rising Ranges: failed to start raised tokens", error);
   });
 }
 

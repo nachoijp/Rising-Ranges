@@ -1,9 +1,12 @@
 import OBR, {
   buildLabel,
   buildPath,
+  Command,
   isImage,
   isLabel,
   isPath,
+  isShape,
+  type AttachmentBehavior,
   type GridScale,
   type Image,
   type Item,
@@ -17,8 +20,12 @@ import { formatDistance } from "../util/flattenGridScale";
 import { getStoredTheme, THEME_STORAGE_KEYS } from "../theme/themes";
 import { BandSet, IconPosition } from "../engine/types";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
-import { globalSettingsFromMetadata } from "../settings/globalSettings";
-import { computeIconAnchor } from "../render/iconAnchor";
+import { globalSettingsFromMetadata, liftsTokens } from "../settings/globalSettings";
+import { computeIconAnchor, getTokenRadius } from "../render/iconAnchor";
+import { buildFloorShape } from "../render/floorShape";
+import { activeLift, asDrawn, onFloor } from "../tokenHeight/lift";
+import { axonometryOf } from "../engine/axonometry";
+import { getGridAxonometry } from "../util/gridAxonometry";
 import { iconStackExtent } from "../render/iconStack";
 import { followMap, LABEL_FONT_SIZE } from "../render/lecturaItems";
 import {
@@ -83,6 +90,8 @@ type Piece = Omit<Wanted, "held" | "live">;
 let metadata: Record<string, unknown> = {};
 let items: Item[] = [];
 let dpi = 0;
+/** The grid's rhombus ratio, 0 on a flat grid (see axonometry.ts). */
+let axonometry = 0;
 let gridScale: GridScale | null = null;
 let role: "GM" | "PLAYER" = "PLAYER";
 let sceneReady = false;
@@ -98,7 +107,7 @@ let staleTimer: ReturnType<typeof setTimeout> | null = null;
 /** The token this client is dragging (the Medición tool), and where it is now. */
 let dragged: { tokenId: string; position: Vector2 } | null = null;
 
-/** "icon:" or "label:" + tokenId -> the item drawn for it. */
+/** "icon:", "label:", "shadow:" or "tether:" + tokenId -> the item drawn for it. */
 const drawn = new Map<string, Drawn>();
 // Set whenever this client may have labels it isn't tracking (a fresh
 // scene, or a write that failed partway): the next pass deletes every one
@@ -271,6 +280,115 @@ function wantedIcons(
   };
 }
 
+// A raised token's shadow on the floor, a sunk one's light: as wide as its
+// image, fainter the higher it is. A floor circle as wide as the token's
+// footprint (getTokenRadius) is drawn only 1/√2 of its width — the cell's
+// inscribed ellipse — which reads as too small a shadow.
+const SHADOW_SCALE = Math.SQRT2;
+const SHADOW_COLOR = "#000000";
+const LIGHT_COLOR = "#ffffff";
+const LIGHT_OPACITY = 0.4;
+const TETHER_OPACITY = 0.8;
+// They're drawn to the token's size and its lift on screen themselves:
+// Owlbear scaling or turning them with the token (a resize) would stretch
+// the line past it.
+const FOLLOW_POSITION_ONLY: AttachmentBehavior[] = ["SCALE", "ROTATION"];
+
+function shadowOpacity(lift: number): number {
+  return lift > 0 ? 0.5 / (1 + (0.08 * lift) / dpi) : LIGHT_OPACITY;
+}
+
+/**
+ * Under a token drawn raised or sunk (see lift.ts), on the floor where it
+ * really is: its shadow, or its light. `lift` 0: drawn invisible.
+ */
+function wantedShadow(token: Image, lift: number, held: boolean): Piece {
+  const radius = getTokenRadius(token, dpi, axonometry) * dpi * SHADOW_SCALE;
+  const signature = JSON.stringify([lift, radius, axonometry, token.visible, held]);
+  const style = (item: Item) => {
+    if (isShape(item)) {
+      item.style.fillColor = lift < 0 ? LIGHT_COLOR : SHADOW_COLOR;
+      item.style.fillOpacity = lift ? shadowOpacity(lift) : 0;
+      item.style.strokeOpacity = 0;
+      item.visible = token.visible;
+    }
+  };
+  return {
+    signature,
+    apply: style,
+    build: () => {
+      const { item } = buildFloorShape(token.position, radius, "circle", axonometry, {});
+      // Under the tokens, like something on the floor.
+      item.layer = "MOUNT";
+      item.attachedTo = token.id;
+      item.disableAttachmentBehavior = FOLLOW_POSITION_ONLY;
+      item.locked = true;
+      style(item);
+      item.metadata[OVERLAY_KEY] = { tokenId: token.id };
+      return item;
+    },
+  };
+}
+
+/** A line from where a raised (or sunk) token is on the floor to where it's drawn, in its height's color. */
+function wantedTether(token: Image, lift: number, height: number, bandSet: BandSet, held: boolean): Piece {
+  const color = getColorString(height ? markerBaseColor(height, bandSet, getStoredTheme()) : GROUND_COLOR);
+  const signature = JSON.stringify([lift, color, token.visible, held]);
+  const style = (item: Item) => {
+    if (isPath(item)) {
+      item.commands = [
+        [Command.MOVE, 0, 0],
+        [Command.LINE, 0, -lift],
+      ];
+      item.style.strokeColor = color;
+      item.style.strokeOpacity = lift ? TETHER_OPACITY : 0;
+      item.style.strokeWidth = 3;
+      item.style.strokeDash = [8, 8];
+      item.style.fillOpacity = 0;
+      item.visible = token.visible;
+    }
+  };
+  return {
+    signature,
+    apply: style,
+    build: () => {
+      const tether = buildPath()
+        .position(token.position)
+        .attachedTo(token.id)
+        .disableAttachmentBehavior(FOLLOW_POSITION_ONLY)
+        .layer("MOUNT")
+        .zIndex(1)
+        .locked(true)
+        .disableHit(true)
+        .build();
+      style(tether);
+      tether.metadata[OVERLAY_KEY] = { tokenId: token.id };
+      return tether;
+    },
+  };
+}
+
+/**
+ * A piece drawn around a token that may be raised (see lift.ts): only
+ * carried along by its position, and rebuilt whenever the token moves or
+ * turns rather than left to follow it. A token raised and resized or
+ * turned by hand is put back where it stood (plannedLift), and the client
+ * that did it doesn't carry what's attached to it along with the gesture,
+ * only with the putting back — so whatever was there drifts off by as much
+ * as the gesture moved it (it's right again on a reload).
+ */
+function onRaised(piece: Piece, token: Image): Piece {
+  return {
+    ...piece,
+    signature: JSON.stringify([piece.signature, activeLift(token), token.position, token.rotation]),
+    build: () => {
+      const item = piece.build();
+      item.disableAttachmentBehavior = FOLLOW_POSITION_ONLY;
+      return item;
+    },
+  };
+}
+
 function computeWanted(): Map<string, Wanted> {
   const wanted = new Map<string, Wanted>();
   if (!sceneReady || !dpi || !gridScale) {
@@ -282,6 +400,7 @@ function computeWanted(): Map<string, Wanted> {
     return wanted;
   }
   const bandSet = bandSetFromMetadata(metadata);
+  const lifting = liftsTokens(settings, axonometry);
   const markers = new Map<string, Path>();
   for (const item of items) {
     if (isTokenHeightMarker(item) && item.attachedTo && !markers.has(item.attachedTo)) {
@@ -317,13 +436,30 @@ function computeWanted(): Map<string, Wanted> {
     const live = dragged?.tokenId === token.id ? { tokenId: token.id, position: dragged.position } : undefined;
     const held = midDrag || !!live;
     const placed = live ? { ...token, position: live.position } : token;
-    const icons = look.style === "label" ? null : wantedIcons(marker, height, placed, bandSet, look, held);
+    // Beside the token's image, raised or not (see lift.ts).
+    const beside = asDrawn(placed);
+    const raised = lifting && activeLift(placed) !== 0;
+    const around = (piece: Piece) => (raised ? onRaised(piece, placed) : piece);
+    const icons = look.style === "label" ? null : wantedIcons(marker, height, beside, bandSet, look, held);
     if (icons) {
-      wanted.set(`icon:${token.id}`, { ...icons, held, live });
+      wanted.set(`icon:${token.id}`, { ...around(icons), held, live });
     }
-    const label = look.style === "icons" ? null : wantedLabel(marker, height, placed, bandSet, gridScale, look, held);
+    const label = look.style === "icons" ? null : wantedLabel(marker, height, beside, bandSet, gridScale, look, held);
     if (label) {
-      wanted.set(`label:${token.id}`, { ...label, held, live });
+      wanted.set(`label:${token.id}`, { ...around(label), held, live });
+    }
+    if (lifting) {
+      // What the token's image shows now (it's moved by the GM's client),
+      // not its height: a token that couldn't be moved gets neither.
+      const lift = activeLift(token);
+      const floor = onFloor(placed);
+      if (settings.isoShadow ?? true) {
+        wanted.set(`shadow:${token.id}`, { ...around(wantedShadow(floor, lift, held)), held, live });
+      }
+      if (settings.isoTether ?? true) {
+        const tether = wantedTether(floor, lift, height, bandSet, held);
+        wanted.set(`tether:${token.id}`, { ...around(tether), held, live });
+      }
     }
   }
   for (const key of dragSeen.keys()) {
@@ -452,16 +588,18 @@ function schedule() {
 }
 
 async function loadScene() {
-  const [nextMetadata, nextItems, nextDpi, nextScale] = await Promise.all([
+  const [nextMetadata, nextItems, nextDpi, nextScale, nextAxonometry] = await Promise.all([
     OBR.scene.getMetadata(),
     OBR.scene.items.getItems(),
     OBR.scene.grid.getDpi(),
     OBR.scene.grid.getScale(),
+    getGridAxonometry(),
   ]);
   metadata = nextMetadata;
   items = nextItems;
   dpi = nextDpi;
   gridScale = nextScale;
+  axonometry = nextAxonometry;
   sceneReady = true;
   resync = true;
   schedule();
@@ -485,8 +623,12 @@ export async function startHeightOverlays() {
     metadata = next;
     schedule();
   });
-  OBR.scene.grid.onChange(async () => {
-    [dpi, gridScale] = await Promise.all([OBR.scene.grid.getDpi(), OBR.scene.grid.getScale()]);
+  OBR.scene.grid.onChange(async (grid) => {
+    [dpi, gridScale, axonometry] = await Promise.all([
+      OBR.scene.grid.getDpi(),
+      OBR.scene.grid.getScale(),
+      axonometryOf(grid.type),
+    ]);
     schedule();
   });
   OBR.player.onChange((player) => {

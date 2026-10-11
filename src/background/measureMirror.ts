@@ -328,7 +328,9 @@ type RemoteSession = { sessionId: number; view: LocalMeasureView };
 
 /** The gradient, rings and ring labels of someone else's Medición, in this client's theme. */
 function ownOriginItems(ctx: LecturaContext, center: Vector2, originRadius: number): Item[] {
-  const items = buildGradientShaders(center, ctx.theme, ctx.bandSet, ctx.dpi, originRadius);
+  // A measuring client from before 1.4.0 sends no axonometry: it measured flat.
+  const axonometry = ctx.axonometry ?? 0;
+  const items = buildGradientShaders(center, ctx.theme, ctx.bandSet, ctx.dpi, originRadius, axonometry);
   if (ctx.gridScale && ctx.display) {
     items.push(
       ...buildBandRingItems(
@@ -339,7 +341,8 @@ function ownOriginItems(ctx: LecturaContext, center: Vector2, originRadius: numb
         ctx.gridScale,
         ctx.display.ringLabel,
         ctx.display.ringLabelSize,
-        originRadius
+        originRadius,
+        axonometry
       )
     );
   }

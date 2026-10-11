@@ -29,6 +29,15 @@ export type GlobalSettings = {
   display?: StoredDisplaySettings;
   /** Who gets the Distancias panel's toolbar button. Missing = "off". */
   distancePanel?: DistancePanelAccess;
+  /**
+   * On an isometric/dimetric grid, draws each raised token raised (see
+   * lift.ts) — it changes the tokens themselves, so it's opt-in. Missing = false.
+   */
+  isoLift?: boolean;
+  /** With isoLift: a shadow on the floor under a raised token, a light under a sunk one. Missing = true. */
+  isoShadow?: boolean;
+  /** With isoLift: a line from the floor up (or down) to the token. Missing = true. */
+  isoTether?: boolean;
 };
 
 export type DistancePanelAccess = "off" | "gm" | "everyone";
@@ -71,6 +80,9 @@ function isGlobalSettings(value: unknown): value is GlobalSettings {
     optionalBoolean(value.enableLecturas) &&
     optionalBoolean(value.enableAltitude) &&
     optionalBoolean(value.showLecturaDistance) &&
+    optionalBoolean(value.isoLift) &&
+    optionalBoolean(value.isoShadow) &&
+    optionalBoolean(value.isoTether) &&
     (value.markerStyle === undefined ||
       value.markerStyle === "icons" ||
       value.markerStyle === "label" ||
@@ -95,6 +107,11 @@ export async function getGlobalSettings(): Promise<GlobalSettings> {
 
 export async function setGlobalSettings(settings: GlobalSettings): Promise<void> {
   await OBR.scene.setMetadata({ [METADATA_KEY]: settings });
+}
+
+/** Whether raised tokens are drawn raised on this grid (`axonometry` 0 = flat: never). */
+export function liftsTokens(settings: GlobalSettings, axonometry: number): boolean {
+  return axonometry > 0 && (settings.enableAltitude ?? true) && settings.isoLift === true;
 }
 
 /** A hotkey letter as ToolMode.onKeyDown's event.code, e.g. "X" -> "KeyX". */

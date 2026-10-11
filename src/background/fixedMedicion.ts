@@ -11,6 +11,8 @@ import { languageFromMetadata, type Language } from "../i18n/language";
 import { translate } from "../i18n/translate";
 import { isTokenHeightMarker, tokenHeightsFromMarkers } from "../tokenHeight/markers";
 import { buildBandRingItems, buildGradientShaders } from "../render/bandRings";
+import { axonometryOf } from "../engine/axonometry";
+import { getGridAxonometry } from "../util/gridAxonometry";
 import {
   applyLecturaState,
   buildHeightLabelItem,
@@ -60,6 +62,8 @@ let sceneReady = false;
 let metadata: Record<string, unknown> = {};
 let items: Item[] = [];
 let dpi = 0;
+/** The grid's rhombus ratio, 0 on a flat grid (see axonometry.ts). */
+let axonometry = 0;
 let gridScale: GridScale | null = null;
 let role: "GM" | "PLAYER" = "PLAYER";
 /** Where this client is dragging a token right now, and its height there — newer than the scene. */
@@ -378,10 +382,10 @@ async function reconcile() {
     const display = resolveDisplay(settings.display, bandSet, settings);
     const showDistance = showsDistance(display.lecturaLabel);
     const theme = getStoredTheme();
-    const ctx: LecturaContext = { bandSet, theme, dpi, language, gridScale, showDistance, display };
+    const ctx: LecturaContext = { bandSet, theme, dpi, axonometry, language, gridScale, showDistance, display };
     const origin: LecturaOrigin = { center: fixed.center, height: altitude ? fixed.height : 0, radius: fixed.radius };
     const isSecret = fixed === secret;
-    const ctxSignature = JSON.stringify([fixed.id, origin, bandSet, display, language, theme, dpi, gridScale, isSecret]);
+    const ctxSignature = JSON.stringify([fixed.id, origin, bandSet, display, language, theme, dpi, axonometry, gridScale, isSecret]);
     const lecturasEnabled = display.lecturaStyle !== "none" || display.lecturaLabel !== "none";
     // A player's client still has hidden tokens (Owlbear just doesn't draw
     // them): measuring them would show their Lecturas.
@@ -419,7 +423,8 @@ async function reconcile() {
         gridScale,
         display.ringLabel,
         display.ringLabelSize,
-        origin.radius
+        origin.radius,
+        axonometry
       );
       if (altitude) {
         const text = heightLabelText(origin.height, bandSet, gridScale, language);
@@ -431,7 +436,7 @@ async function reconcile() {
           item.visible = false;
         }
       }
-      const originItems = [...buildGradientShaders(origin.center, theme, bandSet, dpi, origin.radius), ...rings].map(tagged);
+      const originItems = [...buildGradientShaders(origin.center, theme, bandSet, dpi, origin.radius, axonometry), ...rings].map(tagged);
       toAdd.push(...originItems);
       drawnOrigin = { signature: ctxSignature, ids: originItems.map((item) => item.id) };
     }
@@ -446,7 +451,7 @@ async function reconcile() {
         override?.position ?? token.position,
         override?.height ?? heights.get(token.id) ?? 0,
         origin,
-        { bandSet, dpi, display, showDistance }
+        { bandSet, dpi, axonometry, display, showDistance }
       );
       const signature = lecturaSignature(ctxSignature, token);
       const drawn = drawnLecturas.get(token.id);
@@ -564,16 +569,18 @@ function schedule() {
 }
 
 async function loadScene() {
-  const [nextMetadata, nextItems, nextDpi, nextScale] = await Promise.all([
+  const [nextMetadata, nextItems, nextDpi, nextScale, nextAxonometry] = await Promise.all([
     OBR.scene.getMetadata(),
     OBR.scene.items.getItems(),
     OBR.scene.grid.getDpi(),
     OBR.scene.grid.getScale(),
+    getGridAxonometry(),
   ]);
   metadata = nextMetadata;
   items = nextItems;
   dpi = nextDpi;
   gridScale = nextScale;
+  axonometry = nextAxonometry;
   sceneReady = true;
   resync = true;
   schedule();
@@ -608,8 +615,12 @@ export async function startFixedMedicion() {
     metadata = next;
     schedule();
   });
-  OBR.scene.grid.onChange(async () => {
-    [dpi, gridScale] = await Promise.all([OBR.scene.grid.getDpi(), OBR.scene.grid.getScale()]);
+  OBR.scene.grid.onChange(async (grid) => {
+    [dpi, gridScale, axonometry] = await Promise.all([
+      OBR.scene.grid.getDpi(),
+      OBR.scene.grid.getScale(),
+      axonometryOf(grid.type),
+    ]);
     schedule();
   });
   OBR.room.onMetadataChange((next) => {
