@@ -12,6 +12,7 @@ import {
 } from "../render/lecturaItems";
 import { buildBandRingItems, buildGradientShaders } from "../render/bandRings";
 import { getStoredTheme } from "../theme/themes";
+import { showPinnedFixedMedicion } from "./fixedMedicion";
 
 // Shows a Medición's rings, gradient, Lecturas and height label to every
 // client, not just the one measuring, each in that client's own color theme.
@@ -55,7 +56,9 @@ type UpdateMessage = {
   heightText?: string;
 };
 type EndMessage = { type: "end"; sessionId: number };
-type MirrorMessage = StartMessage | UpdateMessage | EndMessage;
+/** The Medición was left in place as this Medición fija: shown before the Medición goes (receivers before 1.3.0 ignore it). */
+type PinMessage = { type: "pin"; sessionId: number; fixed: unknown };
+type MirrorMessage = StartMessage | UpdateMessage | EndMessage | PinMessage;
 
 /**
  * One Medición's client-local Lecturas + height label (+ extra items, e.g.
@@ -161,6 +164,18 @@ export class LocalMeasureView {
         item.position = { x: center.x - heightLabelOffset.x, y: center.y - heightLabelOffset.y };
       }
     });
+  }
+
+  /**
+   * Gives its items away (the Medición fija takes them over, so nothing is
+   * redrawn): once whatever's queued is done, end() leaves them alone.
+   */
+  async handOver(): Promise<string[]> {
+    await this.enqueue(async () => {});
+    this.ended = true;
+    const ids = this.itemIds;
+    this.itemIds = [];
+    return ids;
   }
 
   end() {
@@ -285,6 +300,13 @@ export function mirrorHeightText(text: string) {
   scheduleFlush();
 }
 
+export function mirrorPinned(fixed: unknown) {
+  if (!activeSessionId) {
+    return;
+  }
+  send({ type: "pin", sessionId: activeSessionId, fixed });
+}
+
 export function mirrorEnd() {
   if (!activeSessionId) {
     return;
@@ -366,6 +388,13 @@ export function startMeasureMirrorReceiver() {
     if (message.type === "end") {
       sessions.delete(connectionId);
       await current.view.end();
+      return;
+    }
+    if (message.type === "pin") {
+      // The Medición fija takes this Medición's items over, so nothing is
+      // redrawn. Its "end" follows, for a session that's already gone.
+      sessions.delete(connectionId);
+      await showPinnedFixedMedicion(message.fixed, await current.view.handOver());
       return;
     }
     if (message.states) {

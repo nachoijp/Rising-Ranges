@@ -3,6 +3,7 @@ import { syncSettings } from "./syncSettings";
 import { startMeasureMirrorReceiver } from "./measureMirror";
 import { startHeightOverlays } from "./heightOverlays";
 import { startMarkerRefresh } from "./markerRefresh";
+import { startFixedMedicion } from "./fixedMedicion";
 import { registerToolbar, watchToolbar } from "./toolbar";
 
 async function waitUntilOBRReady() {
@@ -69,6 +70,9 @@ async function init() {
   });
   startHeightOverlays().catch((error) => {
     console.error("Rising Ranges: failed to start height extras", error);
+  });
+  startFixedMedicion().catch((error) => {
+    console.error("Rising Ranges: failed to start the Medición fija", error);
   });
 }
 

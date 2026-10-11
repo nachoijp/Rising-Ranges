@@ -14,6 +14,7 @@ const es = {
   "toolbar.opciones": "Opciones",
   "toolbar.colorTheme": "Tema de color",
   "toolbar.distancias": "Distancias",
+  "toolbar.clearFixed": "Quitar Medición fija",
 
   "settings.tab.bandas": "Bandas",
 

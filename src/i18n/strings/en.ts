@@ -17,6 +17,7 @@ const en: Record<TranslationKey, string> = {
   "toolbar.opciones": "Options",
   "toolbar.colorTheme": "Color theme",
   "toolbar.distancias": "Distances",
+  "toolbar.clearFixed": "Remove fixed Measurement",
 
   "settings.tab.bandas": "Ranges",
 

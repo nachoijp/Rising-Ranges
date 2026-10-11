@@ -7,6 +7,7 @@ A relative, 3D-aware range and altitude measuring tool for [Owlbear Rodeo](https
 ## Features
 
 - **Relative range measuring** — click and drag from any point or token to reveal concentric range bands (Melee, Very Close, Close, Far, Very Far — or your own).
+- **Fixed Measurement** — hold Shift as you let go of a Measurement and it stays on the map, for everyone, while you move tokens around it. Shift+click again (or the ✕ in the toolbar) to remove it.
 - **Height / altitude tracking** — right-click a token to set a persistent height marker, or nudge height live with hotkeys while measuring, range by range or one grid cell at a time. Readings account for height in 3D, with a choice of spherical, cubic, or cylindrical distance, and big creatures take up height too (a size 2 creature is a 2×2×2 block).
 - **Three built-in presets** — Dagger, Steel (Draw Steel's distances, measured square by square), and Dragons — or build your own set of ranges from scratch.
 - **Multiple visualization styles** — icon stacks, rings, or filled circles, independently sized and colored.
@@ -21,6 +22,12 @@ A relative, 3D-aware range and altitude measuring tool for [Owlbear Rodeo](https
 ![Measuring with rings and readings](docs/screenshots/in-action.png)
 
 Drag from a token or an empty point to set your Origin. Every other token gets a live Reading showing which range band it's in, with an arrow if it's above or below you.
+
+## Fixed Measurement
+
+Hold **Shift** as you release a Measurement — a quick Shift+click works too — and it stays where its Origin was: on the point, or where the token you dragged landed, at that height. Everyone in the room sees it.
+
+While it's up, the Measurement tool just moves tokens: each one's Reading follows it as you drag, measured from the fixed point, and the height hotkeys raise or lower the token you're dragging. Tokens moved any other way update too. **Shift+click** anywhere, or the ✕ that appears in the toolbar, removes it — whoever placed it. There's only one at a time, and it goes away if whoever placed it leaves or reloads.
 
 ## Height markers
 

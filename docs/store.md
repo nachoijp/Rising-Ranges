@@ -24,6 +24,8 @@ and optional persistent height markers.
 - **Relative range measuring** — click and drag from any point or token to
   reveal concentric range bands (Melee, Very Close, Close, Far, Very Far — or
   your own).
+- **Fixed Measurement** — hold Shift as you let go of a Measurement and it
+  stays on the map, for everyone, while you move tokens around it.
 - **Height / altitude tracking** — right-click a token to set a persistent
   height marker, or nudge height live with hotkeys while measuring, range by
   range or one grid cell at a time. Readings account for height in 3D, with a

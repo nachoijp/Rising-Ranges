@@ -5,9 +5,11 @@ import OBR, {
   type Image,
   type Item,
   type Path,
+  type Vector2,
 } from "@owlbear-rodeo/sdk";
 import { getPluginId } from "../util/getPluginId";
 import { isPlainObject } from "../util/isPlainObject";
+import { isPoint } from "../util/isPoint";
 import { type Color, type Theme } from "../theme/themes";
 import { BandSet, IconShape } from "../engine/types";
 import { heightBandIndex, markerIconCount } from "../engine/heights";
@@ -21,8 +23,21 @@ import { globalSettingsFromMetadata, type MarkerStyle } from "../settings/global
 
 const METADATA_KEY = getPluginId("tokenHeight");
 
-/** What a marker stores: the token's height in grid units, signed (positive up, negative down), never 0. */
-export type TokenHeightState = { height: number };
+/**
+ * Written while the token is being dragged (with the Medición tool): where
+ * it's still stored, and where it's been dragged to. Lets every client draw
+ * the marker where the token really is meanwhile (see heightOverlays.ts).
+ */
+export type MarkerDrag = { from: Vector2; to: Vector2 };
+
+/**
+ * What a marker stores: the token's height in grid units, signed (positive
+ * up, negative down) — and `drag`, mid-drag. Never 0, except mid-drag: a
+ * token lowered to the ground during a drag keeps its marker until it's
+ * dropped, so other clients still know it's mid-drag (see heightOverlays.ts).
+ * Clients before 1.3.0 read that as no marker: the ground.
+ */
+export type TokenHeightState = { height: number; drag?: MarkerDrag };
 
 /** The older marker format: a Banda and a side of the ground. */
 type LegacyTokenHeightState = { bandId: string; direction: Direction };
@@ -32,13 +47,31 @@ function storedState(item: Item): TokenHeightState | LegacyTokenHeightState | un
   if (!isPlainObject(metadata)) {
     return undefined;
   }
-  if (typeof metadata.height === "number" && Number.isFinite(metadata.height) && metadata.height !== 0) {
+  if (
+    typeof metadata.height === "number" &&
+    Number.isFinite(metadata.height) &&
+    (metadata.height !== 0 || dragOf(metadata) !== undefined)
+  ) {
     return { height: metadata.height };
   }
   if (typeof metadata.bandId === "string" && (metadata.direction === "up" || metadata.direction === "down")) {
     return { bandId: metadata.bandId, direction: metadata.direction };
   }
   return undefined;
+}
+
+function dragOf(metadata: Record<string, unknown>): MarkerDrag | undefined {
+  const drag = metadata.drag;
+  if (isPlainObject(drag) && isPoint(drag.from) && isPoint(drag.to)) {
+    return { from: drag.from, to: drag.to };
+  }
+  return undefined;
+}
+
+/** The drag a marker was written in the middle of, if it was. */
+export function getMarkerDrag(item: Item): MarkerDrag | undefined {
+  const metadata = item.metadata[METADATA_KEY];
+  return isPlainObject(metadata) ? dragOf(metadata) : undefined;
 }
 
 /**
@@ -142,7 +175,8 @@ function applyMarkerGeometry(
   height: number,
   bandSet: BandSet,
   dpi: number,
-  look: MarkerLook
+  look: MarkerLook,
+  drag?: MarkerDrag
 ): void {
   const { commands, strokeWidth } = markerAppearance(height, bandSet, dpi, look);
   marker.commands = commands;
@@ -153,7 +187,11 @@ function applyMarkerGeometry(
   marker.position = computeIconAnchor(token, dpi, look.tuning.position, look.tuning.distance);
   marker.visible = token.visible;
   marker.name = markerName(height);
-  marker.metadata[METADATA_KEY] = { height } as TokenHeightState;
+  marker.metadata[METADATA_KEY] = markerState(height, drag);
+}
+
+function markerState(height: number, drag?: MarkerDrag): TokenHeightState {
+  return drag ? { height, drag } : { height };
 }
 
 function buildTokenHeightMarker(
@@ -161,7 +199,8 @@ function buildTokenHeightMarker(
   height: number,
   bandSet: BandSet,
   dpi: number,
-  look: MarkerLook
+  look: MarkerLook,
+  drag?: MarkerDrag
 ): Path {
   const { commands, strokeWidth } = markerAppearance(height, bandSet, dpi, look);
   return buildPath()
@@ -178,12 +217,12 @@ function buildTokenHeightMarker(
     .disableHit(true)
     .visible(token.visible)
     .name(markerName(height))
-    .metadata({ [METADATA_KEY]: { height } as TokenHeightState })
+    .metadata({ [METADATA_KEY]: markerState(height, drag) })
     .build();
 }
 
 /**
- * Sets the tokens' height marker (a height of 0 clears it). An existing marker is updated in place,
+ * Sets the tokens' height marker (a height of 0 clears it, unless mid-`drag`). An existing marker is updated in place,
  * never deleted and re-added: with a new id each time, a late write from
  * an earlier call could land after a newer one and undo it.
  *
@@ -198,12 +237,13 @@ export async function setTokenHeightMarker(
   knownBandSet?: BandSet,
   knownDpi?: number,
   knownExisting?: Path[],
-  knownLook?: MarkerLook
+  knownLook?: MarkerLook,
+  drag?: MarkerDrag
 ): Promise<Path[]> {
   if (tokens.length === 0) {
     return [];
   }
-  if (height === 0) {
+  if (height === 0 && !drag) {
     await clearTokenHeightMarker(
       tokens.map((token) => token.id),
       knownExisting
@@ -237,7 +277,7 @@ export async function setTokenHeightMarker(
           if (!token) {
             continue;
           }
-          applyMarkerGeometry(marker, token, height, bandSet, dpi, look);
+          applyMarkerGeometry(marker, token, height, bandSet, dpi, look, drag);
         }
       }
     );
@@ -246,7 +286,7 @@ export async function setTokenHeightMarker(
   const newMarkers = tokens
     .filter((token) => !tokensWithExisting.has(token.id))
     .map((token) =>
-      buildTokenHeightMarker(token, height, bandSet, dpi, look)
+      buildTokenHeightMarker(token, height, bandSet, dpi, look, drag)
     );
   if (newMarkers.length > 0) {
     await OBR.scene.items.addItems(newMarkers);
@@ -308,16 +348,33 @@ export async function refreshAllTokenHeightMarkers(): Promise<void> {
   // Derived on copies first, so only the markers that actually come out
   // different get written — most refreshes change nothing, and every write
   // counts against Owlbear's rate limit ("Too many requests").
+  // A marker's drag is only current while its token is still stored where
+  // the drag began; past that it's left over (a drag that never finished).
+  const currentDrag = (marker: Path, token: Image) => {
+    const drag = getMarkerDrag(marker);
+    return drag && drag.from.x === token.position.x && drag.from.y === token.position.y ? drag : undefined;
+  };
   const apply = (marker: Path) => {
     // undefined for an old-style marker whose Banda was deleted: left as
     // is, so a passing Bandas edit doesn't wipe markers the GM placed.
+    // ...and 0 for one on the ground mid-drag: whoever's dragging it writes it.
     const height = getTokenHeight(marker, bandSet);
     const token = marker.attachedTo ? tokenById.get(marker.attachedTo) : undefined;
-    if (height === undefined || !token) {
+    if (!height || !token) {
       return;
     }
-    applyMarkerGeometry(marker, token, height, bandSet, dpi, look);
+    applyMarkerGeometry(marker, token, height, bandSet, dpi, look, currentDrag(marker, token));
   };
+  // One on the ground whose drag is over: it should have been removed then.
+  const leftOver = markers
+    .filter((marker) => {
+      const token = marker.attachedTo ? tokenById.get(marker.attachedTo) : undefined;
+      return getTokenHeight(marker, bandSet) === 0 && (!token || !currentDrag(marker, token));
+    })
+    .map((marker) => marker.id);
+  if (leftOver.length > 0) {
+    await OBR.scene.items.deleteItems(leftOver);
+  }
   const changedIds = markers
     .filter((marker) => {
       const next = structuredClone(marker);

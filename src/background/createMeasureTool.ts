@@ -5,6 +5,7 @@ import OBR, {
   type Image,
   type InteractionManager,
   type Item,
+  type ToolEvent,
   type Vector2,
 } from "@owlbear-rodeo/sdk";
 import measureIcon from "../assets/range.svg";
@@ -13,6 +14,7 @@ import {
   LocalMeasureView,
   mirrorEnd,
   mirrorHeightText,
+  mirrorPinned,
   mirrorStart,
   mirrorStates,
 } from "./measureMirror";
@@ -24,23 +26,17 @@ import {
   writesSoFar,
   type OriginMarkerRequest,
 } from "./originMarkerSync";
+import { clearFixedMedicion, hasFixedMedicion, pinFixedMedicion, setFixedLive } from "./fixedMedicion";
+import { setDraggedToken } from "./heightOverlays";
 import { sameLecturaState, type LecturaContext, type LecturaState } from "../render/lecturaItems";
 import { buildBandRingItems, buildGradientShaders, buildOriginAnchor } from "../render/bandRings";
 import { getTokenRadius } from "../render/iconAnchor";
 import { getPluginId } from "../util/getPluginId";
 import { getMetadata } from "../util/getMetadata";
 import { getStoredTheme } from "../theme/themes";
-import {
-  DEFAULT_TOLERANCE,
-  bodyCenterHeight,
-  bodyDistance,
-  excessRadius,
-  matchedDistance,
-} from "../engine/distance";
-import { findBandIndex } from "../engine/bands";
-import { bandAtHeight, heightStepOf, stepHeight } from "../engine/heights";
+import { computeLecturaState as computeSharedLecturaState, heightLabelText } from "../render/computeLectura";
+import { stepHeight } from "../engine/heights";
 import { BandSet } from "../engine/types";
-import { formatDistance } from "../util/flattenGridScale";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
 import { resolveDisplay, showsDistance, type DisplaySettings } from "../settings/display";
 import {
@@ -64,6 +60,11 @@ import {
 // rings around the Origen, a Lectura on every other token, and the Origen's
 // height (Z/X raise or lower it, C puts it back on the ground). Everything below is the state of the one
 // Medición in progress; cleanup() resets it.
+//
+// Released with Shift held, a Medición stays as the Medición fija (see
+// fixedMedicion.ts). While that's up the tool only moves tokens, whose
+// Lecturas it measures; Z/X/C change the dragged token's height, and a
+// Shift+click removes it.
 
 // Owlbear stops syncing an interaction to other clients 15s after it
 // starts (undocumented): their rings vanish. The mirrored
@@ -79,6 +80,10 @@ let tokenInteraction: InteractionManager<Item> | null = null;
 /** What follows the Origen on this client: the gradient's shaders, the rings and their labels. */
 let originItems: Item[] = [];
 let grabOffset: Vector2 = { x: 0, y: 0 };
+/** Where the pointer last was in this drag: a token's drag may start after some moves. */
+let lastDragPointer: Vector2 | null = null;
+/** This gesture only moves a token, under the Medición fija: no rings, and originHeight is that token's height. */
+let fixedDrag = false;
 /** The token the Medición started on (if the player may move it), as it was at the start. */
 let downTarget: Item | null = null;
 /** That token's height before this Medición changed it — restored on cancel. */
@@ -128,6 +133,17 @@ let activeHeightLabelText = "";
 // Bumped by cleanup(), so a handler that awaited can tell its Medición ended
 // meanwhile and stop instead of drawing for it.
 let toolDownGeneration = 0;
+/** How long a pinned Medición's anchor outlives it (see releaseMedicion). */
+const ANCHOR_LINGER_MS = 1500;
+// Settles once the latest Medición is on screen (or gave up). A release with
+// Shift waits for it: a quick click comes back before the Medición has
+// anything to leave in place.
+let toolDownSetup: Promise<void> = Promise.resolve();
+// Settles once the press's token is known to be movable (downTarget set) or
+// not. A drag can start before that: it waits for it.
+let downTargetCheck: Promise<void> = Promise.resolve();
+/** The Medición already left in place, so a second release of the same one doesn't pin it again. */
+let pinnedGeneration = -1;
 // The latest token move, waiting on its snapPosition reply. Released tokens
 // wait for it, so they land where they were dropped. Never rejects.
 let pendingMove: Promise<void> | null = null;
@@ -187,58 +203,8 @@ function scheduleLecturaRefresh(position: Vector2) {
   }, 16);
 }
 
-/**
- * A token's distance from the Lectura center: `matched` (with Tolerancia)
- * decides its Banda and the Filtro; `shown` (without it) is the number its
- * label displays. Both measure between the two tokens' bodies (see
- * bodyDistance).
- */
-function getLecturaDistance(token: Image, bandSet: BandSet): { matched: number; shown: number } {
-  const dx = (token.position.x - activeLecturaCenter.x) / activeDpi;
-  const dy = (token.position.y - activeLecturaCenter.y) / activeDpi;
-  const tokenRadius = getTokenRadius(token, activeDpi);
-  const dz =
-    bodyCenterHeight(activeTokenHeights.get(token.id) ?? 0, tokenRadius) -
-    bodyCenterHeight(originHeight, activeOriginRadius);
-  const excessRadiusSum = excessRadius(activeOriginRadius) + excessRadius(tokenRadius);
-  const { distance } = bodyDistance(dx, dy, dz, excessRadiusSum, bandSet.metric);
-  const tolerance = (bandSet.tolerance ?? DEFAULT_TOLERANCE) / 100;
-  return { matched: matchedDistance(distance, tolerance), shown: distance };
-}
-
-function isWithinFilter(distance: number, bandSet: BandSet): boolean {
-  if (!activeDisplay?.filterEnabled || !activeDisplay.filterBandId) {
-    return true;
-  }
-  const filterBandId = activeDisplay.filterBandId;
-  // A Banda that isn't in this set (deleted, or picked with another set)
-  // filters nothing.
-  const filterBand = bandSet.bands.find((band) => band.id === filterBandId);
-  if (!filterBand) {
-    return true;
-  }
-  return distance <= filterBand.radius;
-}
-
-/** Origen height minus the token's height (only its sign matters: which way the Lectura's arrow points). */
-function tokenDz(token: Item) {
-  return originHeight - (activeTokenHeights.get(token.id) ?? 0);
-}
-
 function currentHeightLabelText() {
-  if (originHeight === 0) {
-    return translate(activeLanguage, "onMap.ground");
-  }
-  // By Banda, a height that is one is called by its name; otherwise (or by
-  // cell) it's the distance itself.
-  const band = activeBandSet && heightStepOf(activeBandSet) === "band" ? bandAtHeight(originHeight, activeBandSet) : undefined;
-  const text = band
-    ? band.name
-    : activeGridScale
-      ? formatDistance(activeGridScale, Math.abs(originHeight))
-      : String(Math.abs(originHeight));
-  // Emoji arrows: Owlbear's map font has no plain ↑/↓.
-  return `${text} ${originHeight > 0 ? "⬆️" : "⬇️"}`;
+  return heightLabelText(originHeight, activeBandSet, activeGridScale, activeLanguage);
 }
 
 /** downTarget at its current dragged position. */
@@ -261,24 +227,21 @@ function originMarkerRequest(height: number, position?: Vector2): OriginMarkerRe
     return null;
   }
   const token = position ? { ...live, position } : live;
-  return { token, height, bandSet: activeBandSet, dpi: activeDpi, look: activeMarkerLook, attempt: 0 };
+  // Mid-drag, the token is still stored where it was: the marker says so
+  // (see heightOverlays.ts).
+  const draggedFrom = position ? undefined : downTarget?.position;
+  return { token, height, bandSet: activeBandSet, dpi: activeDpi, look: activeMarkerLook, attempt: 0, draggedFrom };
 }
 
 /** One token's Lectura, as the measuring client computes it — every client draws it from this. */
 function computeLecturaState(token: Image, bandSet: BandSet): LecturaState {
-  const dz = tokenDz(token);
-  const { matched, shown } = getLecturaDistance(token, bandSet);
-  const state: LecturaState = {
-    index: findBandIndex(matched, bandSet),
-    withinFilter: isWithinFilter(matched, bandSet),
-    dz,
-  };
-  // Rounded here, not when drawn: sameLecturaState compares it, so a Lectura
-  // is only redrawn and re-sent when the number shown changes.
-  if (activeShowDistance) {
-    state.distance = Math.round(shown);
-  }
-  return state;
+  return computeSharedLecturaState(
+    token,
+    token.position,
+    activeTokenHeights.get(token.id) ?? 0,
+    { center: activeLecturaCenter, height: originHeight, radius: activeOriginRadius },
+    { bandSet, dpi: activeDpi, display: activeDisplay, showDistance: activeShowDistance }
+  );
 }
 
 /** The Lecturas other clients may see: none of a hidden token's. */
@@ -378,6 +341,8 @@ function cleanup() {
   forgetCache();
   liveTokenPosition = null;
   pendingMove = null;
+  fixedDrag = false;
+  lastDragPointer = null;
 }
 
 // Owlbear refuses bursts of scene writes ("Too many requests"). The waits
@@ -428,15 +393,81 @@ async function saveTokenPosition(interaction: InteractionManager<Item>): Promise
  * those writes need is taken first: a new Medición starting meanwhile runs
  * cleanup(), which would cancel the drag and reset that state.
  */
-async function releaseMedicion() {
+async function releaseMedicion(pin: boolean) {
   const interaction = tokenInteraction;
   tokenInteraction = null;
+  if (pin && !fixedDrag) {
+    const before = toolDownGeneration;
+    const tokenBefore = downTarget?.id;
+    const startBefore = downTarget?.position;
+    const markerBefore = activeAltitudeEnabled ? originMarkerRequest(originHeight) : null;
+    await toolDownSetup;
+    // A new press meanwhile already ended this Medición, and everything
+    // read from here on would be its: only the dragged token, and its
+    // marker, are ours to finish.
+    if (toolDownGeneration !== before) {
+      const landed = interaction ? await saveTokenPosition(interaction) : null;
+      const position = landed ?? startBefore;
+      await enqueueOriginMarkerWrite(
+        markerBefore && position
+          ? { ...markerBefore, token: { ...markerBefore.token, position }, draggedFrom: undefined }
+          : markerBefore
+      );
+      if (tokenBefore) {
+        setDraggedToken(tokenBefore, null);
+      }
+      return;
+    }
+  }
   const startPosition = downTarget?.position;
   const markerRequest = activeAltitudeEnabled ? originMarkerRequest(originHeight) : null;
   const generation = toolDownGeneration;
+  const fixedTokenId = fixedDrag ? downTarget?.id : undefined;
+  const draggedTokenId = downTarget?.id;
+  // Left in place where its Origen is now: from a dragged token, where it's
+  // dropped. activeBandSet is only set once the Medición is on screen.
+  const pinRequest =
+    pin && !fixedDrag && activeBandSet && pinnedGeneration !== generation
+      ? {
+          center: pendingPointerPosition ?? activeCenter,
+          height: activeAltitudeEnabled ? originHeight : 0,
+          radius: activeOriginRadius,
+          secret: secretMedicion,
+          fromToken: !!downTarget,
+        }
+      : null;
   // The last snapped move, so the token lands where it was dropped.
   if (pendingMove) {
     await pendingMove;
+  }
+  if (pinRequest) {
+    pinnedGeneration = generation;
+    const { fromToken, secret, ...origin } = pinRequest;
+    const dropped = liveTokenPosition ?? startPosition;
+    // Its rings, gradient, height label and Lecturas become the Medición
+    // fija's, rather than going while it draws its own: nothing blinks.
+    const handedOver = originItems.map((item) => item.id);
+    originItems = [];
+    if (measureView) {
+      handedOver.push(...(await measureView.handOver()));
+    }
+    const pinned = pinFixedMedicion(
+      { ...origin, center: fromToken && dropped ? dropped : origin.center },
+      secret,
+      handedOver
+    );
+    if (pinned.shared && generation === toolDownGeneration) {
+      mirrorPinned(pinned.shared);
+      // Everyone else's rings ride on the Origen's anchor, which goes when
+      // its interaction ends: kept a little longer, so they're still up
+      // until those clients have drawn the Medición fija.
+      const anchor = bandInteraction;
+      bandInteraction = null;
+      if (anchor) {
+        setTimeout(() => anchor[1](), ANCHOR_LINGER_MS);
+      }
+    }
+    await pinned.drawn;
   }
   // A new Medición that started meanwhile already ended this one; cleaning
   // up again would end the new one instead.
@@ -448,15 +479,107 @@ async function releaseMedicion() {
   // if that was saved, back at the start otherwise.
   const position = landed ?? startPosition;
   await enqueueOriginMarkerWrite(
-    markerRequest && position ? { ...markerRequest, token: { ...markerRequest.token, position } } : markerRequest
+    markerRequest && position
+      ? { ...markerRequest, token: { ...markerRequest.token, position }, draggedFrom: undefined }
+      : markerRequest
   );
+  // Only now: until the token's position and marker are saved, the scene
+  // still has it where it was.
+  if (fixedTokenId) {
+    setFixedLive(fixedTokenId, null);
+  }
+  if (draggedTokenId) {
+    setDraggedToken(draggedTokenId, null);
+  }
 }
 
 /** Ends a cancelled Medición: the token goes back, and so does its marker. */
 async function cancelMedicion() {
   const restore = activeAltitudeEnabled ? originMarkerRequest(originHeightBeforeEdit, downTarget?.position) : null;
+  const fixedTokenId = fixedDrag ? downTarget?.id : undefined;
+  const draggedTokenId = downTarget?.id;
   cleanup();
+  if (fixedTokenId) {
+    setFixedLive(fixedTokenId, null);
+  }
+  if (draggedTokenId) {
+    setDraggedToken(draggedTokenId, null);
+  }
   await restoreOriginMarker(restore);
+}
+
+/** Moves the dragged token under the pointer, snapped. */
+async function moveDraggedToken(pointer: Vector2) {
+  if (!tokenInteraction) {
+    return;
+  }
+  const update = tokenInteraction[0];
+  const move = OBR.scene.grid.snapPosition(Math2.subtract(pointer, grabOffset)).then((position) => {
+    update((token) => {
+      token.position = position;
+    });
+    liveTokenPosition = position;
+    if (downTarget) {
+      setDraggedToken(downTarget.id, position);
+    }
+    if (fixedDrag && downTarget) {
+      setFixedLive(downTarget.id, { position, height: originHeight });
+    } else {
+      scheduleLecturaRefresh(position);
+    }
+  });
+  pendingMove = move.catch((error) => {
+    console.error("Rising Ranges: failed to snap the dragged token", error);
+  });
+  await pendingMove;
+}
+
+/**
+ * A press under the Medición fija: on a token the player may move, just
+ * that token's drag, with what moving it and changing its height needs.
+ */
+async function startFixedDrag(event: ToolEvent) {
+  const generation = toolDownGeneration;
+  const target = event.target;
+  if (!target || target.locked || !isImage(target)) {
+    return;
+  }
+  fixedDrag = true;
+  grabOffset = Math2.subtract(event.pointerPosition, target.position);
+  const writesBeforeFetch = writesSoFar();
+  // downTarget is only set once the token's height is known too: a drag
+  // waits for it (downTargetCheck), and its Lectura would otherwise be
+  // measured from the ground meanwhile.
+  const ready = (async () => {
+    const [canUpdate, sceneMetadata, dpi, heightMarkers] = await Promise.all([
+      canUpdateItem(target),
+      OBR.scene.getMetadata(),
+      OBR.scene.grid.getDpi(),
+      getAllTokenHeightMarkers(),
+    ]);
+    if (generation !== toolDownGeneration || !canUpdate) {
+      return;
+    }
+    activeBandSet = bandSetFromMetadata(sceneMetadata);
+    activeSettings = globalSettingsFromMetadata(sceneMetadata);
+    activeAltitudeEnabled = activeSettings.enableAltitude ?? true;
+    activeMarkerLook = markerLookFromMetadata(sceneMetadata);
+    activeDpi = dpi;
+    if (activeAltitudeEnabled) {
+      const marker = heightMarkers.find((m) => m.attachedTo === target.id);
+      originHeight = (marker && getTokenHeight(marker, activeBandSet)) || 0;
+      originHeightBeforeEdit = originHeight;
+      seedCache(target.id, marker ? [marker] : [], writesBeforeFetch);
+    }
+    downTarget = target;
+  })();
+  downTargetCheck = ready.catch(() => {});
+  try {
+    await ready;
+  } catch (error) {
+    // That press just does nothing (no downTarget, so no drag).
+    console.error("Rising Ranges: failed to start moving a token", error);
+  }
 }
 
 export function createMeasureTool(language: Language, settings: GlobalSettings) {
@@ -477,161 +600,179 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
     },
     async onToolDown(_, event) {
       cleanup();
-      const generation = toolDownGeneration;
-
-      const tokenPosition = event.target && !event.target.locked && event.target.position;
-      const initialPosition = tokenPosition || event.pointerPosition;
-      // So a grabbed token doesn't jump to center on the pointer.
-      grabOffset = tokenPosition ? Math2.subtract(event.pointerPosition, tokenPosition) : { x: 0, y: 0 };
-
-      // Everything is fetched at once: each call is a round trip, and the
-      // Medición can't appear until all are back. downTarget is set as soon
-      // as the permission check resolves — the drag handlers route on it.
-      const target = event.target;
-      const permissionCheck =
-        target && !target.locked && target.type === "IMAGE"
-          ? canUpdateItem(target).then((canUpdate) => {
-              if (canUpdate && generation === toolDownGeneration) {
-                downTarget = target;
-              }
-            })
-          : Promise.resolve();
-      const writesBeforeFetch = writesSoFar();
-      const [sceneMetadata, dpi, gridScale, characterImages, allHeightMarkers, role] = await Promise.all([
-        OBR.scene.getMetadata(),
-        OBR.scene.grid.getDpi(),
-        OBR.scene.grid.getScale(),
-        OBR.scene.items.getItems<Image>((item): item is Image => isImage(item) && item.layer === "CHARACTER"),
-        getAllTokenHeightMarkers(),
-        OBR.player.getRole(),
-        permissionCheck,
-      ]);
-      if (generation !== toolDownGeneration) {
+      if (hasFixedMedicion()) {
+        if (event.shiftKey) {
+          await clearFixedMedicion();
+        } else {
+          await startFixedDrag(event);
+        }
         return;
       }
-      const language = languageFromMetadata(sceneMetadata);
-      const bandSet = bandSetFromMetadata(sceneMetadata);
+      let setupDone = () => {};
+      toolDownSetup = new Promise<void>((resolve) => {
+        setupDone = resolve;
+      });
+      try {
+        const generation = toolDownGeneration;
 
-      const theme = getStoredTheme();
-      activeCenter = initialPosition;
-      activeLecturaCenter = initialPosition;
-      activeBandSet = bandSet;
-      activeLanguage = language;
-      activeSettings = globalSettingsFromMetadata(sceneMetadata);
-      activeAltitudeEnabled = activeSettings.enableAltitude ?? true;
-      activeDisplay = resolveDisplay(activeSettings.display, bandSet, activeSettings);
-      activeLecturasEnabled = activeDisplay.lecturaStyle !== "none" || activeDisplay.lecturaLabel !== "none";
-      activeShowDistance = showsDistance(activeDisplay.lecturaLabel);
-      activeMarkerLook = markerLookFromMetadata(sceneMetadata);
-      activeDpi = dpi;
-      activeGridScale = gridScale;
-      activeOriginRadius = downTarget && isImage(downTarget) ? getTokenRadius(downTarget, dpi) : 0;
+        const tokenPosition = event.target && !event.target.locked && event.target.position;
+        const initialPosition = tokenPosition || event.pointerPosition;
+        // So a grabbed token doesn't jump to center on the pointer.
+        grabOffset = tokenPosition ? Math2.subtract(event.pointerPosition, tokenPosition) : { x: 0, y: 0 };
 
-      // Added while the rings' interaction starts below, not before it.
-      const shaders = buildGradientShaders(initialPosition, theme, bandSet, dpi, activeOriginRadius);
-      originItems = shaders;
-      const shadersAdded = OBR.scene.local.addItems(shaders);
+        // Everything is fetched at once: each call is a round trip, and the
+        // Medición can't appear until all are back. downTarget is set as soon
+        // as the permission check resolves — the drag handlers route on it.
+        const target = event.target;
+        const permissionCheck =
+          target && !target.locked && target.type === "IMAGE"
+            ? canUpdateItem(target).then((canUpdate) => {
+                if (canUpdate && generation === toolDownGeneration) {
+                  downTarget = target;
+                }
+              })
+            : Promise.resolve();
+        downTargetCheck = permissionCheck.catch(() => {});
+        const writesBeforeFetch = writesSoFar();
+        const [sceneMetadata, dpi, gridScale, characterImages, allHeightMarkers, role] = await Promise.all([
+          OBR.scene.getMetadata(),
+          OBR.scene.grid.getDpi(),
+          OBR.scene.grid.getScale(),
+          OBR.scene.items.getItems<Image>((item): item is Image => isImage(item) && item.layer === "CHARACTER"),
+          getAllTokenHeightMarkers(),
+          OBR.player.getRole(),
+          permissionCheck,
+        ]);
+        if (generation !== toolDownGeneration) {
+          return;
+        }
+        const language = languageFromMetadata(sceneMetadata);
+        const bandSet = bandSetFromMetadata(sceneMetadata);
 
-      const heightMarkers = activeAltitudeEnabled ? allHeightMarkers : [];
-      // A player's client still has hidden tokens (Owlbear just doesn't draw
-      // them): measuring them would show their Lecturas.
-      activeTokens = characterImages.filter(
-        (item) => item.id !== downTarget?.id && (role === "GM" || item.visible)
-      );
-      hiddenTokenIds = new Set(activeTokens.filter((item) => !item.visible).map((item) => item.id));
-      secretMedicion = target?.type === "IMAGE" && !target.visible;
-      activeTokenHeights = tokenHeightsFromMarkers(heightMarkers, bandSet);
+        const theme = getStoredTheme();
+        activeCenter = initialPosition;
+        activeLecturaCenter = initialPosition;
+        activeBandSet = bandSet;
+        activeLanguage = language;
+        activeSettings = globalSettingsFromMetadata(sceneMetadata);
+        activeAltitudeEnabled = activeSettings.enableAltitude ?? true;
+        activeDisplay = resolveDisplay(activeSettings.display, bandSet, activeSettings);
+        activeLecturasEnabled = activeDisplay.lecturaStyle !== "none" || activeDisplay.lecturaLabel !== "none";
+        activeShowDistance = showsDistance(activeDisplay.lecturaLabel);
+        activeMarkerLook = markerLookFromMetadata(sceneMetadata);
+        activeDpi = dpi;
+        activeGridScale = gridScale;
+        activeOriginRadius = downTarget && isImage(downTarget) ? getTokenRadius(downTarget, dpi) : 0;
 
-      // A Medición started on a token with a height marker starts at that
-      // height.
-      originHeight = 0;
-      if (activeAltitudeEnabled) {
-        const originId = event.target?.id;
-        const originMarker = originId && heightMarkers.find((m) => m.attachedTo === originId);
-        originHeight = (originMarker && getTokenHeight(originMarker, bandSet)) || 0;
-        originHeightBeforeEdit = downTarget ? originHeight : 0;
-        if (downTarget) {
-          seedCache(downTarget.id, originMarker ? [originMarker] : [], writesBeforeFetch);
+        // Added while the rings' interaction starts below, not before it.
+        const shaders = buildGradientShaders(initialPosition, theme, bandSet, dpi, activeOriginRadius);
+        originItems = shaders;
+        const shadersAdded = OBR.scene.local.addItems(shaders);
+
+        const heightMarkers = activeAltitudeEnabled ? allHeightMarkers : [];
+        // A player's client still has hidden tokens (Owlbear just doesn't draw
+        // them): measuring them would show their Lecturas.
+        activeTokens = characterImages.filter(
+          (item) => item.id !== downTarget?.id && (role === "GM" || item.visible)
+        );
+        hiddenTokenIds = new Set(activeTokens.filter((item) => !item.visible).map((item) => item.id));
+        secretMedicion = target?.type === "IMAGE" && !target.visible;
+        activeTokenHeights = tokenHeightsFromMarkers(heightMarkers, bandSet);
+
+        // A Medición started on a token with a height marker starts at that
+        // height.
+        originHeight = 0;
+        if (activeAltitudeEnabled) {
+          const originId = event.target?.id;
+          const originMarker = originId && heightMarkers.find((m) => m.attachedTo === originId);
+          originHeight = (originMarker && getTokenHeight(originMarker, bandSet)) || 0;
+          originHeightBeforeEdit = downTarget ? originHeight : 0;
+          if (downTarget) {
+            seedCache(downTarget.id, originMarker ? [originMarker] : [], writesBeforeFetch);
+          } else {
+            forgetCache();
+          }
         } else {
+          originHeightBeforeEdit = 0;
           forgetCache();
         }
-      } else {
-        originHeightBeforeEdit = 0;
-        forgetCache();
-      }
-      if (generation !== toolDownGeneration) {
-        return;
-      }
-      const ringItems = buildBandRingItems(
-        activeCenter,
-        theme,
-        bandSet,
-        dpi,
-        gridScale,
-        activeDisplay.ringLabel,
-        activeDisplay.ringLabelSize,
-        activeOriginRadius
-      );
-      const anchor = buildOriginAnchor(activeCenter);
-      if (secretMedicion) {
-        for (const item of [anchor, ...ringItems]) {
-          item.visible = false;
+        if (generation !== toolDownGeneration) {
+          return;
         }
-      }
-      const [interaction] = await Promise.all([
-        OBR.interaction.startItemInteraction([anchor]),
-        shadersAdded,
-        OBR.scene.local.addItems(ringItems),
-      ]);
-      if (generation !== toolDownGeneration) {
-        interaction[1]();
-        // cleanup() may have run before these finished adding.
-        OBR.scene.local.deleteItems([...shaders, ...ringItems].map((item) => item.id));
-        return;
-      }
-      bandInteraction = interaction;
-      originItems = [...shaders, ...ringItems];
-      remoteSyncCutoffTimer = setTimeout(() => {
-        remoteSyncCutoffTimer = null;
-        mirrorEnd();
-      }, REMOTE_SYNC_CUTOFF_MS);
+        const ringItems = buildBandRingItems(
+          activeCenter,
+          theme,
+          bandSet,
+          dpi,
+          gridScale,
+          activeDisplay.ringLabel,
+          activeDisplay.ringLabelSize,
+          activeOriginRadius
+        );
+        const anchor = buildOriginAnchor(activeCenter);
+        if (secretMedicion) {
+          for (const item of [anchor, ...ringItems]) {
+            item.visible = false;
+          }
+        }
+        const [interaction] = await Promise.all([
+          OBR.interaction.startItemInteraction([anchor]),
+          shadersAdded,
+          OBR.scene.local.addItems(ringItems),
+        ]);
+        if (generation !== toolDownGeneration) {
+          interaction[1]();
+          // cleanup() may have run before these finished adding.
+          OBR.scene.local.deleteItems([...shaders, ...ringItems].map((item) => item.id));
+          return;
+        }
+        bandInteraction = interaction;
+        originItems = [...shaders, ...ringItems];
+        remoteSyncCutoffTimer = setTimeout(() => {
+          remoteSyncCutoffTimer = null;
+          mirrorEnd();
+        }, REMOTE_SYNC_CUTOFF_MS);
 
-      const ctx: LecturaContext = {
-        bandSet,
-        theme,
-        dpi,
-        language,
-        gridScale,
-        showDistance: activeShowDistance,
-        display: activeDisplay,
-      };
-      activeLecturaStates = new Map();
-      if (activeLecturasEnabled) {
-        for (const token of activeTokens) {
-          activeLecturaStates.set(token.id, computeLecturaState(token, bandSet));
+        const ctx: LecturaContext = {
+          bandSet,
+          theme,
+          dpi,
+          language,
+          gridScale,
+          showDistance: activeShowDistance,
+          display: activeDisplay,
+        };
+        activeLecturaStates = new Map();
+        if (activeLecturasEnabled) {
+          for (const token of activeTokens) {
+            activeLecturaStates.set(token.id, computeLecturaState(token, bandSet));
+          }
         }
-      }
-      const states = Object.fromEntries(activeLecturaStates);
-      activeHeightLabelText = currentHeightLabelText();
-      const heightLabel = activeAltitudeEnabled ? { center: activeCenter, text: activeHeightLabelText } : null;
-      measureView = new LocalMeasureView(ctx);
-      measureView.start(activeTokens, states, heightLabel);
-      // Only now: other clients attach what they draw to the anchor, so it
-      // has to exist for them first.
-      if (!secretMedicion) {
-        mirrorStart({
-          ctx,
-          states: sharedStates(states),
-          shaders,
-          ringId: anchor.id,
-          heightLabel,
-          origin: { center: activeCenter, radius: activeOriginRadius },
-        });
+        const states = Object.fromEntries(activeLecturaStates);
+        activeHeightLabelText = currentHeightLabelText();
+        const heightLabel = activeAltitudeEnabled ? { center: activeCenter, text: activeHeightLabelText } : null;
+        measureView = new LocalMeasureView(ctx);
+        measureView.start(activeTokens, states, heightLabel);
+        // Only now: other clients attach what they draw to the anchor, so it
+        // has to exist for them first.
+        if (!secretMedicion) {
+          mirrorStart({
+            ctx,
+            states: sharedStates(states),
+            shaders,
+            ringId: anchor.id,
+            heightLabel,
+            origin: { center: activeCenter, radius: activeOriginRadius },
+          });
+        }
+      } finally {
+        setupDone();
       }
     },
     async onToolDragStart() {
-      if (downTarget) {
-        const generation = toolDownGeneration;
+      const generation = toolDownGeneration;
+      await downTargetCheck;
+      if (downTarget && generation === toolDownGeneration) {
         const interaction = await OBR.interaction.startItemInteraction(downTarget);
         // Released before this came back: nothing else would end it.
         if (generation !== toolDownGeneration) {
@@ -639,32 +780,25 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
           return;
         }
         tokenInteraction = interaction;
+        // Moves that came in while the drag was starting were dropped: catch up.
+        if (lastDragPointer) {
+          await moveDraggedToken(lastDragPointer);
+        }
       }
     },
     async onToolDragMove(_, event) {
+      lastDragPointer = event.pointerPosition;
       if (downTarget) {
         if (tokenInteraction) {
-          const update = tokenInteraction[0];
-          const move = OBR.scene.grid
-            .snapPosition(Math2.subtract(event.pointerPosition, grabOffset))
-            .then((position) => {
-              update?.((token) => {
-                token.position = position;
-              });
-              liveTokenPosition = position;
-              scheduleLecturaRefresh(position);
-            });
-          pendingMove = move.catch((error) => {
-            console.error("Rising Ranges: failed to snap the dragged token", error);
-          });
-          await pendingMove;
+          await moveDraggedToken(event.pointerPosition);
         }
       } else if (bandInteraction) {
         scheduleRefresh(event.pointerPosition);
       }
     },
     onKeyDown(_, event) {
-      if (!bandInteraction || event.repeat || !activeAltitudeEnabled) {
+      const fixedDragging = fixedDrag && !!downTarget && !!activeMarkerLook;
+      if (!(bandInteraction || fixedDragging) || event.repeat || !activeAltitudeEnabled) {
         return;
       }
       if (!activeBandSet) {
@@ -684,6 +818,9 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
         return;
       }
       originHeight = next;
+      if (fixedDragging && downTarget) {
+        setFixedLive(downTarget.id, { position: liveTokenPosition ?? downTarget.position, height: next });
+      }
       refreshLecturas();
       refreshHeightLabel();
       // The marker follows too; not awaited, writes are queued.
@@ -691,8 +828,8 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
         enqueueOriginMarkerWrite(originMarkerRequest(originHeight));
       }
     },
-    async onToolDragEnd() {
-      await releaseMedicion();
+    async onToolDragEnd(_, event) {
+      await releaseMedicion(event.shiftKey);
     },
     async onToolDragCancel() {
       await cancelMedicion();
@@ -700,8 +837,8 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
     async onDeactivate() {
       await cancelMedicion();
     },
-    async onToolUp() {
-      await releaseMedicion();
+    async onToolUp(_, event) {
+      await releaseMedicion(event.shiftKey);
     },
     shortcut: settings.hotkeyActivate,
     cursors: [

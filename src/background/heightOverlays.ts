@@ -2,10 +2,14 @@ import OBR, {
   buildLabel,
   buildPath,
   isImage,
+  isLabel,
+  isPath,
   type GridScale,
   type Image,
   type Item,
+  type Label,
   type Path,
+  type Vector2,
 } from "@owlbear-rodeo/sdk";
 import { getPluginId } from "../util/getPluginId";
 import { applyLabelTextStyle, getColorString, getIconStrokeColor } from "../util/color";
@@ -19,6 +23,7 @@ import { iconStackExtent } from "../render/iconStack";
 import { followMap, LABEL_FONT_SIZE } from "../render/lecturaItems";
 import {
   getTokenHeight,
+  getMarkerDrag,
   isTokenHeightMarker,
   MARKER_STROKE_OPACITY,
   markerBaseColor,
@@ -44,11 +49,36 @@ import {
 // position, rather than repositioned in place — an attached local item's
 // stored position doesn't follow its token (see measureMirror.ts), so
 // writing a fresh absolute position into an existing one isn't safe.
+//
+// Mid-drag is the exception. Owlbear carries what's attached to a token
+// along while it's dragged, but only as it was when the drag began: an item
+// added meanwhile rides along at whatever distance it was from the token
+// when added, and moving one meanwhile does nothing. Only its content
+// (shape, colors, text) can still change. So while its token is being
+// dragged (this client's drag, or a marker that says it's mid-drag — see
+// MarkerDrag), an overlay that exists is updated in place, and one that
+// doesn't is held back until the token is dropped — except on the dragging
+// client, which knows where the token is on every move: there it's built
+// unattached and moved along by hand (setDraggedToken). Once the token is
+// dropped, everything touched during the drag is rebuilt from where it
+// landed. For that, every token has its overlays even on the ground (or
+// with no marker at all): invisible, but there to be updated in place.
 
 const OVERLAY_KEY = getPluginId("heightOverlay");
 
-type Drawn = { id: string; signature: string };
-type Wanted = { signature: string; build: () => Item };
+/** `follow`: built during this client's drag of its token, so it's put back beside it on every move (see setDraggedToken). */
+type Drawn = { id: string; signature: string; follow?: { tokenId: string; offset: Vector2 } };
+type Wanted = {
+  signature: string;
+  build: () => Item;
+  /** Changes an existing item's content (not where it is) to this. */
+  apply: (item: Item) => void;
+  /** Its token is mid-drag: updated in place, never added (see the top of this file). */
+  held: boolean;
+  /** This client is the one dragging it, and the token is here: built unattached, and moved along by hand. */
+  live?: { tokenId: string; position: Vector2 };
+};
+type Piece = Omit<Wanted, "held" | "live">;
 
 let metadata: Record<string, unknown> = {};
 let items: Item[] = [];
@@ -56,6 +86,17 @@ let dpi = 0;
 let gridScale: GridScale | null = null;
 let role: "GM" | "PLAYER" = "PLAYER";
 let sceneReady = false;
+/**
+ * A marker's drag older than this is taken as over: the client dragging
+ * left, or its last write failed. Owlbear stops syncing a drag to other
+ * clients 15s in anyway.
+ */
+const STALE_DRAG_MS = 20000;
+/** When this client first saw each marker drag (by marker and drag). */
+const dragSeen = new Map<string, number>();
+let staleTimer: ReturnType<typeof setTimeout> | null = null;
+/** The token this client is dragging (the Medición tool), and where it is now. */
+let dragged: { tokenId: string; position: Vector2 } | null = null;
 
 /** "icon:" or "label:" + tokenId -> the item drawn for it. */
 const drawn = new Map<string, Drawn>();
@@ -70,6 +111,8 @@ const ARROW = { up: "⬆️", down: "⬇️" } as const;
 // Gap between the marker's icon stack and the label, in the "both" style.
 const TEXT_GAP = 0.05;
 const NO_EXTENT = { minX: 0, maxX: 0, minY: 0, maxY: 0 };
+// Never seen: a token on the ground's overlays are invisible.
+const GROUND_COLOR = { r: 0, g: 0, b: 0 };
 
 /** Where the label sits on the marker's side of the token, and which way it hangs from there (away from the token). */
 function textPlacement(
@@ -93,23 +136,23 @@ function textPlacement(
   }
 }
 
+/** `height` 0: on the ground (or no marker), drawn invisible. */
 function wantedLabel(
-  marker: Path,
+  marker: Path | undefined,
+  height: number,
   token: Image,
   bandSet: BandSet,
   scale: GridScale,
-  look: MarkerLook
-): Wanted | null {
-  const height = getTokenHeight(marker, bandSet);
-  if (height === undefined) {
-    return null;
-  }
-  const text = `${height > 0 ? ARROW.up : ARROW.down} ${formatDistance(scale, Math.abs(height))}`;
-  const baseColor = markerBaseColor(height, bandSet, getStoredTheme());
+  look: MarkerLook,
+  held: boolean
+): Piece {
+  const text = height ? `${height > 0 ? ARROW.up : ARROW.down} ${formatDistance(scale, Math.abs(height))}` : "";
+  const baseColor = height ? markerBaseColor(height, bandSet, getStoredTheme()) : GROUND_COLOR;
   const color = getColorString(baseColor);
-  const { position: side, distance: iconDistance, opacity, size } = look.tuning;
+  const { position: side, distance: iconDistance, size } = look.tuning;
+  const opacity = height ? look.tuning.opacity : 0;
   // In "label" the label takes the icons' place; in "both" it goes past them.
-  const extent = look.style === "both" ? iconStackExtent(marker.commands) : NO_EXTENT;
+  const extent = look.style === "both" && marker && height ? iconStackExtent(marker.commands) : NO_EXTENT;
   const gap = look.style === "both" ? TEXT_GAP * dpi : 0;
   const signature = JSON.stringify([
     text,
@@ -126,47 +169,64 @@ function wantedLabel(
     token.image.height,
     token.grid,
     token.visible,
+    // Rebuilt once the drag it was drawn in is over, from where the token landed.
+    held,
   ]);
+  const style = (label: Label) => {
+    label.text.plainText = text;
+    // The marker's size setting scales the label like it does the icons
+    label.text.style.fontSize = LABEL_FONT_SIZE * size;
+    label.text.style.padding = 4 * size;
+    label.style.cornerRadius = 12 * size;
+    label.style.backgroundColor = color;
+    label.style.backgroundOpacity = 0.85 * opacity;
+    label.visible = token.visible;
+    applyLabelTextStyle(label, baseColor, opacity);
+  };
   return {
     signature,
+    apply: (item) => {
+      if (isLabel(item)) {
+        style(item);
+      }
+    },
     build: () => {
       const { position, pointer } = textPlacement(token, side, iconDistance, extent, gap);
       const label = buildLabel()
-        .plainText(text)
         .position(position)
         .pointerDirection(pointer)
         .pointerHeight(0)
-        // The marker's size setting scales the label like it does the icons
-        .fontSize(LABEL_FONT_SIZE * size)
-        .padding(4 * size)
-        .cornerRadius(12 * size)
-        .backgroundColor(color)
-        .backgroundOpacity(0.85 * opacity)
         .attachedTo(token.id)
         .layer("ATTACHMENT")
         .locked(true)
         .disableHit(true)
-        .visible(token.visible)
         .build();
-      applyLabelTextStyle(label, baseColor, opacity);
+      style(label);
       label.metadata[OVERLAY_KEY] = { tokenId: token.id };
       return followMap(label);
     },
   };
 }
 
-function wantedIcons(marker: Path, token: Image, bandSet: BandSet, look: MarkerLook): Wanted | null {
-  const height = getTokenHeight(marker, bandSet);
-  if (height === undefined) {
-    return null;
-  }
-  const baseColor = markerBaseColor(height, bandSet, getStoredTheme());
+/** `height` 0: on the ground (or no marker), drawn invisible. */
+function wantedIcons(
+  marker: Path | undefined,
+  height: number,
+  token: Image,
+  bandSet: BandSet,
+  look: MarkerLook,
+  held: boolean
+): Piece {
+  const baseColor = height ? markerBaseColor(height, bandSet, getStoredTheme()) : GROUND_COLOR;
   const color = getColorString(baseColor);
   const strokeColor = getIconStrokeColor(baseColor);
-  const { position: side, distance: iconDistance, opacity } = look.tuning;
+  const { position: side, distance: iconDistance } = look.tuning;
+  const opacity = height ? look.tuning.opacity : 0;
+  const commands = marker && height ? marker.commands : [];
+  const strokeWidth = marker && height ? marker.style.strokeWidth : 0;
   const signature = JSON.stringify([
-    marker.commands,
-    marker.style.strokeWidth,
+    commands,
+    strokeWidth,
     color,
     side,
     iconDistance,
@@ -177,24 +237,34 @@ function wantedIcons(marker: Path, token: Image, bandSet: BandSet, look: MarkerL
     token.image.height,
     token.grid,
     token.visible,
+    // Rebuilt once the drag it was drawn in is over, from where the token landed.
+    held,
   ]);
+  const style = (icons: Path) => {
+    icons.commands = commands;
+    icons.style.fillColor = color;
+    icons.style.fillOpacity = opacity;
+    icons.style.strokeColor = strokeColor;
+    icons.style.strokeOpacity = MARKER_STROKE_OPACITY * opacity;
+    icons.style.strokeWidth = strokeWidth;
+    icons.visible = token.visible;
+  };
   return {
     signature,
+    apply: (item) => {
+      if (isPath(item)) {
+        style(item);
+      }
+    },
     build: () => {
       const icons = buildPath()
-        .commands(marker.commands)
-        .fillColor(color)
-        .fillOpacity(opacity)
-        .strokeColor(strokeColor)
-        .strokeOpacity(MARKER_STROKE_OPACITY * opacity)
-        .strokeWidth(marker.style.strokeWidth)
         .position(computeIconAnchor(token, dpi, side, iconDistance))
         .attachedTo(token.id)
         .layer("ATTACHMENT")
         .locked(true)
         .disableHit(true)
-        .visible(token.visible)
         .build();
+      style(icons);
       icons.metadata[OVERLAY_KEY] = { tokenId: token.id };
       return icons;
     },
@@ -212,24 +282,62 @@ function computeWanted(): Map<string, Wanted> {
     return wanted;
   }
   const bandSet = bandSetFromMetadata(metadata);
-  const tokens = new Map(items.filter(isImage).map((item) => [item.id, item]));
-  for (const marker of items) {
-    if (!isTokenHeightMarker(marker) || !marker.attachedTo) {
+  const markers = new Map<string, Path>();
+  for (const item of items) {
+    if (isTokenHeightMarker(item) && item.attachedTo && !markers.has(item.attachedTo)) {
+      markers.set(item.attachedTo, item);
+    }
+  }
+  const now = Date.now();
+  const seen = new Set<string>();
+  let nextStale = Infinity;
+  for (const token of items) {
+    // Every token a height can be set on (see createTokenHeightMenu.ts), and
+    // any other with a marker (moved to another layer since). A player never
+    // sees a hidden token, so neither should its label.
+    const marker = isImage(token) ? markers.get(token.id) : undefined;
+    if (!isImage(token) || (token.layer !== "CHARACTER" && !marker) || (role !== "GM" && !token.visible)) {
       continue;
     }
-    const token = tokens.get(marker.attachedTo);
-    // A player never sees a hidden token, so neither should its label.
-    if (!token || (role !== "GM" && !token.visible)) {
-      continue;
+    const height = (marker && getTokenHeight(marker, bandSet)) || 0;
+    // Only while the token is still stored where the drag began: once it's
+    // dropped (or moved any other way) the marker's drag is stale.
+    const drag = marker && getMarkerDrag(marker);
+    let midDrag = !!drag && drag.from.x === token.position.x && drag.from.y === token.position.y;
+    if (marker && drag && midDrag) {
+      const key = `${marker.id}:${JSON.stringify(drag)}`;
+      seen.add(key);
+      const since = dragSeen.get(key) ?? now;
+      dragSeen.set(key, since);
+      midDrag = now - since < STALE_DRAG_MS;
+      if (midDrag) {
+        nextStale = Math.min(nextStale, since + STALE_DRAG_MS);
+      }
     }
-    const icons = look.style === "label" ? null : wantedIcons(marker, token, bandSet, look);
+    const live = dragged?.tokenId === token.id ? { tokenId: token.id, position: dragged.position } : undefined;
+    const held = midDrag || !!live;
+    const placed = live ? { ...token, position: live.position } : token;
+    const icons = look.style === "label" ? null : wantedIcons(marker, height, placed, bandSet, look, held);
     if (icons) {
-      wanted.set(`icon:${token.id}`, icons);
+      wanted.set(`icon:${token.id}`, { ...icons, held, live });
     }
-    const label = look.style === "icons" ? null : wantedLabel(marker, token, bandSet, gridScale, look);
+    const label = look.style === "icons" ? null : wantedLabel(marker, height, placed, bandSet, gridScale, look, held);
     if (label) {
-      wanted.set(`label:${token.id}`, label);
+      wanted.set(`label:${token.id}`, { ...label, held, live });
     }
+  }
+  for (const key of dragSeen.keys()) {
+    if (!seen.has(key)) {
+      dragSeen.delete(key);
+    }
+  }
+  // Another pass once the oldest drag still held goes stale.
+  if (staleTimer) {
+    clearTimeout(staleTimer);
+    staleTimer = null;
+  }
+  if (nextStale !== Infinity) {
+    staleTimer = setTimeout(schedule, nextStale - now + 50);
   }
   return wanted;
 }
@@ -246,26 +354,79 @@ async function reconcile() {
   const wanted = computeWanted();
   const toDelete: string[] = [];
   const toAdd: Item[] = [];
+  const toUpdate = new Map<string, (item: Item) => void>();
   for (const [key, current] of drawn) {
     const next = wanted.get(key);
-    if (!next || next.signature !== current.signature) {
-      toDelete.push(current.id);
-      drawn.delete(key);
+    if (next && next.signature === current.signature) {
+      continue;
     }
+    if (next?.held) {
+      toUpdate.set(current.id, next.apply);
+      current.signature = next.signature;
+      continue;
+    }
+    toDelete.push(current.id);
+    drawn.delete(key);
   }
   for (const [key, next] of wanted) {
-    if (drawn.has(key)) {
+    if (drawn.has(key) || (next.held && !next.live)) {
       continue;
     }
     const item = next.build();
+    let follow: Drawn["follow"];
+    if (next.live) {
+      // Not attached until the token is dropped: it's moved along by hand.
+      item.attachedTo = undefined;
+      const { tokenId, position } = next.live;
+      follow = { tokenId, offset: { x: item.position.x - position.x, y: item.position.y - position.y } };
+    }
     toAdd.push(item);
-    drawn.set(key, { id: item.id, signature: next.signature });
+    drawn.set(key, { id: item.id, signature: next.signature, follow });
+  }
+  if (toUpdate.size > 0) {
+    await OBR.scene.local.updateItems([...toUpdate.keys()], (drafts) => {
+      for (const item of drafts) {
+        toUpdate.get(item.id)?.(item);
+      }
+    });
+  }
+  // Added first: a rebuilt overlay replaces the old one without a gap.
+  if (toAdd.length > 0) {
+    await OBR.scene.local.addItems(toAdd);
   }
   if (toDelete.length > 0) {
     await OBR.scene.local.deleteItems(toDelete);
   }
-  if (toAdd.length > 0) {
-    await OBR.scene.local.addItems(toAdd);
+}
+
+/** The token this client is dragging is at `position` now; null once it's dropped and saved. */
+export function setDraggedToken(tokenId: string, position: Vector2 | null) {
+  if (position) {
+    dragged = { tokenId, position };
+    // What was built during this drag isn't attached: it's moved along by
+    // hand. Absolute positions, so a lost update is made up for by the next.
+    const offsets = new Map<string, Vector2>();
+    for (const d of drawn.values()) {
+      if (d.follow?.tokenId === tokenId) {
+        offsets.set(d.id, d.follow.offset);
+      }
+    }
+    if (offsets.size > 0 && sceneReady) {
+      OBR.scene.local
+        .updateItems([...offsets.keys()], (drafts) => {
+          for (const item of drafts) {
+            const offset = offsets.get(item.id);
+            if (offset) {
+              item.position = { x: position.x + offset.x, y: position.y + offset.y };
+            }
+          }
+        })
+        .catch((error) => console.error("Rising Ranges: failed to move a height marker", error));
+    }
+  } else if (dragged?.tokenId === tokenId) {
+    dragged = null;
+    // No longer held: what the drag touched is rebuilt where the token landed.
+    schedule();
   }
 }
 

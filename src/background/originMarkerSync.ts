@@ -1,4 +1,4 @@
-import { type Image, type Path } from "@owlbear-rodeo/sdk";
+import { type Image, type Path, type Vector2 } from "@owlbear-rodeo/sdk";
 import { BandSet } from "../engine/types";
 import {
   clearTokenHeightMarker,
@@ -18,6 +18,8 @@ export type OriginMarkerRequest = {
   dpi: number;
   look: MarkerLook;
   attempt: number;
+  /** Mid-drag: where the token is still stored (`token` is where it's being dragged). */
+  draggedFrom?: Vector2;
 };
 
 const MAX_ATTEMPTS = 3;
@@ -61,14 +63,19 @@ async function write(request: OriginMarkerRequest): Promise<boolean> {
   const known = cache?.tokenId === tokenId ? cache.markers : undefined;
   writesStarted++;
   try {
-    if (request.height !== 0) {
+    const from = request.draggedFrom;
+    const to = request.token.position;
+    const drag = from && (from.x !== to.x || from.y !== to.y) ? { from, to } : undefined;
+    // Mid-drag, even the ground is written: see TokenHeightState.
+    if (request.height !== 0 || drag) {
       const markers = await setTokenHeightMarker(
         [request.token],
         request.height,
         request.bandSet,
         request.dpi,
         known,
-        request.look
+        request.look,
+        drag
       );
       cache = { tokenId, markers };
     } else {
