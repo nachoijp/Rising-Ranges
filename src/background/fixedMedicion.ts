@@ -13,11 +13,13 @@ import { isTokenHeightMarker, tokenHeightsFromMarkers } from "../tokenHeight/mar
 import { buildBandRingItems, buildGradientShaders } from "../render/bandRings";
 import {
   applyLecturaState,
+  attachToToken,
   buildHeightLabelItem,
   buildLecturaItems,
   getLecturaTokenId,
   heightLabelOffset,
   lecturaLabelScale,
+  lecturaPlacement,
   sameLecturaState,
   type LecturaContext,
   type LecturaState,
@@ -78,7 +80,6 @@ let dirty = false;
 let pendingAdopt: { fixedId: string; ids: string[] } | null = null;
 /** Never equal to a real state: an adopted Lectura is always restyled. */
 const UNKNOWN_STATE: LecturaState = { index: -1, withinFilter: false, dz: Number.NaN };
-const ATTACHED_ONLY_BY_POSITION: Item["disableAttachmentBehavior"] = ["ROTATION", "SCALE", "VISIBLE", "LOCKED", "COPY"];
 /** Waiting for a Medición fija (by id) to be on screen: see pinFixedMedicion. */
 const drawnWaiters = new Map<string, () => void>();
 /** At most this long: a pin mustn't hold the Medición it replaces on screen for good. */
@@ -246,16 +247,7 @@ function tagged<T extends Item>(item: T): T {
 
 /** Everything a Lectura's placement depends on: when any of it changes it's rebuilt, otherwise only restyled. */
 function lecturaSignature(ctxSignature: string, token: Image): string {
-  return JSON.stringify([
-    ctxSignature,
-    token.position,
-    token.scale,
-    token.rotation,
-    token.image.width,
-    token.image.height,
-    token.grid,
-    token.visible,
-  ]);
+  return JSON.stringify([ctxSignature, lecturaPlacement(token)]);
 }
 
 /**
@@ -293,8 +285,7 @@ async function adopt(
         item.metadata = { ...item.metadata, [ITEM_KEY]: true };
         const tokenId = getLecturaTokenId(item);
         if (tokenId) {
-          item.attachedTo = tokenId;
-          item.disableAttachmentBehavior = ATTACHED_ONLY_BY_POSITION;
+          attachToToken(item, tokenId);
         } else if (getPluginId("heightLabel") in item.metadata) {
           // Another client's mirror attached it to the Medición's anchor, which is going.
           item.attachedTo = undefined;
@@ -460,13 +451,7 @@ async function reconcile() {
       if (drawn) {
         toDelete.push(...drawn.ids);
       }
-      const lecturaItems = buildLecturaItems(token, state, ctx).map((item) => {
-        item.attachedTo = token.id;
-        // Only carried along: what else it would inherit from the token is
-        // already worked into it when built.
-        item.disableAttachmentBehavior = ATTACHED_ONLY_BY_POSITION;
-        return tagged(item);
-      });
+      const lecturaItems = buildLecturaItems(token, state, ctx).map((item) => tagged(attachToToken(item, token.id)));
       toAdd.push(...lecturaItems);
       drawnLecturas.set(token.id, { signature, ids: lecturaItems.map((item) => item.id), token, state });
     }

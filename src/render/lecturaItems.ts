@@ -6,6 +6,7 @@ import {
   isPath,
   isShape,
   Math2,
+  type AttachmentBehavior,
   type GridScale,
   type Image,
   type Item,
@@ -323,6 +324,33 @@ export function buildLecturaItems(token: Image, state: LecturaState, ctx: Lectur
     items.push(buildLecturaLabelItem(token, state, ctx));
   }
   return items;
+}
+
+/** What a Lectura doesn't take from its token: it's only carried along, the rest is worked into it when built. */
+const ATTACHED_ONLY_BY_POSITION: AttachmentBehavior[] = ["ROTATION", "SCALE", "VISIBLE", "LOCKED", "COPY"];
+
+/**
+ * Attaches a Lectura to its token, so Owlbear carries it along while the
+ * token is dragged, on every client — even where the drag can't be followed
+ * (someone else's). Where it lands, it's rebuilt.
+ */
+export function attachToToken<T extends Item>(item: T, tokenId: string): T {
+  item.attachedTo = tokenId;
+  item.disableAttachmentBehavior = ATTACHED_ONLY_BY_POSITION;
+  return item;
+}
+
+/** What of a token its Lectura is drawn from: a change means rebuilding it there. */
+export function lecturaPlacement(token: Image): string {
+  return JSON.stringify([
+    token.position,
+    token.scale,
+    token.rotation,
+    token.image.width,
+    token.image.height,
+    token.grid,
+    token.visible,
+  ]);
 }
 
 export function getLecturaTokenId(item: Item): string {

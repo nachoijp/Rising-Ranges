@@ -17,6 +17,7 @@ import {
   mirrorPinned,
   mirrorStart,
   mirrorStates,
+  setMeasuringHere,
 } from "./measureMirror";
 import {
   enqueueOriginMarkerWrite,
@@ -42,6 +43,7 @@ import { resolveDisplay, showsDistance, type DisplaySettings } from "../settings
 import {
   getAllTokenHeightMarkers,
   getTokenHeight,
+  isTokenHeightMarker,
   markerLookFromMetadata,
   tokenHeightsFromMarkers,
   type MarkerLook,
@@ -113,10 +115,12 @@ let activeOriginRadius = 0;
 let originHeight = 0;
 /** tokenId -> signed height in grid units, from the height markers. */
 let activeTokenHeights: Map<string, number> = new Map();
-// The measured tokens as they were when the Medición started: moves come in
-// far faster than fresh reads could, so Lecturas measure this snapshot.
-// Hidden ones only for the GM.
+// The measured tokens, from when the Medición started: moves come in far
+// faster than fresh reads could, so Lecturas measure this snapshot — kept
+// up to date when someone else moves one, or changes its height (see
+// followScene). Hidden ones only for the GM.
 let activeTokens: Image[] = [];
+let activeRole: "GM" | "PLAYER" = "PLAYER";
 /** The hidden tokens among activeTokens (GM only): their Lecturas are drawn here, never sent to anyone else. */
 let hiddenTokenIds: Set<string> = new Set();
 /**
@@ -332,6 +336,7 @@ function cleanup() {
   activeGridScale = null;
   originHeight = 0;
   activeTokens = [];
+  setMeasuringHere(false);
   hiddenTokenIds = new Set();
   secretMedicion = false;
   activeTokenHeights = new Map();
@@ -582,7 +587,39 @@ async function startFixedDrag(event: ToolEvent) {
   }
 }
 
+/**
+ * Someone else moved a measured token, or changed its height, while this
+ * Medición is up: its Lectura goes where it lands and measures it from
+ * there. (A token gone, or hidden from a player since, loses its Lectura.)
+ */
+function followScene(items: Item[]) {
+  if (!measureView || activeTokens.length === 0) {
+    return;
+  }
+  const scene = new Map<string, Image>();
+  for (const item of items) {
+    if (isImage(item) && (activeRole === "GM" || item.visible)) {
+      scene.set(item.id, item);
+    }
+  }
+  activeTokens = activeTokens.flatMap((token) => scene.get(token.id) ?? []);
+  if (activeRole === "GM") {
+    hiddenTokenIds = new Set(activeTokens.filter((token) => !token.visible).map((token) => token.id));
+  }
+  if (activeAltitudeEnabled && activeBandSet) {
+    activeTokenHeights = tokenHeightsFromMarkers(items.filter(isTokenHeightMarker), activeBandSet);
+  }
+  measureView.moveTokens(scene);
+  refreshLecturas();
+}
+
+let followingScene = false;
+
 export function createMeasureTool(language: Language, settings: GlobalSettings) {
+  if (!followingScene) {
+    followingScene = true;
+    OBR.scene.items.onChange(followScene);
+  }
   OBR.tool.createMode({
     id: getPluginId("mode/measure"),
     icons: [
@@ -672,6 +709,7 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
         const heightMarkers = activeAltitudeEnabled ? allHeightMarkers : [];
         // A player's client still has hidden tokens (Owlbear just doesn't draw
         // them): measuring them would show their Lecturas.
+        activeRole = role;
         activeTokens = characterImages.filter(
           (item) => item.id !== downTarget?.id && (role === "GM" || item.visible)
         );
@@ -753,6 +791,8 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
         const heightLabel = activeAltitudeEnabled ? { center: activeCenter, text: activeHeightLabelText } : null;
         measureView = new LocalMeasureView(ctx);
         measureView.start(activeTokens, states, heightLabel);
+        // Only this one on this screen meanwhile (see showOnly).
+        setMeasuringHere(true);
         // Only now: other clients attach what they draw to the anchor, so it
         // has to exist for them first.
         if (!secretMedicion) {

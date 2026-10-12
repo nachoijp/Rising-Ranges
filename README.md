@@ -23,6 +23,8 @@ A relative, 3D-aware range and altitude measuring tool for [Owlbear Rodeo](https
 
 Drag from a token or an empty point to set your Origin. Every other token gets a live Reading showing which range band it's in, with an arrow if it's above or below you.
 
+Readings follow tokens that someone else moves while you measure. If several people measure at once, each screen shows one Measurement: your own while you're measuring, otherwise the most recent one.
+
 ## Fixed Measurement
 
 Hold **Shift** as you release a Measurement — a quick Shift+click works too — and it stays where its Origin was: on the point, or where the token you dragged landed, at that height. Everyone in the room sees it.
