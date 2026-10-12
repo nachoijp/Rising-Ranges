@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import { TokenHeightPicker } from "./TokenHeightPicker";
+import { FootprintPicker } from "./FootprintPicker";
 import { PluginGate } from "../util/PluginGate";
 import { OBRContextProvider } from "../settings/OBRContext";
 
@@ -15,7 +16,12 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <PluginGate>
       <OBRContextProvider>
-        <TokenHeightPicker />
+        {/* One page for both context-menu embeds (see createTokenHeightMenu.ts). */}
+        {new URLSearchParams(window.location.search).get("view") === "footprint" ? (
+          <FootprintPicker />
+        ) : (
+          <TokenHeightPicker />
+        )}
       </OBRContextProvider>
     </PluginGate>
   </React.StrictMode>

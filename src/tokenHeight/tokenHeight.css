@@ -163,7 +163,8 @@ body {
   outline-offset: 1px;
 }
 
-.step-button.active {
+.step-button.active,
+.step-field.active {
   border-color: var(--obr-border-selected, rgba(255, 255, 255, 0.8));
   background-color: var(--obr-overlay-selected, rgba(255, 255, 255, 0.2));
 }

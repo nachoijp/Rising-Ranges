@@ -108,6 +108,36 @@ export function liftOffsetDelta(token: Image, screen: number, dpi: number): Vect
 }
 
 /**
+ * How far the top of the token's image is above its anchor on screen (px,
+ * at least 0), however it's turned: the highest of its corners, drawn at
+ * position + R(rotation)·(scale·k·(p − offset)). On the floor token (see
+ * onFloor), so it's its own anchor's — its feet, once aligned.
+ */
+export function headAbove(token: Image, dpi: number): number {
+  const k = dpi / token.grid.dpi;
+  const angle = (token.rotation * Math.PI) / 180;
+  let top = 0;
+  for (const px of [0, token.image.width]) {
+    for (const py of [0, token.image.height]) {
+      const x = token.scale.x * k * (px - token.grid.offset.x);
+      const y = token.scale.y * k * (py - token.grid.offset.y);
+      top = Math.min(top, x * Math.sin(angle) + y * Math.cos(angle));
+    }
+  }
+  return -top;
+}
+
+/**
+ * How far down a sunk token is drawn (px on screen, negative), `depth` px
+ * below the floor: its head goes there, not its feet. Art for these grids
+ * is mostly taller than wide, and moved down by its feet a shallow one
+ * still covers the floor where it is.
+ */
+export function sunkLift(floor: Image, depth: number, dpi: number): number {
+  return -Math.round(depth + headAbove(floor, dpi));
+}
+
+/**
  * Where a raised token resized or rotated by hand stood before: rescaled or
  * rotated and moved at once is the transform, not a drag (a drag keeps both).
  */

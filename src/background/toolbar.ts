@@ -5,7 +5,7 @@ import { globalSettingsFromMetadata } from "../settings/globalSettings";
 import { createMeasureTool } from "./createMeasureTool";
 import { createThemeAction } from "./createThemeAction";
 import { createSettingsAction } from "./createSettingsAction";
-import { createTokenHeightMenu } from "./createTokenHeightMenu";
+import { createTokenFootprintMenu, createTokenHeightMenu } from "./createTokenHeightMenu";
 import { createDistancesAction } from "./createDistancesAction";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
 import { heightStepOf } from "../engine/heights";
@@ -39,6 +39,7 @@ export function registerToolbar(metadata: Record<string, unknown>) {
   } else if (!firstTime) {
     OBR.tool.removeAction(getPluginId("action/distances"));
   }
+  createTokenFootprintMenu(language);
   if (altitudeMenu) {
     createTokenHeightMenu(language, heightStep);
   } else if (!firstTime) {

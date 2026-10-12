@@ -1,5 +1,7 @@
+import { useEffect, useState } from "react";
 import Button from "@mui/material/Button";
 import Stack from "@mui/material/Stack";
+import Typography from "@mui/material/Typography";
 import OpenInNewRounded from "@mui/icons-material/OpenInNewRounded";
 import { FieldLabel } from "./FieldLabel";
 import { HotkeyRecorder } from "./HotkeyRecorder";
@@ -11,6 +13,29 @@ import { groundHotkey, type DistancePanelAccess, type GlobalSettings } from "./g
 
 const README_URL = "https://github.com/nachoijp/Rising-Ranges#readme";
 
+/**
+ * Which Rising Ranges this room has loaded — released, beta or dev — as its
+ * manifest says: "Rising Ranges (beta) 1.4.0-beta.1".
+ */
+function useLoadedVersion(): string | null {
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    fetch(new URL("/manifest.json", window.location.origin), { cache: "no-store" })
+      .then((response) => response.json())
+      .then((manifest: { name?: unknown; version?: unknown }) => {
+        if (live && typeof manifest.name === "string" && typeof manifest.version === "string") {
+          setVersion(`${manifest.name} ${manifest.version}`);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  return version;
+}
+
 /** Room-wide basics: language, the tool's own shortcut, who gets the Distancias panel, and a way back to the manual. */
 export function GeneralTab({
   settings,
@@ -21,6 +46,7 @@ export function GeneralTab({
 }) {
   const { language, onChangeLanguage } = useOBRContext();
   const t = useTranslation();
+  const version = useLoadedVersion();
   return (
     <Stack gap={SECTION_GAP} sx={{ pt: 1 }}>
       <ChoiceGroup<Language>
@@ -81,6 +107,12 @@ export function GeneralTab({
           {t("settings.general.helpOpen")}
         </Button>
       </Stack>
+
+      {version && (
+        <Typography variant="caption" color="text.secondary" sx={{ px: 1 }}>
+          {version}
+        </Typography>
+      )}
     </Stack>
   );
 }

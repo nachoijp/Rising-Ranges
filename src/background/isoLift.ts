@@ -1,14 +1,12 @@
-import OBR, { isImage, type Image, type Item } from "@owlbear-rodeo/sdk";
+import OBR, { isImage, type GridType, type Image, type Item } from "@owlbear-rodeo/sdk";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
 import { globalSettingsFromMetadata, liftsTokens } from "../settings/globalSettings";
 import { getTokenHeight, isTokenHeightMarker } from "../tokenHeight/markers";
-import { applyPlannedLift, getTokenLift, plannedLift } from "../tokenHeight/lift";
-import { axonometryOf } from "../engine/axonometry";
-import { getGridAxonometry } from "../util/gridAxonometry";
+import { applyPlannedLift, getTokenLift, onFloor, plannedLift, sunkLift } from "../tokenHeight/lift";
 
 // Draws raised tokens raised on an axonometric grid, by moving each one's
 // image (see lift.ts) — and puts every one back the moment it shouldn't be:
-// the option is off, the height feature is off, the grid isn't axonometric,
+// the option is off, the height feature is off, the grid isn't one for it,
 // or the token is back on the ground.
 //
 // These are writes to the tokens themselves, so like the markers' refresh
@@ -19,7 +17,7 @@ import { getGridAxonometry } from "../util/gridAxonometry";
 let metadata: Record<string, unknown> = {};
 let items: Item[] = [];
 let dpi = 0;
-let axonometry = 0;
+let gridType: GridType = "SQUARE";
 let isGm = false;
 let sceneReady = false;
 let running = false;
@@ -29,7 +27,7 @@ let dirty = false;
 function wantedLifts(): Map<string, number> {
   const wanted = new Map<string, number>();
   const settings = globalSettingsFromMetadata(metadata);
-  const lifting = liftsTokens(settings, axonometry);
+  const lifting = liftsTokens(settings, gridType);
   const bandSet = bandSetFromMetadata(metadata);
   const heights = new Map<string, number>();
   if (lifting) {
@@ -47,7 +45,8 @@ function wantedLifts(): Map<string, number> {
     // Only what Owlbear has to change: a raised token, or one to put back.
     if (height || getTokenLift(item)) {
       // Whole px: the same on every client, and no rewrite over float noise.
-      wanted.set(item.id, Math.round(height * dpi));
+      // Up by its feet, down by its head (see sunkLift).
+      wanted.set(item.id, height < 0 ? sunkLift(onFloor(item), -height * dpi, dpi) : Math.round(height * dpi));
     }
   }
   return wanted;
@@ -100,16 +99,16 @@ function schedule() {
 }
 
 async function loadScene() {
-  const [nextMetadata, nextItems, nextDpi, nextAxonometry] = await Promise.all([
+  const [nextMetadata, nextItems, nextDpi, nextGridType] = await Promise.all([
     OBR.scene.getMetadata(),
     OBR.scene.items.getItems(),
     OBR.scene.grid.getDpi(),
-    getGridAxonometry(),
+    OBR.scene.grid.getType(),
   ]);
   metadata = nextMetadata;
   items = nextItems;
   dpi = nextDpi;
-  axonometry = nextAxonometry;
+  gridType = nextGridType;
   sceneReady = true;
   schedule();
 }
@@ -130,7 +129,8 @@ export async function startIsoLift() {
     schedule();
   });
   OBR.scene.grid.onChange(async (grid) => {
-    [dpi, axonometry] = await Promise.all([OBR.scene.grid.getDpi(), axonometryOf(grid.type)]);
+    gridType = grid.type;
+    dpi = await OBR.scene.grid.getDpi();
     schedule();
   });
   OBR.player.onChange((player) => {

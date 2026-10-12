@@ -8,6 +8,7 @@ import OBR, {
   isShape,
   type AttachmentBehavior,
   type GridScale,
+  type GridType,
   type Image,
   type Item,
   type Label,
@@ -21,9 +22,10 @@ import { getStoredTheme, THEME_STORAGE_KEYS } from "../theme/themes";
 import { BandSet, IconPosition } from "../engine/types";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
 import { globalSettingsFromMetadata, liftsTokens } from "../settings/globalSettings";
-import { computeIconAnchor, getTokenRadius } from "../render/iconAnchor";
+import { computeIconAnchor, getTokenBounds, getTokenRadius } from "../render/iconAnchor";
+import { getTokenFootprint } from "../tokenHeight/footprint";
 import { buildFloorShape } from "../render/floorShape";
-import { activeLift, asDrawn, onFloor } from "../tokenHeight/lift";
+import { activeLift, asDrawn, headAbove, onFloor } from "../tokenHeight/lift";
 import { axonometryOf } from "../engine/axonometry";
 import { getGridAxonometry } from "../util/gridAxonometry";
 import { iconStackExtent } from "../render/iconStack";
@@ -92,6 +94,7 @@ let items: Item[] = [];
 let dpi = 0;
 /** The grid's rhombus ratio, 0 on a flat grid (see axonometry.ts). */
 let axonometry = 0;
+let gridType: GridType = "SQUARE";
 let gridScale: GridScale | null = null;
 let role: "GM" | "PLAYER" = "PLAYER";
 let sceneReady = false;
@@ -281,9 +284,11 @@ function wantedIcons(
 }
 
 // A raised token's shadow on the floor, a sunk one's light: as wide as its
-// image, fainter the higher it is. A floor circle as wide as the token's
-// footprint (getTokenRadius) is drawn only 1/√2 of its width — the cell's
-// inscribed ellipse — which reads as too small a shadow.
+// image, fainter the higher it is. On an axonometric grid a floor circle as
+// wide as the token's footprint (getTokenRadius) is drawn only 1/√2 of its
+// width — the cell's inscribed ellipse — which reads as too small a shadow.
+// On hex (flat) it's a circle as wide as its image or its footprint set by
+// hand — not its larger side, which for art drawn standing is its height.
 const SHADOW_SCALE = Math.SQRT2;
 const SHADOW_COLOR = "#000000";
 const LIGHT_COLOR = "#ffffff";
@@ -303,7 +308,12 @@ function shadowOpacity(lift: number): number {
  * really is: its shadow, or its light. `lift` 0: drawn invisible.
  */
 function wantedShadow(token: Image, lift: number, held: boolean): Piece {
-  const radius = getTokenRadius(token, dpi, axonometry) * dpi * SHADOW_SCALE;
+  const footprint = getTokenFootprint(token);
+  const radius = axonometry
+    ? getTokenRadius(token, dpi, axonometry) * dpi * SHADOW_SCALE
+    : footprint !== undefined
+      ? (footprint * dpi) / 2
+      : Math.abs(getTokenBounds(token, dpi).scaledWidth) / 2;
   const signature = JSON.stringify([lift, radius, axonometry, token.visible, held]);
   const style = (item: Item) => {
     if (isShape(item)) {
@@ -400,7 +410,7 @@ function computeWanted(): Map<string, Wanted> {
     return wanted;
   }
   const bandSet = bandSetFromMetadata(metadata);
-  const lifting = liftsTokens(settings, axonometry);
+  const lifting = liftsTokens(settings, gridType);
   const markers = new Map<string, Path>();
   for (const item of items) {
     if (isTokenHeightMarker(item) && item.attachedTo && !markers.has(item.attachedTo)) {
@@ -457,7 +467,9 @@ function computeWanted(): Map<string, Wanted> {
         wanted.set(`shadow:${token.id}`, { ...around(wantedShadow(floor, lift, held)), held, live });
       }
       if (settings.isoTether ?? true) {
-        const tether = wantedTether(floor, lift, height, bandSet, held);
+        // A sunk one's reaches its head, where its depth is (see sunkLift).
+        const reach = lift < 0 ? Math.min(0, lift + Math.round(headAbove(floor, dpi))) : lift;
+        const tether = wantedTether(floor, reach, height, bandSet, held);
         wanted.set(`tether:${token.id}`, { ...around(tether), held, live });
       }
     }
@@ -588,18 +600,20 @@ function schedule() {
 }
 
 async function loadScene() {
-  const [nextMetadata, nextItems, nextDpi, nextScale, nextAxonometry] = await Promise.all([
+  const [nextMetadata, nextItems, nextDpi, nextScale, nextAxonometry, nextGridType] = await Promise.all([
     OBR.scene.getMetadata(),
     OBR.scene.items.getItems(),
     OBR.scene.grid.getDpi(),
     OBR.scene.grid.getScale(),
     getGridAxonometry(),
+    OBR.scene.grid.getType(),
   ]);
   metadata = nextMetadata;
   items = nextItems;
   dpi = nextDpi;
   gridScale = nextScale;
   axonometry = nextAxonometry;
+  gridType = nextGridType;
   sceneReady = true;
   resync = true;
   schedule();
@@ -624,6 +638,7 @@ export async function startHeightOverlays() {
     schedule();
   });
   OBR.scene.grid.onChange(async (grid) => {
+    gridType = grid.type;
     [dpi, gridScale, axonometry] = await Promise.all([
       OBR.scene.grid.getDpi(),
       OBR.scene.grid.getScale(),

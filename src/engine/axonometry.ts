@@ -19,6 +19,15 @@ export function axonometryOf(type: GridType): number {
 }
 
 /**
+ * Whether tokens can be drawn at their height on this grid (see isoLift.ts):
+ * the axonometric ones, and hex — flat to Owlbear, but used with art drawn
+ * in perspective, where height goes straight up the screen.
+ */
+export function liftsOn(type: GridType): boolean {
+  return axonometryOf(type) > 0 || type === "HEX_VERTICAL" || type === "HEX_HORIZONTAL";
+}
+
+/**
  * A screen offset as a floor offset, in the same units: along the grid's
  * two axes on an axonometric grid (so "cubic" squares are the grid's own
  * cells), unchanged on a flat one.

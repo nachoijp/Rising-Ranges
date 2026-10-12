@@ -1,4 +1,5 @@
-import OBR from "@owlbear-rodeo/sdk";
+import OBR, { type GridType } from "@owlbear-rodeo/sdk";
+import { liftsOn } from "../engine/axonometry";
 import { getPluginId } from "../util/getPluginId";
 import { isPlainObject } from "../util/isPlainObject";
 import type { StoredDisplaySettings } from "./display";
@@ -109,9 +110,9 @@ export async function setGlobalSettings(settings: GlobalSettings): Promise<void>
   await OBR.scene.setMetadata({ [METADATA_KEY]: settings });
 }
 
-/** Whether raised tokens are drawn raised on this grid (`axonometry` 0 = flat: never). */
-export function liftsTokens(settings: GlobalSettings, axonometry: number): boolean {
-  return axonometry > 0 && (settings.enableAltitude ?? true) && settings.isoLift === true;
+/** Whether raised tokens are drawn raised on this grid (see liftsOn). */
+export function liftsTokens(settings: GlobalSettings, gridType: GridType): boolean {
+  return liftsOn(gridType) && (settings.enableAltitude ?? true) && settings.isoLift === true;
 }
 
 /** A hotkey letter as ToolMode.onKeyDown's event.code, e.g. "X" -> "KeyX". */

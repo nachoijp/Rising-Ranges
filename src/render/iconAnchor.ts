@@ -1,5 +1,6 @@
 import type { Image, Vector2 } from "@owlbear-rodeo/sdk";
 import { IconPosition } from "../engine/types";
+import { getTokenFootprint } from "../tokenHeight/footprint";
 
 const OPPOSITE_POSITION: Record<IconPosition, IconPosition> = {
   left: "right",
@@ -71,7 +72,8 @@ export function computeIconAnchor(
 }
 
 /**
- * Half the token's larger on-screen dimension, in grid units — how big
+ * Half the token's footprint set by hand, if it has one; otherwise half
+ * its larger on-screen dimension, in grid units — how big
  * Tolerancia treats the token as being. Reuses the same footprint math the
  * icon anchor/ring/circle sizing already does (accounts for the token's
  * real image size, grid offset, and scale), so a Large/Huge creature
@@ -83,6 +85,11 @@ export function computeIconAnchor(
  * across, and how tall its image is says nothing about the floor it takes.
  */
 export function getTokenRadius(token: Image, dpi: number, axonometry: number): number {
+  // Set by hand, it's what the token is (see footprint.ts).
+  const footprint = getTokenFootprint(token);
+  if (footprint !== undefined) {
+    return footprint / 2;
+  }
   const { scaledWidth, scaledHeight } = getTokenBounds(token, dpi);
   if (axonometry) {
     return Math.abs(scaledWidth) / (axonometry * dpi) / 2;
