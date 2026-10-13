@@ -5,6 +5,7 @@ import { startHeightOverlays } from "./heightOverlays";
 import { startMarkerRefresh } from "./markerRefresh";
 import { startFixedMedicion } from "./fixedMedicion";
 import { registerToolbar, watchToolbar } from "./toolbar";
+import { prefetchPanels } from "./prefetchPanels";
 
 async function waitUntilOBRReady() {
   return new Promise<void>((resolve) => {
@@ -63,6 +64,7 @@ async function init() {
   const sceneReady = await waitUntilSceneReady(SCENE_READY_TIMEOUT_MS);
   registerToolbar(sceneReady ? await OBR.scene.getMetadata() : {});
   watchToolbar();
+  prefetchPanels();
 
   // These work on scene items, so they wait for a scene themselves.
   startMarkerRefresh().catch((error) => {
