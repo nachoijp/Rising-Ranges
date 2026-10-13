@@ -1,11 +1,12 @@
 import OBR, { isImage, isLabel, type GridScale, type Image, type Item, type Vector2 } from "@owlbear-rodeo/sdk";
 import unpinIcon from "../assets/unpin.svg";
+import { terrainAt, terrainZones } from "../terrain/terrain";
 import { getPluginId } from "../util/getPluginId";
 import { getMetadata } from "../util/getMetadata";
 import { isPoint } from "../util/isPoint";
 import { getStoredTheme, THEME_STORAGE_KEYS } from "../theme/themes";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
-import { globalSettingsFromMetadata } from "../settings/globalSettings";
+import { fixedGround, globalSettingsFromMetadata } from "../settings/globalSettings";
 import { resolveDisplay, showsDistance } from "../settings/display";
 import { languageFromMetadata, type Language } from "../i18n/language";
 import { translate } from "../i18n/translate";
@@ -371,8 +372,13 @@ async function reconcile() {
     const theme = getStoredTheme();
     const ctx: LecturaContext = { bandSet, theme, dpi, language, gridScale, showDistance, display };
     const origin: LecturaOrigin = { center: fixed.center, height: altitude ? fixed.height : 0, radius: fixed.radius };
+    // Heights are kept above the ground each one stands on; the terrain there is added here.
+    const terrain = altitude ? terrainZones(items) : [];
+    const measuredFrom: LecturaOrigin = { ...origin, height: origin.height + terrainAt(terrain, origin.center) };
+    // Its label: above its own ground, or above the fixed one (GlobalSettings.groundLevel).
+    const shownHeight = fixedGround(settings) ? measuredFrom.height : origin.height;
     const isSecret = fixed === secret;
-    const ctxSignature = JSON.stringify([fixed.id, origin, bandSet, display, language, theme, dpi, gridScale, isSecret]);
+    const ctxSignature = JSON.stringify([fixed.id, measuredFrom, shownHeight, bandSet, display, language, theme, dpi, gridScale, isSecret]);
     const lecturasEnabled = display.lecturaStyle !== "none" || display.lecturaLabel !== "none";
     // A player's client still has hidden tokens (Owlbear just doesn't draw
     // them): measuring them would show their Lecturas.
@@ -386,7 +392,7 @@ async function reconcile() {
       const { ids } = pendingAdopt;
       pendingAdopt = null;
       if (!drawnOrigin) {
-        const heightText = altitude ? heightLabelText(origin.height, bandSet, gridScale, language) : null;
+        const heightText = altitude ? heightLabelText(shownHeight, bandSet, gridScale, language) : null;
         try {
           await adopt(ids, origin.center, heightText, new Map(tokens.map((t) => [t.id, t])), ctxSignature);
         } catch (error) {
@@ -413,7 +419,7 @@ async function reconcile() {
         origin.radius
       );
       if (altitude) {
-        const text = heightLabelText(origin.height, bandSet, gridScale, language);
+        const text = heightLabelText(shownHeight, bandSet, gridScale, language);
         rings.push(buildHeightLabelItem(origin.center, text, lecturaLabelScale(ctx)));
       }
       if (isSecret) {
@@ -432,11 +438,12 @@ async function reconcile() {
     for (const token of tokens) {
       wanted.add(token.id);
       const override = live.get(token.id);
+      const position = override?.position ?? token.position;
       const state = computeLecturaState(
         token,
-        override?.position ?? token.position,
-        override?.height ?? heights.get(token.id) ?? 0,
-        origin,
+        position,
+        (override?.height ?? heights.get(token.id) ?? 0) + terrainAt(terrain, position),
+        measuredFrom,
         { bandSet, dpi, display, showDistance }
       );
       const signature = lecturaSignature(ctxSignature, token);

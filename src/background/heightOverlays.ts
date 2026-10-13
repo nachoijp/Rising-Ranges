@@ -17,7 +17,8 @@ import { formatDistance } from "../util/flattenGridScale";
 import { getStoredTheme, THEME_STORAGE_KEYS } from "../theme/themes";
 import { BandSet, IconPosition } from "../engine/types";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
-import { globalSettingsFromMetadata } from "../settings/globalSettings";
+import { fixedGround, globalSettingsFromMetadata } from "../settings/globalSettings";
+import { terrainAt, terrainZones } from "../terrain/terrain";
 import { computeIconAnchor } from "../render/iconAnchor";
 import { iconStackExtent } from "../render/iconStack";
 import { followMap, LABEL_FONT_SIZE } from "../render/lecturaItems";
@@ -26,6 +27,7 @@ import {
   getMarkerDrag,
   isTokenHeightMarker,
   MARKER_STROKE_OPACITY,
+  markerAppearance,
   markerBaseColor,
   markerLookFromMetadata,
   type MarkerLook,
@@ -136,9 +138,12 @@ function textPlacement(
   }
 }
 
+/** A marker's icon stack, as drawn for the height shown (see markerAppearance). */
+type IconDrawing = { commands: Path["commands"]; strokeWidth: number };
+
 /** `height` 0: on the ground (or no marker), drawn invisible. */
 function wantedLabel(
-  marker: Path | undefined,
+  drawing: IconDrawing | undefined,
   height: number,
   token: Image,
   bandSet: BandSet,
@@ -152,7 +157,7 @@ function wantedLabel(
   const { position: side, distance: iconDistance, size } = look.tuning;
   const opacity = height ? look.tuning.opacity : 0;
   // In "label" the label takes the icons' place; in "both" it goes past them.
-  const extent = look.style === "both" && marker && height ? iconStackExtent(marker.commands) : NO_EXTENT;
+  const extent = look.style === "both" && drawing && height ? iconStackExtent(drawing.commands) : NO_EXTENT;
   const gap = look.style === "both" ? TEXT_GAP * dpi : 0;
   const signature = JSON.stringify([
     text,
@@ -210,7 +215,7 @@ function wantedLabel(
 
 /** `height` 0: on the ground (or no marker), drawn invisible. */
 function wantedIcons(
-  marker: Path | undefined,
+  drawing: IconDrawing | undefined,
   height: number,
   token: Image,
   bandSet: BandSet,
@@ -222,8 +227,8 @@ function wantedIcons(
   const strokeColor = getIconStrokeColor(baseColor);
   const { position: side, distance: iconDistance } = look.tuning;
   const opacity = height ? look.tuning.opacity : 0;
-  const commands = marker && height ? marker.commands : [];
-  const strokeWidth = marker && height ? marker.style.strokeWidth : 0;
+  const commands = drawing && height ? drawing.commands : [];
+  const strokeWidth = drawing && height ? drawing.strokeWidth : 0;
   const signature = JSON.stringify([
     commands,
     strokeWidth,
@@ -282,6 +287,8 @@ function computeWanted(): Map<string, Wanted> {
     return wanted;
   }
   const bandSet = bandSetFromMetadata(metadata);
+  const fixed = fixedGround(settings);
+  const terrain = fixed ? terrainZones(items) : [];
   const markers = new Map<string, Path>();
   for (const item of items) {
     if (isTokenHeightMarker(item) && item.attachedTo && !markers.has(item.attachedTo)) {
@@ -299,7 +306,7 @@ function computeWanted(): Map<string, Wanted> {
     if (!isImage(token) || (token.layer !== "CHARACTER" && !marker) || (role !== "GM" && !token.visible)) {
       continue;
     }
-    const height = (marker && getTokenHeight(marker, bandSet)) || 0;
+    const own = (marker && getTokenHeight(marker, bandSet)) || 0;
     // Only while the token is still stored where the drag began: once it's
     // dropped (or moved any other way) the marker's drag is stale.
     const drag = marker && getMarkerDrag(marker);
@@ -317,11 +324,21 @@ function computeWanted(): Map<string, Wanted> {
     const live = dragged?.tokenId === token.id ? { tokenId: token.id, position: dragged.position } : undefined;
     const held = midDrag || !!live;
     const placed = live ? { ...token, position: live.position } : token;
-    const icons = look.style === "label" ? null : wantedIcons(marker, height, placed, bandSet, look, held);
+    // Above its own ground, or above the fixed one, the terrain where it is
+    // included (see GlobalSettings.groundLevel): then its icons are drawn
+    // for that height rather than taken from its marker.
+    const height = fixed ? own + terrainAt(terrain, placed.position) : own;
+    const drawing =
+      height === own
+        ? marker && { commands: marker.commands, strokeWidth: marker.style.strokeWidth }
+        : height
+          ? markerAppearance(height, bandSet, dpi, look)
+          : undefined;
+    const icons = look.style === "label" ? null : wantedIcons(drawing, height, placed, bandSet, look, held);
     if (icons) {
       wanted.set(`icon:${token.id}`, { ...icons, held, live });
     }
-    const label = look.style === "icons" ? null : wantedLabel(marker, height, placed, bandSet, gridScale, look, held);
+    const label = look.style === "icons" ? null : wantedLabel(drawing, height, placed, bandSet, gridScale, look, held);
     if (label) {
       wanted.set(`label:${token.id}`, { ...label, held, live });
     }

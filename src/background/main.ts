@@ -6,6 +6,7 @@ import { startMarkerRefresh } from "./markerRefresh";
 import { startFixedMedicion } from "./fixedMedicion";
 import { registerToolbar, watchToolbar } from "./toolbar";
 import { prefetchPanels } from "./prefetchPanels";
+import { startTerrainStyle } from "./terrainStyle";
 
 async function waitUntilOBRReady() {
   return new Promise<void>((resolve) => {
@@ -72,6 +73,9 @@ async function init() {
   });
   startHeightOverlays().catch((error) => {
     console.error("Rising Ranges: failed to start height extras", error);
+  });
+  startTerrainStyle().catch((error) => {
+    console.error("Rising Ranges: failed to start terrain styling", error);
   });
   startFixedMedicion().catch((error) => {
     console.error("Rising Ranges: failed to start the Medición fija", error);

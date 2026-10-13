@@ -10,6 +10,8 @@ import { getAllTokenHeightMarkers, getTokenHeight, setTokenHeightMarker } from "
 import { clampHeight, heightStepOf, stepHeight } from "../engine/heights";
 import { gridUnit } from "../util/flattenGridScale";
 import { watchTheme } from "./theme";
+import { fixedGround, globalSettingsFromMetadata } from "../settings/globalSettings";
+import { terrainAt, terrainZones } from "../terrain/terrain";
 import { useTranslation } from "../i18n/useTranslation";
 import type { TranslationKey } from "../i18n/translate";
 
@@ -38,8 +40,13 @@ export function TokenHeightPicker() {
   const { bandSet, display, gridScale } = useOBRContext();
   const t = useTranslation();
   const [selection, setSelection] = useState<string[]>([]);
-  /** tokenId -> height, for the selected tokens. */
+  /** tokenId -> height above the ground it stands on, for the selected tokens. */
   const [heights, setHeights] = useState<Map<string, number>>(new Map());
+  /**
+   * tokenId -> what's added to show its height: the terrain where it is,
+   * when heights are shown above one fixed ground (GlobalSettings.groundLevel); else 0.
+   */
+  const [below, setBelow] = useState<Map<string, number>>(new Map());
 
   // Safe here (unlike at module load): this component only mounts once
   // OBRContextProvider above it has already made successful OBR calls of
@@ -58,23 +65,39 @@ export function TokenHeightPicker() {
       setHeights(new Map());
       return;
     }
-    getAllTokenHeightMarkers().then((markers) => {
-      setHeights(
-        new Map(
-          selection.map((id) => {
-            const marker = markers.find((m) => m.attachedTo === id);
-            return [id, (marker && getTokenHeight(marker, bandSet)) || 0];
-          })
-        )
-      );
-    });
+    Promise.all([getAllTokenHeightMarkers(), OBR.scene.getMetadata(), OBR.scene.items.getItems()]).then(
+      ([markers, metadata, items]) => {
+        setHeights(
+          new Map(
+            selection.map((id) => {
+              const marker = markers.find((m) => m.attachedTo === id);
+              return [id, (marker && getTokenHeight(marker, bandSet)) || 0];
+            })
+          )
+        );
+        const terrain = fixedGround(globalSettingsFromMetadata(metadata)) ? terrainZones(items) : [];
+        const positions = new Map(items.map((item) => [item.id, item.position]));
+        setBelow(
+          new Map(
+            selection.map((id) => {
+              const position = positions.get(id);
+              return [id, position ? terrainAt(terrain, position) : 0];
+            })
+          )
+        );
+      }
+    );
   }, [selection, bandSet]);
 
-  /** The selection's height, or undefined if the selected tokens differ. */
-  const values = [...heights.values()];
+  /** The selection's height as shown, or undefined if the selected tokens differ. */
+  const values = selection.map((id) => (heights.get(id) ?? 0) + (below.get(id) ?? 0));
   const current = values.length > 0 && values.every((h) => h === values[0]) ? values[0] : undefined;
 
-  /** Sets each selected token to the height `next` gives it from its own. */
+  /**
+   * Sets each selected token to the height `next` gives it from the one
+   * shown, kept above the ground it stands on. The ground (0) is standing
+   * on the terrain, wherever heights are shown from.
+   */
   async function applyHeights(next: (height: number) => number) {
     if (selection.length === 0) {
       return;
@@ -83,7 +106,9 @@ export function TokenHeightPicker() {
     const updated = new Map(heights);
     const groups = new Map<number, Image[]>();
     for (const token of tokens) {
-      const height = clampHeight(next(heights.get(token.id) ?? 0));
+      const added = below.get(token.id) ?? 0;
+      const target = next((heights.get(token.id) ?? 0) + added);
+      const height = clampHeight(target === 0 ? 0 : target - added);
       updated.set(token.id, height);
       groups.set(height, [...(groups.get(height) ?? []), token]);
     }
@@ -183,7 +208,7 @@ export function TokenHeightPicker() {
  * the grid's own units, e.g. "35" ft, rounded to whole cells), and back to
  * the ground.
  */
-function UnitStepper({
+export function UnitStepper({
   current,
   gridScale,
   onStep,

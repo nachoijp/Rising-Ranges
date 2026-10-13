@@ -153,7 +153,7 @@ export function markerBaseColor(height: number, bandSet: BandSet, theme: Theme):
 }
 
 /** What a marker at a given height looks like: its icon stack and stroke. */
-function markerAppearance(height: number, bandSet: BandSet, dpi: number, look: MarkerLook) {
+export function markerAppearance(height: number, bandSet: BandSet, dpi: number, look: MarkerLook) {
   const bandIndex = heightBandIndex(height, bandSet) ?? 0;
   const shape = measuredBands(bandSet)[bandIndex]?.iconShape ?? look.iconShape;
   const direction: Direction = height > 0 ? "up" : "down";

@@ -2,6 +2,8 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import { TokenHeightPicker } from "./TokenHeightPicker";
+import { TerrainPicker } from "./TerrainPicker";
+import { TerrainVisibilityPicker } from "./TerrainVisibilityPicker";
 import { PluginGate } from "../util/PluginGate";
 import { OBRContextProvider } from "../settings/OBRContext";
 
@@ -11,11 +13,22 @@ import { OBRContextProvider } from "../settings/OBRContext";
 // handshake risks a synchronous throw that would abort this whole render
 // call and leave the embed showing nothing at all.
 
+function View({ name }: { name: string | null }) {
+  if (name === "terrain") {
+    return <TerrainPicker />;
+  }
+  if (name === "terrainVisibility") {
+    return <TerrainVisibilityPicker />;
+  }
+  return <TokenHeightPicker />;
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <PluginGate>
       <OBRContextProvider>
-        <TokenHeightPicker />
+        {/* One page for the context-menu embeds and the terrain visibility popover. */}
+        <View name={new URLSearchParams(window.location.search).get("view")} />
       </OBRContextProvider>
     </PluginGate>
   </React.StrictMode>

@@ -29,7 +29,27 @@ export type GlobalSettings = {
   display?: StoredDisplaySettings;
   /** Who gets the Distancias panel's toolbar button. Missing = "off". */
   distancePanel?: DistancePanelAccess;
+  /**
+   * What a height is shown and set against, with terrain (see terrain.ts):
+   * "terrain" = above the ground each token stands on, "fixed" = above one
+   * fixed ground for the whole map (like sea level). Distances are the same
+   * either way. Missing = "terrain".
+   */
+  groundLevel?: GroundLevel;
+  /**
+   * Who sees the terrain zones (see terrainStyle.ts): "hidden" = nobody
+   * (drawn transparent, and not clickable), "gm" = only the GM (hidden in
+   * Owlbear), "everyone". Missing = "gm".
+   */
+  terrainVisibility?: TerrainVisibility;
 };
+
+export type GroundLevel = "terrain" | "fixed";
+export type TerrainVisibility = "hidden" | "gm" | "everyone";
+
+export function terrainVisibility(settings: GlobalSettings): TerrainVisibility {
+  return settings.terrainVisibility ?? "gm";
+}
 
 export type DistancePanelAccess = "off" | "gm" | "everyone";
 export type MarkerStyle = "icons" | "label" | "both";
@@ -47,6 +67,11 @@ export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = {
 };
 
 export const DEFAULT_HOTKEY_GROUND = "C";
+
+/** Whether heights are shown and set above one fixed ground (see GlobalSettings.groundLevel). */
+export function fixedGround(settings: GlobalSettings): boolean {
+  return settings.groundLevel === "fixed";
+}
 
 export function groundHotkey(settings: GlobalSettings): string {
   return settings.hotkeyGround ?? DEFAULT_HOTKEY_GROUND;
@@ -79,6 +104,11 @@ function isGlobalSettings(value: unknown): value is GlobalSettings {
       value.distancePanel === "off" ||
       value.distancePanel === "gm" ||
       value.distancePanel === "everyone") &&
+    (value.groundLevel === undefined || value.groundLevel === "terrain" || value.groundLevel === "fixed") &&
+    (value.terrainVisibility === undefined ||
+      value.terrainVisibility === "hidden" ||
+      value.terrainVisibility === "gm" ||
+      value.terrainVisibility === "everyone") &&
     // Each field inside is checked (and falls back) on its own in resolveDisplay.
     (value.display === undefined || isPlainObject(value.display))
   );

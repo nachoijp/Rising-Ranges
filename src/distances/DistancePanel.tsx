@@ -29,6 +29,7 @@ import { getStoredTheme } from "../theme/themes";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
 import { globalSettingsFromMetadata } from "../settings/globalSettings";
 import { isTokenHeightMarker, tokenHeightsFromMarkers } from "../tokenHeight/markers";
+import { terrainAt, terrainZones } from "../terrain/terrain";
 import { computeDistanceRows, tokenName } from "./rows";
 import {
   DISTANCES_POPOVER_ID,
@@ -293,6 +294,13 @@ export function DistancePanel() {
   const heights = altitude
     ? tokenHeightsFromMarkers(items.filter(isTokenHeightMarker), bandSet)
     : new Map<string, number>();
+  // Heights are kept above the ground each one stands on; the terrain there is added here.
+  if (altitude) {
+    const terrain = terrainZones(items);
+    for (const token of tokens) {
+      heights.set(token.id, (heights.get(token.id) ?? 0) + terrainAt(terrain, token.position));
+    }
+  }
   const origin = tokens.find((token) => token.id === originId);
   const rows = origin
     ? computeDistanceRows(
