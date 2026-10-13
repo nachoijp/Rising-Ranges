@@ -28,7 +28,10 @@ export function canBeTerrain(item: Item): boolean {
     return item.shapeType === "RECTANGLE" || item.shapeType === "CIRCLE";
   }
   if (isCurve(item)) {
-    return item.style.closed === true && item.points.length >= 3;
+    // Taken as closed, from its last point back to its first: Owlbear's own
+    // polygons are stored with `closed: false` (seen live), so the flag
+    // can't tell them from an open line.
+    return item.points.length >= 3;
   }
   return isPath(item);
 }
