@@ -59,6 +59,7 @@ import {
   DEFAULT_GLOBAL_SETTINGS,
   fixedGround,
   globalSettingsFromMetadata,
+  terrainOn,
   groundHotkey,
   letterToCode,
   type GlobalSettings,
@@ -135,6 +136,8 @@ function onCell(point: Vector2, dpi: number): Vector2 {
 }
 /** The scene's terrain, top first (see terrain.ts): added to every height where it stands. */
 let activeTerrain: TerrainZone[] = [];
+/** Whether terrain counts in this Medición (see terrainOn). */
+let activeTerrainOn = false;
 // The measured tokens, from when the Medición started: moves come in far
 // faster than fresh reads could, so Lecturas measure this snapshot — kept
 // up to date when someone else moves one, or changes its height (see
@@ -394,6 +397,7 @@ function cleanup() {
   freePointCells = null;
   activeOriginShape = null;
   activeTerrain = [];
+  activeTerrainOn = false;
   pendingPointerPosition = null;
   pendingLecturaPosition = null;
   originHeightBeforeEdit = 0;
@@ -629,7 +633,8 @@ async function startFixedDrag(event: ToolEvent) {
     activeMarkerLook = markerLookFromMetadata(sceneMetadata);
     activeDpi = dpi;
     activeAxonometry = axonometry;
-    activeTerrain = activeAltitudeEnabled ? terrainZones(markersAndTerrain) : [];
+    activeTerrainOn = terrainOn(activeSettings, gridType);
+    activeTerrain = activeTerrainOn ? terrainZones(markersAndTerrain) : [];
     if (activeAltitudeEnabled) {
       const marker = heightMarkers.find((m) => m.attachedTo === target.id);
       originHeight = (marker && getTokenHeight(marker, activeBandSet)) || 0;
@@ -668,7 +673,7 @@ function followScene(items: Item[]) {
   }
   if (activeAltitudeEnabled && activeBandSet) {
     activeTokenHeights = tokenHeightsFromMarkers(items.filter(isTokenHeightMarker), activeBandSet);
-    activeTerrain = terrainZones(items);
+    activeTerrain = activeTerrainOn ? terrainZones(items) : [];
   }
   measureView.moveTokens(scene);
   refreshLecturas();
@@ -792,7 +797,8 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
         hiddenTokenIds = new Set(activeTokens.filter((item) => !item.visible).map((item) => item.id));
         secretMedicion = target?.type === "IMAGE" && !target.visible;
         activeTokenHeights = tokenHeightsFromMarkers(heightMarkers, bandSet);
-        activeTerrain = activeAltitudeEnabled ? terrainZones(tokensAndTerrain) : [];
+        activeTerrainOn = terrainOn(activeSettings, gridType);
+        activeTerrain = activeTerrainOn ? terrainZones(tokensAndTerrain) : [];
 
         // A Medición started on a token with a height marker starts at that
         // height.

@@ -12,6 +12,7 @@ A relative, 3D-aware range and altitude measuring tool for [Owlbear Rodeo](https
 - **Three built-in presets** — Dagger, Steel (Draw Steel's distances, measured square by square), and Dragons — or build your own set of ranges from scratch.
 - **Multiple visualization styles** — icon stacks, rings, or filled circles, independently sized and colored.
 - **Exact numbers when you want them** — optionally add each token's exact distance to its Reading ("Close · 15ft"), and show height markers as icons, as a "⬆️ 30ft" label, or both.
+- **Terrain with height** — tag a shape on the Map layer with a height (a roof, a cliff, a pit) and tokens standing in it are measured from up there. For maps seen from above.
 - **Distances panel** — a list of every token's Range, horizontal and vertical distance, and total distance from any token you pick, live as tokens move. For the GM only or for everyone; players never see hidden tokens.
 - **Color-blind friendly themes** — Base, Deuteranopia, Tritanopia, Protanopia, or your own colors. Each player picks their own, and sees everything in it — rings, Readings and height markers, whoever made them.
 - **Bilingual** — Español / English, switchable per room.
@@ -60,6 +61,14 @@ How each measured token is marked (an icon, a ring, a circle, or nothing), with 
 ![Height settings](docs/screenshots/height-tab.png)
 
 Turn the whole height feature on or off, show markers as icons, as a "⬆️ 30ft" label, or both, pick the icon shape, fine-tune the marker's position, size, opacity and distance under Advanced, and set the hotkeys that raise, lower or ground the Origin while measuring.
+
+## Terrain
+
+Give parts of the map a height: draw a rectangle, circle or polygon on the **Map** layer, right-click it and set its **Terrain height** (GM only). A token standing inside it — at its anchor, its feet once aligned — adds that height to its own when measuring, so an archer on a 30 ft tower is measured from 30 ft up without touching its marker. Where zones overlap, the smallest one wins, so a pit or a courtyard inside a plateau is the ground there.
+
+Zones are outlined in the color of their height. A toolbar button (GM only) picks who sees them: nobody, only the GM, or everyone. In the Height tab, **Ground level** chooses what heights are shown from: above the terrain each token stands on (*Variable*), or above one fixed ground for the whole map, like sea level (*Fixed*). Distances are the same either way. Terrain can be turned off there too.
+
+> **Meant for maps seen from above.** Terrain isn't used on isometric or dimetric grids: the art already shows the relief there, and a token drawn on a roof stands up the screen from where it really is on the floor. On hex maps drawn in perspective, the art's relief and the measured distances may not match.
 
 ## Distances panel
 

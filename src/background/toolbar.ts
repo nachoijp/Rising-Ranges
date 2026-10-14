@@ -1,7 +1,8 @@
-import OBR from "@owlbear-rodeo/sdk";
+import OBR, { type GridType } from "@owlbear-rodeo/sdk";
 import { getPluginId } from "../util/getPluginId";
 import { languageFromMetadata } from "../i18n/language";
-import { globalSettingsFromMetadata, terrainVisibility } from "../settings/globalSettings";
+import { globalSettingsFromMetadata, terrainOn, terrainVisibility } from "../settings/globalSettings";
+import { getGridType } from "../util/gridAxonometry";
 import { createMeasureTool } from "./createMeasureTool";
 import { createThemeAction } from "./createThemeAction";
 import { createSettingsAction } from "./createSettingsAction";
@@ -18,14 +19,19 @@ import { heightStepOf } from "../engine/heights";
 // size), so no change needs a reload. Registering an id again replaces it; what's turned off is removed.
 
 let lastSignature: string | null = null;
+let lastMetadata: Record<string, unknown> = {};
+/** The scene grid's type: terrain is left out on isometric and dimetric grids (see terrainOn). */
+let gridType: GridType = "SQUARE";
 
 export function registerToolbar(metadata: Record<string, unknown>) {
+  lastMetadata = metadata;
   const language = languageFromMetadata(metadata);
   const settings = globalSettingsFromMetadata(metadata);
   const altitudeMenu = (settings.enableAltitude ?? true) && settings.showAltitudeMenu;
   const distancePanel = settings.distancePanel ?? "off";
   const heightStep = heightStepOf(bandSetFromMetadata(metadata));
   const altitude = settings.enableAltitude ?? true;
+  const terrain = terrainOn(settings, gridType);
   const terrainMode = terrainVisibility(settings);
   const signature = JSON.stringify([
     language,
@@ -34,6 +40,7 @@ export function registerToolbar(metadata: Record<string, unknown>) {
     distancePanel,
     heightStep,
     altitude,
+    terrain,
     terrainMode,
   ]);
   if (signature === lastSignature) {
@@ -56,8 +63,8 @@ export function registerToolbar(metadata: Record<string, unknown>) {
   } else if (!firstTime) {
     OBR.contextMenu.remove(getPluginId("menu/tokenHeight"));
   }
-  // Terrain is part of heights: off with them.
-  if (altitude) {
+  // Terrain is part of heights: off with them, or turned off, or on an axonometric grid.
+  if (terrain) {
     createTerrainMenu(language);
     createTerrainVisibilityAction(language, terrainMode);
   } else if (!firstTime) {
@@ -69,6 +76,16 @@ export function registerToolbar(metadata: Record<string, unknown>) {
 /** Keeps the registration in step with the scene's settings: changed from Opciones, or another scene opened. */
 export function watchToolbar() {
   OBR.scene.onMetadataChange(registerToolbar);
+  getGridType()
+    .then((type) => {
+      gridType = type;
+      registerToolbar(lastMetadata);
+    })
+    .catch(() => {});
+  OBR.scene.grid.onChange((grid) => {
+    gridType = grid.type;
+    registerToolbar(lastMetadata);
+  });
   OBR.scene.onReadyChange(async (ready) => {
     if (ready) {
       registerToolbar(await OBR.scene.getMetadata());

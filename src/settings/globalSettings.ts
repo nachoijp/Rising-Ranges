@@ -1,5 +1,5 @@
 import OBR, { type GridType } from "@owlbear-rodeo/sdk";
-import { liftsOn } from "../engine/axonometry";
+import { axonometryOf, liftsOn } from "../engine/axonometry";
 import { getPluginId } from "../util/getPluginId";
 import { isPlainObject } from "../util/isPlainObject";
 import type { StoredDisplaySettings } from "./display";
@@ -46,6 +46,8 @@ export type GlobalSettings = {
    * either way. Missing = "terrain".
    */
   groundLevel?: GroundLevel;
+  /** Terrain with a height (see terrain.ts): its context menu, its toolbar button, and zones counting. Missing = true. */
+  enableTerrain?: boolean;
   /**
    * Who sees the terrain zones (see terrainStyle.ts): "hidden" = nobody
    * (drawn transparent, and not clickable), "gm" = only the GM (hidden in
@@ -118,6 +120,7 @@ function isGlobalSettings(value: unknown): value is GlobalSettings {
       value.distancePanel === "gm" ||
       value.distancePanel === "everyone") &&
     (value.groundLevel === undefined || value.groundLevel === "terrain" || value.groundLevel === "fixed") &&
+    optionalBoolean(value.enableTerrain) &&
     (value.terrainVisibility === undefined ||
       value.terrainVisibility === "hidden" ||
       value.terrainVisibility === "gm" ||
@@ -138,6 +141,17 @@ export async function getGlobalSettings(): Promise<GlobalSettings> {
 
 export async function setGlobalSettings(settings: GlobalSettings): Promise<void> {
   await OBR.scene.setMetadata({ [METADATA_KEY]: settings });
+}
+
+/**
+ * Whether terrain counts on this grid (see terrain.ts): with heights and
+ * terrain on, and not on an isometric or dimetric grid — there the map's
+ * art already shows the relief, and a token drawn on a roof stands up the
+ * screen from where it is on the floor, so its distances would be off.
+ * Hex grids are flat to Owlbear: terrain works there.
+ */
+export function terrainOn(settings: GlobalSettings, gridType: GridType): boolean {
+  return (settings.enableAltitude ?? true) && (settings.enableTerrain ?? true) && axonometryOf(gridType) === 0;
 }
 
 /** Whether raised tokens are drawn raised on this grid (see liftsOn). */

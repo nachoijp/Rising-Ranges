@@ -6,7 +6,7 @@ import { getMetadata } from "../util/getMetadata";
 import { isPoint } from "../util/isPoint";
 import { getStoredTheme, THEME_STORAGE_KEYS } from "../theme/themes";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
-import { fixedGround, globalSettingsFromMetadata } from "../settings/globalSettings";
+import { fixedGround, globalSettingsFromMetadata, terrainOn } from "../settings/globalSettings";
 import { resolveDisplay, showsDistance } from "../settings/display";
 import { languageFromMetadata, type Language } from "../i18n/language";
 import { translate } from "../i18n/translate";
@@ -380,7 +380,7 @@ async function reconcile() {
     const ctx: LecturaContext = { bandSet, theme, dpi, axonometry, language, gridScale, showDistance, display };
     const origin: LecturaOrigin = { center: fixed.center, height: altitude ? fixed.height : 0, radius: fixed.radius };
     // Heights are kept above the ground each one stands on; the terrain there is added here.
-    const terrain = altitude ? terrainZones(items) : [];
+    const terrain = terrainOn(settings, gridType) ? terrainZones(items) : [];
     const measuredFrom: LecturaOrigin = { ...origin, height: origin.height + terrainAt(terrain, origin.center) };
     // Its label: above its own ground, or above the fixed one (GlobalSettings.groundLevel).
     const shownHeight = fixedGround(settings) ? measuredFrom.height : origin.height;

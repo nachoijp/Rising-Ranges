@@ -99,6 +99,11 @@ export function SettingSwitch({
 /** A folded "Avanzado" section for the fine-tuning options most people never need. */
 export function AdvancedSection({ title, children }: { title?: string; children: ReactNode }) {
   const t = useTranslation();
+  return <FoldedSection label={title ? `${t("settings.advanced")} · ${title}` : t("settings.advanced")}>{children}</FoldedSection>;
+}
+
+/** A section folded shut until opened, under its label. */
+export function FoldedSection({ label, children }: { label: string; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
     <Stack
@@ -121,7 +126,7 @@ export function AdvancedSection({ title, children }: { title?: string; children:
         }
         sx={{ alignSelf: "flex-start", opacity: 0.75, letterSpacing: "0.06em" }}
       >
-        {title ? `${t("settings.advanced")} · ${title}` : t("settings.advanced")}
+        {label}
       </Button>
       <Collapse in={open} unmountOnExit>
         <Stack gap={SECTION_GAP} sx={{ pt: 1, pb: 1 }}>

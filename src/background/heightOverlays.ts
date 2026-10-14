@@ -21,7 +21,7 @@ import { formatDistance } from "../util/flattenGridScale";
 import { getStoredTheme, THEME_STORAGE_KEYS } from "../theme/themes";
 import { BandSet, IconPosition } from "../engine/types";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
-import { fixedGround, globalSettingsFromMetadata, liftsTokens } from "../settings/globalSettings";
+import { fixedGround, globalSettingsFromMetadata, liftsTokens, terrainOn } from "../settings/globalSettings";
 import { terrainAt, terrainZones } from "../terrain/terrain";
 import { computeIconAnchor, getTokenBounds, getTokenRadius } from "../render/iconAnchor";
 import { getTokenFootprint } from "../tokenHeight/footprint";
@@ -417,7 +417,7 @@ function computeWanted(): Map<string, Wanted> {
   const bandSet = bandSetFromMetadata(metadata);
   const lifting = liftsTokens(settings, gridType);
   const fixed = fixedGround(settings);
-  const terrain = fixed ? terrainZones(items) : [];
+  const terrain = fixed && terrainOn(settings, gridType) ? terrainZones(items) : [];
   const markers = new Map<string, Path>();
   for (const item of items) {
     if (isTokenHeightMarker(item) && item.attachedTo && !markers.has(item.attachedTo)) {

@@ -10,7 +10,7 @@ import { getAllTokenHeightMarkers, getTokenHeight, setTokenHeightMarker } from "
 import { clampHeight, heightStepOf, stepHeight } from "../engine/heights";
 import { gridUnit } from "../util/flattenGridScale";
 import { watchTheme } from "./theme";
-import { fixedGround, globalSettingsFromMetadata } from "../settings/globalSettings";
+import { fixedGround, globalSettingsFromMetadata, terrainOn } from "../settings/globalSettings";
 import { terrainAt, terrainZones } from "../terrain/terrain";
 import { useTranslation } from "../i18n/useTranslation";
 import type { TranslationKey } from "../i18n/translate";
@@ -65,8 +65,8 @@ export function TokenHeightPicker() {
       setHeights(new Map());
       return;
     }
-    Promise.all([getAllTokenHeightMarkers(), OBR.scene.getMetadata(), OBR.scene.items.getItems()]).then(
-      ([markers, metadata, items]) => {
+    Promise.all([getAllTokenHeightMarkers(), OBR.scene.getMetadata(), OBR.scene.items.getItems(), OBR.scene.grid.getType()]).then(
+      ([markers, metadata, items, gridType]) => {
         setHeights(
           new Map(
             selection.map((id) => {
@@ -75,7 +75,8 @@ export function TokenHeightPicker() {
             })
           )
         );
-        const terrain = fixedGround(globalSettingsFromMetadata(metadata)) ? terrainZones(items) : [];
+        const settings = globalSettingsFromMetadata(metadata);
+        const terrain = fixedGround(settings) && terrainOn(settings, gridType) ? terrainZones(items) : [];
         const positions = new Map(items.map((item) => [item.id, item.position]));
         setBelow(
           new Map(

@@ -10,7 +10,7 @@ import { HotkeyRecorder } from "./HotkeyRecorder";
 import { IconPositionButtonGroup } from "./IconPositionButtonGroup";
 import { SHAPE_LABEL_KEYS, ShapePreview } from "./ShapePreview";
 import { LabeledSlider } from "./LabeledSlider";
-import { AdvancedSection, ChoiceGroup, SECTION_GAP, SettingSwitch } from "./controls";
+import { AdvancedSection, ChoiceGroup, FoldedSection, SECTION_GAP, SettingSwitch } from "./controls";
 import { useTranslation } from "../i18n/useTranslation";
 import { SIZE_RANGES, type DisplaySettings } from "./display";
 import { groundHotkey, type GlobalSettings, type GroundLevel, type MarkerStyle } from "./globalSettings";
@@ -72,17 +72,6 @@ export function AlturaTab({
             ]}
           />
 
-          <ChoiceGroup<GroundLevel>
-            id="ground-level-label"
-            label={t("settings.altura.groundLevel")}
-            tooltip={t("settings.altura.groundLevelTooltip")}
-            value={settings.groundLevel ?? "terrain"}
-            onChange={(groundLevel) => onChangeSettings({ groundLevel })}
-            options={[
-              { value: "terrain", label: t("settings.altura.groundLevelTerrain") },
-              { value: "fixed", label: t("settings.altura.groundLevelFixed") },
-            ]}
-          />
 
           <Stack sx={{ px: 1 }}>
             <FieldLabel id="icon-shape-label" tooltip={t("settings.altura.iconShapeTooltip")}>
@@ -189,31 +178,61 @@ export function AlturaTab({
 
           <Stack>
             <Stack sx={{ px: 1 }}>
-              <FieldLabel id="iso-view-label" tooltip={t("settings.altura.isoTooltip")}>
-                {t("settings.altura.iso")}
+              <FieldLabel
+                id="terrain-label"
+                tooltip={t("settings.altura.terrainTooltip")}
+                warning={t("settings.altura.terrainHint")}
+              >
+                {t("settings.altura.terrain")}
               </FieldLabel>
             </Stack>
             <SettingSwitch
-              label={t("settings.altura.isoLift")}
-              checked={settings.isoLift ?? false}
-              onChange={(isoLift) => onChangeSettings({ isoLift })}
-            />
-            <Typography variant="caption" color="text.secondary" sx={{ px: 1 }}>
-              {t("settings.altura.isoLiftHint")}
-            </Typography>
-            <SettingSwitch
-              label={t("settings.altura.isoShadow")}
-              checked={settings.isoShadow ?? true}
-              disabled={!settings.isoLift}
-              onChange={(isoShadow) => onChangeSettings({ isoShadow })}
-            />
-            <SettingSwitch
-              label={t("settings.altura.isoTether")}
-              checked={settings.isoTether ?? true}
-              disabled={!settings.isoLift}
-              onChange={(isoTether) => onChangeSettings({ isoTether })}
+              label={t("settings.altura.enableTerrain")}
+              checked={settings.enableTerrain ?? true}
+              onChange={(enableTerrain) => onChangeSettings({ enableTerrain })}
             />
           </Stack>
+          {(settings.enableTerrain ?? true) && (
+            <ChoiceGroup<GroundLevel>
+              id="ground-level-label"
+              label={t("settings.altura.groundLevel")}
+              tooltip={t("settings.altura.groundLevelTooltip")}
+              value={settings.groundLevel ?? "terrain"}
+              onChange={(groundLevel) => onChangeSettings({ groundLevel })}
+              options={[
+                { value: "terrain", label: t("settings.altura.groundLevelTerrain") },
+                { value: "fixed", label: t("settings.altura.groundLevelFixed") },
+              ]}
+            />
+          )}
+
+          <FoldedSection label={t("settings.altura.iso")}>
+            <Stack>
+              <Typography variant="caption" color="text.secondary" sx={{ px: 1 }}>
+                {t("settings.altura.isoTooltip")}
+              </Typography>
+              <SettingSwitch
+                label={t("settings.altura.isoLift")}
+                checked={settings.isoLift ?? false}
+                onChange={(isoLift) => onChangeSettings({ isoLift })}
+              />
+              <Typography variant="caption" color="text.secondary" sx={{ px: 1 }}>
+                {t("settings.altura.isoLiftHint")}
+              </Typography>
+              <SettingSwitch
+                label={t("settings.altura.isoShadow")}
+                checked={settings.isoShadow ?? true}
+                disabled={!settings.isoLift}
+                onChange={(isoShadow) => onChangeSettings({ isoShadow })}
+              />
+              <SettingSwitch
+                label={t("settings.altura.isoTether")}
+                checked={settings.isoTether ?? true}
+                disabled={!settings.isoLift}
+                onChange={(isoTether) => onChangeSettings({ isoTether })}
+              />
+            </Stack>
+          </FoldedSection>
         </>
       )}
     </Stack>

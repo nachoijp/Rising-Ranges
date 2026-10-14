@@ -1,6 +1,7 @@
-import OBR, { isCurve, isPath, isShape, type Curve, type Item, type Path, type Shape } from "@owlbear-rodeo/sdk";
+import OBR, { isCurve, isPath, isShape, type Curve, type GridType, type Item, type Path, type Shape } from "@owlbear-rodeo/sdk";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
-import { globalSettingsFromMetadata, terrainVisibility, type TerrainVisibility } from "../settings/globalSettings";
+import { globalSettingsFromMetadata, terrainOn, terrainVisibility, type TerrainVisibility } from "../settings/globalSettings";
+import { getGridType } from "../util/gridAxonometry";
 import { canBeTerrain, getTerrainHeight } from "../terrain/terrain";
 import { markerBaseColor } from "../tokenHeight/markers";
 import { getStoredTheme, THEME_STORAGE_KEYS } from "../theme/themes";
@@ -17,7 +18,8 @@ import { isPlainObject } from "../util/isPlainObject";
 //
 // What it changes of a shape is kept in its metadata the first time, and
 // put back when it stops being terrain (untagged, or moved off the Map
-// layer), or the height feature is turned off.
+// layer), or heights or terrain are turned off, or on an isometric or
+// dimetric grid (see terrainOn).
 //
 // These are writes to the shapes themselves, so like isoLift.ts only the
 // GM's client makes them, and only for shapes that come out different. The
@@ -33,6 +35,7 @@ type Original = { strokeColor: string; strokeOpacity: number; fillOpacity: numbe
 let metadata: Record<string, unknown> = {};
 let items: Item[] = [];
 let isGm = false;
+let gridType: GridType = "SQUARE";
 let sceneReady = false;
 let running = false;
 let dirty = false;
@@ -107,7 +110,7 @@ function plan(item: Item): { look: ReturnType<typeof lookOf>; original: Original
   const settings = globalSettingsFromMetadata(metadata);
   const height = getTerrainHeight(item);
   const original = getOriginal(item);
-  const isTerrain = (settings.enableAltitude ?? true) && height !== undefined && canBeTerrain(item);
+  const isTerrain = terrainOn(settings, gridType) && height !== undefined && canBeTerrain(item);
   if (!isTerrain) {
     // Put back as it was, and forget it.
     return original ? { look: original, original: undefined } : null;
@@ -171,7 +174,12 @@ function schedule() {
 }
 
 async function loadScene() {
-  const [nextMetadata, nextItems] = await Promise.all([OBR.scene.getMetadata(), OBR.scene.items.getItems()]);
+  const [nextMetadata, nextItems, nextGridType] = await Promise.all([
+    OBR.scene.getMetadata(),
+    OBR.scene.items.getItems(),
+    getGridType(),
+  ]);
+  gridType = nextGridType;
   metadata = nextMetadata;
   items = nextItems;
   sceneReady = true;
@@ -191,6 +199,10 @@ export async function startTerrainStyle() {
   });
   OBR.scene.onMetadataChange((next) => {
     metadata = next;
+    schedule();
+  });
+  OBR.scene.grid.onChange((grid) => {
+    gridType = grid.type;
     schedule();
   });
   // The outline colors are the GM's theme's.
