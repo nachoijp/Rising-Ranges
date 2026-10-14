@@ -24,6 +24,7 @@
     "@mui/icons-material": "^7.3.1",
     "@mui/material": "^7.3.1",
     "@owlbear-rodeo/sdk": "^3.1.0",
+    "polygon-clipping": "0.15.7",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   }

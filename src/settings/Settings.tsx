@@ -16,6 +16,7 @@ import { BandSetSelector } from "./BandSetSelector";
 import { BandasTab } from "./BandasTab";
 import { MapaTab } from "./MapaTab";
 import { AlturaTab } from "./AlturaTab";
+import { TerrenoTab } from "./TerrenoTab";
 import { GeneralTab } from "./GeneralTab";
 import { getPluginId } from "../util/getPluginId";
 import { useOBRContext } from "./OBRContext";
@@ -39,7 +40,8 @@ const BODY_PADDING_BOTTOM = 8;
 
 // MUI's tabs keep a 90px minimum and wide side padding each, so four of
 // them overflowed the panel; let them share its width instead.
-const tabSx = { minWidth: 0, px: 0.5 };
+// Five tabs in uppercase: a little smaller and tighter than MUI's default (14px), so "MEASURES"/"TERRENO" fit beside the rest.
+const tabSx = { minWidth: 0, px: 0.5, fontSize: 12.5, letterSpacing: "0.02em" };
 
 export function Settings() {
   const {
@@ -289,6 +291,7 @@ export function Settings() {
         <Tab label={t("settings.tab.bandas")} sx={tabSx} />
         <Tab label={t("settings.tab.mapa")} sx={tabSx} />
         <Tab label={t("settings.tab.altura")} sx={tabSx} />
+        <Tab label={t("settings.tab.terreno")} sx={tabSx} />
         <Tab label={t("settings.tab.general")} sx={tabSx} />
       </Tabs>
       {/* Never scrolls sideways: a slider's thumb and value label poke a few
@@ -318,7 +321,8 @@ export function Settings() {
             onChangeDisplay={updateDisplay}
           />
         )}
-        {tab === 3 && <GeneralTab settings={settings} onChangeSettings={updateSettings} />}
+        {tab === 3 && <TerrenoTab settings={settings} onChangeSettings={updateSettings} />}
+        {tab === 4 && <GeneralTab settings={settings} onChangeSettings={updateSettings} />}
         </div>
       </Stack>
     </Stack>

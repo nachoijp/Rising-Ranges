@@ -8,6 +8,7 @@ import { startIsoLift } from "./isoLift";
 import { registerToolbar, watchToolbar } from "./toolbar";
 import { prefetchPanels } from "./prefetchPanels";
 import { startTerrainStyle } from "./terrainStyle";
+import { startTerrainView } from "./terrainView";
 
 async function waitUntilOBRReady() {
   return new Promise<void>((resolve) => {
@@ -77,6 +78,9 @@ async function init() {
   });
   startTerrainStyle().catch((error) => {
     console.error("Rising Ranges: failed to start terrain styling", error);
+  });
+  startTerrainView().catch((error) => {
+    console.error("Rising Ranges: failed to start the terrain view", error);
   });
   startFixedMedicion().catch((error) => {
     console.error("Rising Ranges: failed to start the Medición fija", error);

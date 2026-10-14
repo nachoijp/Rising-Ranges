@@ -48,6 +48,8 @@ export type GlobalSettings = {
   groundLevel?: GroundLevel;
   /** Terrain with a height (see terrain.ts): its context menu, its toolbar button, and zones counting. Missing = true. */
   enableTerrain?: boolean;
+  /** How terrain zones are drawn (see terrainView.ts). Each field falls back on its own (resolveTerrainLook). */
+  terrainLook?: Partial<TerrainLook>;
   /**
    * Who sees the terrain zones (see terrainStyle.ts): "hidden" = nobody
    * (drawn transparent, and not clickable), "gm" = only the GM (hidden in
@@ -57,6 +59,51 @@ export type GlobalSettings = {
 };
 
 export type GroundLevel = "terrain" | "fixed";
+
+/**
+ * "outline": just each zone's outline in its height's color (see
+ * terrainStyle.ts); "layers": zones filled like stacked cut paper, each
+ * casting a shadow on what's lower (see terrainView.ts).
+ */
+export type TerrainLook = {
+  style: "outline" | "layers";
+  /** "grey": lighter the higher; "height": a height marker's color. */
+  color: "grey" | "height";
+  /** 0-100. */
+  shadow: number;
+  /** 10-100: how much of the map shows through. */
+  opacity: number;
+  /** The zones' outlines over the layers. */
+  outline: boolean;
+  /** Each zone's height written on it. */
+  labels: boolean;
+};
+
+export const DEFAULT_TERRAIN_LOOK: TerrainLook = {
+  style: "outline",
+  color: "height",
+  shadow: 60,
+  opacity: 80,
+  outline: true,
+  labels: false,
+};
+
+/** The terrain look with every missing or invalid field filled from the defaults. */
+export function resolveTerrainLook(settings: GlobalSettings): TerrainLook {
+  const stored = isPlainObject(settings.terrainLook) ? settings.terrainLook : {};
+  const pick = <K extends keyof TerrainLook>(key: K, valid: (value: unknown) => boolean): TerrainLook[K] =>
+    valid(stored[key]) ? (stored[key] as TerrainLook[K]) : DEFAULT_TERRAIN_LOOK[key];
+  const inRange = (min: number, max: number) => (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
+  return {
+    style: pick("style", (v) => v === "outline" || v === "layers"),
+    color: pick("color", (v) => v === "grey" || v === "height"),
+    shadow: pick("shadow", inRange(0, 100)),
+    opacity: pick("opacity", inRange(10, 100)),
+    outline: pick("outline", (v) => typeof v === "boolean"),
+    labels: pick("labels", (v) => typeof v === "boolean"),
+  };
+}
 export type TerrainVisibility = "hidden" | "gm" | "everyone";
 
 export function terrainVisibility(settings: GlobalSettings): TerrainVisibility {
@@ -121,6 +168,8 @@ function isGlobalSettings(value: unknown): value is GlobalSettings {
       value.distancePanel === "everyone") &&
     (value.groundLevel === undefined || value.groundLevel === "terrain" || value.groundLevel === "fixed") &&
     optionalBoolean(value.enableTerrain) &&
+    // Each field inside is checked (and falls back) on its own in resolveTerrainLook.
+    (value.terrainLook === undefined || isPlainObject(value.terrainLook)) &&
     (value.terrainVisibility === undefined ||
       value.terrainVisibility === "hidden" ||
       value.terrainVisibility === "gm" ||

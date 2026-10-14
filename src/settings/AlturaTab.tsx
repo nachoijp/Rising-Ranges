@@ -13,7 +13,7 @@ import { LabeledSlider } from "./LabeledSlider";
 import { AdvancedSection, ChoiceGroup, FoldedSection, SECTION_GAP, SettingSwitch } from "./controls";
 import { useTranslation } from "../i18n/useTranslation";
 import { SIZE_RANGES, type DisplaySettings } from "./display";
-import { groundHotkey, type GlobalSettings, type GroundLevel, type MarkerStyle } from "./globalSettings";
+import { groundHotkey, type GlobalSettings, type MarkerStyle } from "./globalSettings";
 import { clearAllTokenHeightMarkers } from "../tokenHeight/markers";
 
 /** Everything about height in one place: the feature itself, how markers look, its menu and its hotkeys. */
@@ -175,36 +175,6 @@ export function AlturaTab({
               />
             </Stack>
           </Stack>
-
-          <Stack>
-            <Stack sx={{ px: 1 }}>
-              <FieldLabel
-                id="terrain-label"
-                tooltip={t("settings.altura.terrainTooltip")}
-                warning={t("settings.altura.terrainHint")}
-              >
-                {t("settings.altura.terrain")}
-              </FieldLabel>
-            </Stack>
-            <SettingSwitch
-              label={t("settings.altura.enableTerrain")}
-              checked={settings.enableTerrain ?? true}
-              onChange={(enableTerrain) => onChangeSettings({ enableTerrain })}
-            />
-          </Stack>
-          {(settings.enableTerrain ?? true) && (
-            <ChoiceGroup<GroundLevel>
-              id="ground-level-label"
-              label={t("settings.altura.groundLevel")}
-              tooltip={t("settings.altura.groundLevelTooltip")}
-              value={settings.groundLevel ?? "terrain"}
-              onChange={(groundLevel) => onChangeSettings({ groundLevel })}
-              options={[
-                { value: "terrain", label: t("settings.altura.groundLevelTerrain") },
-                { value: "fixed", label: t("settings.altura.groundLevelFixed") },
-              ]}
-            />
-          )}
 
           <FoldedSection label={t("settings.altura.iso")}>
             <Stack>

@@ -1,4 +1,4 @@
-import { Command, isCurve, isPath, isShape, type Item, type Vector2 } from "@owlbear-rodeo/sdk";
+import { Command, isCurve, isPath, isShape, type Curve, type Item, type Vector2 } from "@owlbear-rodeo/sdk";
 import { getPluginId } from "../util/getPluginId";
 
 // Terrain with a height: an ordinary Owlbear shape — rectangle, circle,
@@ -132,12 +132,58 @@ function localArea(item: Item): number {
     return item.shapeType === "CIRCLE" ? (Math.PI * item.width * item.height) / 4 : item.width * item.height;
   }
   if (isCurve(item)) {
-    return polygonsArea([item.points]);
+    return polygonsArea([curveOutline(item)]);
   }
   if (isPath(item)) {
     return polygonsArea(pathPolygons(item.commands as number[][]));
   }
   return 0;
+}
+
+/** Points each smoothed side of a curve zone is drawn and measured with. */
+const CURVE_STEPS = 12;
+
+/**
+ * A curve zone's outline as Owlbear draws it, closed: smoothed through its
+ * points by its tension (0 = straight sides) — a cardinal spline, each side
+ * a cubic Bézier whose handles follow the neighbouring points.
+ */
+function curveOutline(item: Curve): Vector2[] {
+  const points = item.points;
+  const tension = item.style.tension ?? 0;
+  if (tension <= 0 || points.length < 3) {
+    return points;
+  }
+  const n = points.length;
+  const at = (i: number) => points[(i + n) % n];
+  /** The handles either side of point i: before it, and after it. */
+  const handles = (i: number) => {
+    const [p0, p1, p2] = [at(i - 1), at(i), at(i + 1)];
+    const d01 = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+    const d12 = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    const sum = d01 + d12 || 1;
+    const fa = (tension * d01) / sum;
+    const fb = (tension * d12) / sum;
+    return {
+      before: { x: p1.x - fa * (p2.x - p0.x), y: p1.y - fa * (p2.y - p0.y) },
+      after: { x: p1.x + fb * (p2.x - p0.x), y: p1.y + fb * (p2.y - p0.y) },
+    };
+  };
+  const all = points.map((_, i) => handles(i));
+  const out: Vector2[] = [];
+  for (let i = 0; i < n; i++) {
+    const [a, b] = [at(i), at(i + 1)];
+    const [c1, c2] = [all[i].after, all[(i + 1) % n].before];
+    for (let s = 0; s < CURVE_STEPS; s++) {
+      const t = s / CURVE_STEPS;
+      const u = 1 - t;
+      out.push({
+        x: u * u * u * a.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * b.x,
+        y: u * u * u * a.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t * t * t * b.y,
+      });
+    }
+  }
+  return out;
 }
 
 function containsFor(item: Item): ((local: Vector2) => boolean) | null {
@@ -156,7 +202,7 @@ function containsFor(item: Item): ((local: Vector2) => boolean) | null {
     return null;
   }
   if (isCurve(item)) {
-    const polygon = item.points;
+    const polygon = curveOutline(item);
     return (p) => inPolygons([polygon], p);
   }
   if (isPath(item)) {
@@ -196,4 +242,59 @@ export function terrainAt(zones: TerrainZone[], point: Vector2): number {
     }
   }
   return 0;
+}
+
+/** A zone's outline(s) in scene coordinates, for drawing it (see terrainView.ts). */
+export type TerrainShape = { id: string; height: number; area: number; rings: [number, number][][] };
+
+/** How many points a circle zone's outline is drawn with. */
+const CIRCLE_POINTS = 48;
+
+/** A zone's outline(s) in its own coordinates. */
+function localRings(item: Item): Vector2[][] {
+  if (isShape(item)) {
+    const { width, height } = item;
+    if (item.shapeType === "RECTANGLE") {
+      return [[{ x: 0, y: 0 }, { x: width, y: 0 }, { x: width, y: height }, { x: 0, y: height }]];
+    }
+    return [
+      Array.from({ length: CIRCLE_POINTS }, (_, i) => {
+        const angle = (i / CIRCLE_POINTS) * Math.PI * 2;
+        return { x: (Math.cos(angle) * width) / 2, y: (Math.sin(angle) * height) / 2 };
+      }),
+    ];
+  }
+  if (isCurve(item)) {
+    return [curveOutline(item)];
+  }
+  if (isPath(item)) {
+    return pathPolygons(item.commands as number[][]);
+  }
+  return [];
+}
+
+/** A point of the item's own coordinates where it's drawn: position + R(rotation)·(scale·local). */
+function toScene(item: Item, p: Vector2): [number, number] {
+  const angle = (item.rotation * Math.PI) / 180;
+  const x = p.x * item.scale.x;
+  const y = p.y * item.scale.y;
+  return [item.position.x + x * Math.cos(angle) - y * Math.sin(angle), item.position.y + x * Math.sin(angle) + y * Math.cos(angle)];
+}
+
+/** The scene's terrain zones with their outlines, the one that wins first (smallest, then highest), as terrainZones. */
+export function terrainShapes(items: Item[]): TerrainShape[] {
+  const shapes: TerrainShape[] = [];
+  for (const item of items) {
+    const height = getTerrainHeight(item);
+    if (height === undefined || !canBeTerrain(item)) {
+      continue;
+    }
+    const rings = localRings(item)
+      .filter((ring) => ring.length >= 3)
+      .map((ring) => ring.map((p) => toScene(item, p)));
+    if (rings.length > 0) {
+      shapes.push({ id: item.id, height, area: localArea(item) * Math.abs(item.scale.x * item.scale.y), rings });
+    }
+  }
+  return shapes.sort((a, b) => a.area - b.area || b.height - a.height);
 }

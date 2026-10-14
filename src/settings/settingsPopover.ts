@@ -7,7 +7,7 @@ import { getPluginId } from "../util/getPluginId";
 export const SETTINGS_POPOVER_ID = getPluginId("popover/settings");
 
 /** The panel's content width (the popover adds the glass margin around it). */
-export const SETTINGS_WIDTH = 350;
+export const SETTINGS_WIDTH = 380;
 /** Bounds for the content height the page fits itself to; past the max, the tab body scrolls. The max is replaced by the room actually left on screen (see roomBelow) as soon as Owlbear reports it. */
 export const SETTINGS_MIN_HEIGHT = 300;
 export const SETTINGS_MAX_HEIGHT = 605;
