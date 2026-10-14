@@ -10,6 +10,7 @@ import OBR, {
 } from "@owlbear-rodeo/sdk";
 import { axonometryOf } from "../engine/axonometry";
 import { isHexShape, onGrid, snapToOrigin } from "../engine/hex";
+import { getTerrainHeight, terrainAt, terrainZones, type TerrainZone } from "../terrain/terrain";
 import measureIcon from "../assets/range.svg";
 import { canUpdateItem } from "./permission";
 import {
@@ -20,6 +21,7 @@ import {
   mirrorReshape,
   mirrorStart,
   mirrorStates,
+  setMeasuringHere,
 } from "./measureMirror";
 import {
   enqueueOriginMarkerWrite,
@@ -46,6 +48,7 @@ import { resolveDisplay, showsDistance, type DisplaySettings } from "../settings
 import {
   getAllTokenHeightMarkers,
   getTokenHeight,
+  isTokenHeightMarker,
   markerLookFromMetadata,
   tokenHeightsFromMarkers,
   type MarkerLook,
@@ -54,6 +57,7 @@ import { DEFAULT_LANGUAGE, languageFromMetadata, type Language } from "../i18n/l
 import { translate } from "../i18n/translate";
 import {
   DEFAULT_GLOBAL_SETTINGS,
+  fixedGround,
   globalSettingsFromMetadata,
   groundHotkey,
   letterToCode,
@@ -129,10 +133,14 @@ function onCell(point: Vector2, dpi: number): Vector2 {
   const gridCenter = knownHexCenter();
   return freePointCells && gridCenter && dpi ? snapToOrigin(point, gridCenter, dpi, freePointCells).point : point;
 }
-// The measured tokens as they were when the Medición started: moves come in
-// far faster than fresh reads could, so Lecturas measure this snapshot.
-// Hidden ones only for the GM.
+/** The scene's terrain, top first (see terrain.ts): added to every height where it stands. */
+let activeTerrain: TerrainZone[] = [];
+// The measured tokens, from when the Medición started: moves come in far
+// faster than fresh reads could, so Lecturas measure this snapshot — kept
+// up to date when someone else moves one, or changes its height (see
+// followScene). Hidden ones only for the GM.
 let activeTokens: Image[] = [];
+let activeRole: "GM" | "PLAYER" = "PLAYER";
 /** The hidden tokens among activeTokens (GM only): their Lecturas are drawn here, never sent to anyone else. */
 let hiddenTokenIds: Set<string> = new Set();
 /**
@@ -189,6 +197,8 @@ function scheduleRefresh(pointerPosition: Vector2) {
     pendingPointerPosition = null;
     refreshBandPositions();
     refreshLecturas();
+    // Over another terrain, the height shown above the fixed ground changes.
+    refreshHeightLabel();
     measureView?.moveHeightLabel(activeCenter);
     // From a cell's center to a corner or back: the rings and gradient change shape, here and for everyone.
     const shapeKey = freePointCells && activeBandSet ? originShapeKey(activeCenter, activeDpi, activeBandSet) : null;
@@ -228,11 +238,23 @@ function scheduleLecturaRefresh(position: Vector2) {
     activeLecturaCenter = pendingLecturaPosition;
     pendingLecturaPosition = null;
     refreshLecturas();
+    refreshHeightLabel();
   }, 16);
 }
 
+/** How high the ground is under the Origen (see terrain.ts). */
+function originTerrain(): number {
+  const at = fixedDrag && downTarget ? (liveTokenPosition ?? downTarget.position) : activeLecturaCenter;
+  return terrainAt(activeTerrain, at);
+}
+
+/** The Origen's height as shown and set: above its own ground, or above the fixed one (GlobalSettings.groundLevel). */
+function shownOriginHeight(): number {
+  return fixedGround(activeSettings) ? originHeight + originTerrain() : originHeight;
+}
+
 function currentHeightLabelText() {
-  return heightLabelText(originHeight, activeBandSet, activeGridScale, activeLanguage);
+  return heightLabelText(shownOriginHeight(), activeBandSet, activeGridScale, activeLanguage);
 }
 
 /** downTarget at its current dragged position. */
@@ -263,11 +285,16 @@ function originMarkerRequest(height: number, position?: Vector2): OriginMarkerRe
 
 /** One token's Lectura, as the measuring client computes it — every client draws it from this. */
 function computeLecturaState(token: Image, bandSet: BandSet): LecturaState {
+  // Heights are kept above the ground each one stands on; the terrain there is added here.
   return computeSharedLecturaState(
     token,
     token.position,
-    activeTokenHeights.get(token.id) ?? 0,
-    { center: activeLecturaCenter, height: originHeight, radius: activeOriginRadius },
+    (activeTokenHeights.get(token.id) ?? 0) + terrainAt(activeTerrain, token.position),
+    {
+      center: activeLecturaCenter,
+      height: originHeight + terrainAt(activeTerrain, activeLecturaCenter),
+      radius: activeOriginRadius,
+    },
     { bandSet, dpi: activeDpi, axonometry: activeAxonometry, display: activeDisplay, showDistance: activeShowDistance }
   );
 }
@@ -360,11 +387,13 @@ function cleanup() {
   activeGridScale = null;
   originHeight = 0;
   activeTokens = [];
+  setMeasuringHere(false);
   hiddenTokenIds = new Set();
   secretMedicion = false;
   activeTokenHeights = new Map();
   freePointCells = null;
   activeOriginShape = null;
+  activeTerrain = [];
   pendingPointerPosition = null;
   pendingLecturaPosition = null;
   originHeightBeforeEdit = 0;
@@ -581,13 +610,15 @@ async function startFixedDrag(event: ToolEvent) {
   // waits for it (downTargetCheck), and its Lectura would otherwise be
   // measured from the ground meanwhile.
   const ready = (async () => {
-    const [canUpdate, sceneMetadata, dpi, gridType, heightMarkers] = await Promise.all([
+    // The terrain comes with the markers: one more round trip would delay the drag.
+    const [canUpdate, sceneMetadata, dpi, gridType, markersAndTerrain] = await Promise.all([
       canUpdateItem(target),
       OBR.scene.getMetadata(),
       OBR.scene.grid.getDpi(),
       getGridType(),
-      getAllTokenHeightMarkers(),
+      OBR.scene.items.getItems((item) => isTokenHeightMarker(item) || getTerrainHeight(item) !== undefined),
     ]);
+    const heightMarkers = markersAndTerrain.filter(isTokenHeightMarker);
     if (generation !== toolDownGeneration || !canUpdate) {
       return;
     }
@@ -598,6 +629,7 @@ async function startFixedDrag(event: ToolEvent) {
     activeMarkerLook = markerLookFromMetadata(sceneMetadata);
     activeDpi = dpi;
     activeAxonometry = axonometry;
+    activeTerrain = activeAltitudeEnabled ? terrainZones(markersAndTerrain) : [];
     if (activeAltitudeEnabled) {
       const marker = heightMarkers.find((m) => m.attachedTo === target.id);
       originHeight = (marker && getTokenHeight(marker, activeBandSet)) || 0;
@@ -615,8 +647,41 @@ async function startFixedDrag(event: ToolEvent) {
   }
 }
 
+/**
+ * Someone else moved a measured token, or changed its height, while this
+ * Medición is up: its Lectura goes where it lands and measures it from
+ * there. (A token gone, or hidden from a player since, loses its Lectura.)
+ */
+function followScene(items: Item[]) {
+  if (!measureView || activeTokens.length === 0) {
+    return;
+  }
+  const scene = new Map<string, Image>();
+  for (const item of items) {
+    if (isImage(item) && (activeRole === "GM" || item.visible)) {
+      scene.set(item.id, item);
+    }
+  }
+  activeTokens = activeTokens.flatMap((token) => scene.get(token.id) ?? []);
+  if (activeRole === "GM") {
+    hiddenTokenIds = new Set(activeTokens.filter((token) => !token.visible).map((token) => token.id));
+  }
+  if (activeAltitudeEnabled && activeBandSet) {
+    activeTokenHeights = tokenHeightsFromMarkers(items.filter(isTokenHeightMarker), activeBandSet);
+    activeTerrain = terrainZones(items);
+  }
+  measureView.moveTokens(scene);
+  refreshLecturas();
+}
+
+let followingScene = false;
+
 export function createMeasureTool(language: Language, settings: GlobalSettings) {
   prefetchGridAxonometry();
+  if (!followingScene) {
+    followingScene = true;
+    OBR.scene.items.onChange(followScene);
+  }
   OBR.tool.createMode({
     id: getPluginId("mode/measure"),
     icons: [
@@ -668,16 +733,22 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
             : Promise.resolve();
         downTargetCheck = permissionCheck.catch(() => {});
         const writesBeforeFetch = writesSoFar();
-        const [sceneMetadata, dpi, gridScale, gridType, characterImages, allHeightMarkers, role] = await Promise.all([
+        // The terrain comes with the tokens: one more round trip here would delay the press.
+        const [sceneMetadata, dpi, gridScale, gridType, tokensAndTerrain, allHeightMarkers, role] = await Promise.all([
           OBR.scene.getMetadata(),
           OBR.scene.grid.getDpi(),
           OBR.scene.grid.getScale(),
           getGridType(),
-          OBR.scene.items.getItems<Image>((item): item is Image => isImage(item) && item.layer === "CHARACTER"),
+          OBR.scene.items.getItems(
+            (item) => (isImage(item) && item.layer === "CHARACTER") || getTerrainHeight(item) !== undefined
+          ),
           getAllTokenHeightMarkers(),
           OBR.player.getRole(),
           permissionCheck,
         ]);
+        const characterImages = tokensAndTerrain.filter(
+          (item): item is Image => isImage(item) && item.layer === "CHARACTER"
+        );
         if (generation !== toolDownGeneration) {
           return;
         }
@@ -714,12 +785,14 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
         const heightMarkers = activeAltitudeEnabled ? allHeightMarkers : [];
         // A player's client still has hidden tokens (Owlbear just doesn't draw
         // them): measuring them would show their Lecturas.
+        activeRole = role;
         activeTokens = characterImages.filter(
           (item) => item.id !== downTarget?.id && (role === "GM" || item.visible)
         );
         hiddenTokenIds = new Set(activeTokens.filter((item) => !item.visible).map((item) => item.id));
         secretMedicion = target?.type === "IMAGE" && !target.visible;
         activeTokenHeights = tokenHeightsFromMarkers(heightMarkers, bandSet);
+        activeTerrain = activeAltitudeEnabled ? terrainZones(tokensAndTerrain) : [];
 
         // A Medición started on a token with a height marker starts at that
         // height.
@@ -797,6 +870,8 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
         const heightLabel = activeAltitudeEnabled ? { center: activeCenter, text: activeHeightLabelText } : null;
         measureView = new LocalMeasureView(ctx);
         measureView.start(activeTokens, states, heightLabel);
+        // Only this one on this screen meanwhile (see showOnly).
+        setMeasuringHere(true);
         // Only now: other clients attach what they draw to the anchor, so it
         // has to exist for them first.
         if (!secretMedicion) {
@@ -848,11 +923,15 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
       if (!activeBandSet) {
         return;
       }
+      // Stepped as shown (above the fixed ground, if that's the setting),
+      // kept above the ground it stands on. Ground: standing on the terrain.
+      const shown = shownOriginHeight();
+      const below = shown - originHeight;
       let next: number;
       if (event.code === letterToCode(activeSettings.hotkeyRaise)) {
-        next = stepHeight(originHeight, 1, activeBandSet);
+        next = stepHeight(shown, 1, activeBandSet) - below;
       } else if (event.code === letterToCode(activeSettings.hotkeyLower)) {
-        next = stepHeight(originHeight, -1, activeBandSet);
+        next = stepHeight(shown, -1, activeBandSet) - below;
       } else if (event.code === letterToCode(groundHotkey(activeSettings))) {
         next = 0;
       } else {

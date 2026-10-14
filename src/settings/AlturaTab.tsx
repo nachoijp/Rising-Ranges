@@ -13,7 +13,7 @@ import { LabeledSlider } from "./LabeledSlider";
 import { AdvancedSection, ChoiceGroup, SECTION_GAP, SettingSwitch } from "./controls";
 import { useTranslation } from "../i18n/useTranslation";
 import { SIZE_RANGES, type DisplaySettings } from "./display";
-import { groundHotkey, type GlobalSettings, type MarkerStyle } from "./globalSettings";
+import { groundHotkey, type GlobalSettings, type GroundLevel, type MarkerStyle } from "./globalSettings";
 import { clearAllTokenHeightMarkers } from "../tokenHeight/markers";
 
 /** Everything about height in one place: the feature itself, how markers look, its menu and its hotkeys. */
@@ -69,6 +69,18 @@ export function AlturaTab({
               { value: "icons", label: t("settings.global.markerStyleIcons") },
               { value: "label", label: t("settings.global.markerStyleLabel") },
               { value: "both", label: t("settings.global.markerStyleBoth") },
+            ]}
+          />
+
+          <ChoiceGroup<GroundLevel>
+            id="ground-level-label"
+            label={t("settings.altura.groundLevel")}
+            tooltip={t("settings.altura.groundLevelTooltip")}
+            value={settings.groundLevel ?? "terrain"}
+            onChange={(groundLevel) => onChangeSettings({ groundLevel })}
+            options={[
+              { value: "terrain", label: t("settings.altura.groundLevelTerrain") },
+              { value: "fixed", label: t("settings.altura.groundLevelFixed") },
             ]}
           />
 

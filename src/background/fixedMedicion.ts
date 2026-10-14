@@ -1,11 +1,12 @@
 import OBR, { isImage, isLabel, type GridScale, type GridType, type Image, type Item, type Vector2 } from "@owlbear-rodeo/sdk";
 import unpinIcon from "../assets/unpin.svg";
+import { terrainAt, terrainZones } from "../terrain/terrain";
 import { getPluginId } from "../util/getPluginId";
 import { getMetadata } from "../util/getMetadata";
 import { isPoint } from "../util/isPoint";
 import { getStoredTheme, THEME_STORAGE_KEYS } from "../theme/themes";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
-import { globalSettingsFromMetadata } from "../settings/globalSettings";
+import { fixedGround, globalSettingsFromMetadata } from "../settings/globalSettings";
 import { resolveDisplay, showsDistance } from "../settings/display";
 import { languageFromMetadata, type Language } from "../i18n/language";
 import { translate } from "../i18n/translate";
@@ -16,11 +17,13 @@ import { getGridType } from "../util/gridAxonometry";
 import { onGrid } from "../engine/hex";
 import {
   applyLecturaState,
+  attachToToken,
   buildHeightLabelItem,
   buildLecturaItems,
   getLecturaTokenId,
   heightLabelOffset,
   lecturaLabelScale,
+  lecturaPlacement,
   sameLecturaState,
   type LecturaContext,
   type LecturaState,
@@ -85,7 +88,6 @@ let dirty = false;
 let pendingAdopt: { fixedId: string; ids: string[] } | null = null;
 /** Never equal to a real state: an adopted Lectura is always restyled. */
 const UNKNOWN_STATE: LecturaState = { index: -1, withinFilter: false, dz: Number.NaN };
-const ATTACHED_ONLY_BY_POSITION: Item["disableAttachmentBehavior"] = ["ROTATION", "SCALE", "VISIBLE", "LOCKED", "COPY"];
 /** Waiting for a Medición fija (by id) to be on screen: see pinFixedMedicion. */
 const drawnWaiters = new Map<string, () => void>();
 /** At most this long: a pin mustn't hold the Medición it replaces on screen for good. */
@@ -253,16 +255,7 @@ function tagged<T extends Item>(item: T): T {
 
 /** Everything a Lectura's placement depends on: when any of it changes it's rebuilt, otherwise only restyled. */
 function lecturaSignature(ctxSignature: string, token: Image): string {
-  return JSON.stringify([
-    ctxSignature,
-    token.position,
-    token.scale,
-    token.rotation,
-    token.image.width,
-    token.image.height,
-    token.grid,
-    token.visible,
-  ]);
+  return JSON.stringify([ctxSignature, lecturaPlacement(token)]);
 }
 
 /**
@@ -300,8 +293,7 @@ async function adopt(
         item.metadata = { ...item.metadata, [ITEM_KEY]: true };
         const tokenId = getLecturaTokenId(item);
         if (tokenId) {
-          item.attachedTo = tokenId;
-          item.disableAttachmentBehavior = ATTACHED_ONLY_BY_POSITION;
+          attachToToken(item, tokenId);
         } else if (getPluginId("heightLabel") in item.metadata) {
           // Another client's mirror attached it to the Medición's anchor, which is going.
           item.attachedTo = undefined;
@@ -387,8 +379,13 @@ async function reconcile() {
     const theme = getStoredTheme();
     const ctx: LecturaContext = { bandSet, theme, dpi, axonometry, language, gridScale, showDistance, display };
     const origin: LecturaOrigin = { center: fixed.center, height: altitude ? fixed.height : 0, radius: fixed.radius };
+    // Heights are kept above the ground each one stands on; the terrain there is added here.
+    const terrain = altitude ? terrainZones(items) : [];
+    const measuredFrom: LecturaOrigin = { ...origin, height: origin.height + terrainAt(terrain, origin.center) };
+    // Its label: above its own ground, or above the fixed one (GlobalSettings.groundLevel).
+    const shownHeight = fixedGround(settings) ? measuredFrom.height : origin.height;
     const isSecret = fixed === secret;
-    const ctxSignature = JSON.stringify([fixed.id, origin, bandSet, display, language, theme, dpi, axonometry, gridScale, isSecret]);
+    const ctxSignature = JSON.stringify([fixed.id, measuredFrom, shownHeight, bandSet, display, language, theme, dpi, axonometry, gridScale, isSecret]);
     const lecturasEnabled = display.lecturaStyle !== "none" || display.lecturaLabel !== "none";
     // A player's client still has hidden tokens (Owlbear just doesn't draw
     // them): measuring them would show their Lecturas.
@@ -402,7 +399,7 @@ async function reconcile() {
       const { ids } = pendingAdopt;
       pendingAdopt = null;
       if (!drawnOrigin) {
-        const heightText = altitude ? heightLabelText(origin.height, bandSet, gridScale, language) : null;
+        const heightText = altitude ? heightLabelText(shownHeight, bandSet, gridScale, language) : null;
         try {
           await adopt(ids, origin.center, heightText, new Map(tokens.map((t) => [t.id, t])), ctxSignature);
         } catch (error) {
@@ -430,7 +427,7 @@ async function reconcile() {
         axonometry
       );
       if (altitude) {
-        const text = heightLabelText(origin.height, bandSet, gridScale, language);
+        const text = heightLabelText(shownHeight, bandSet, gridScale, language);
         rings.push(buildHeightLabelItem(origin.center, text, lecturaLabelScale(ctx)));
       }
       if (isSecret) {
@@ -449,11 +446,12 @@ async function reconcile() {
     for (const token of tokens) {
       wanted.add(token.id);
       const override = live.get(token.id);
+      const position = override?.position ?? token.position;
       const state = computeLecturaState(
         token,
-        override?.position ?? token.position,
-        override?.height ?? heights.get(token.id) ?? 0,
-        origin,
+        position,
+        (override?.height ?? heights.get(token.id) ?? 0) + terrainAt(terrain, position),
+        measuredFrom,
         { bandSet, dpi, axonometry, display, showDistance }
       );
       const signature = lecturaSignature(ctxSignature, token);
@@ -468,13 +466,7 @@ async function reconcile() {
       if (drawn) {
         toDelete.push(...drawn.ids);
       }
-      const lecturaItems = buildLecturaItems(token, state, ctx).map((item) => {
-        item.attachedTo = token.id;
-        // Only carried along: what else it would inherit from the token is
-        // already worked into it when built.
-        item.disableAttachmentBehavior = ATTACHED_ONLY_BY_POSITION;
-        return tagged(item);
-      });
+      const lecturaItems = buildLecturaItems(token, state, ctx).map((item) => tagged(attachToToken(item, token.id)));
       toAdd.push(...lecturaItems);
       drawnLecturas.set(token.id, { signature, ids: lecturaItems.map((item) => item.id), token, state });
     }

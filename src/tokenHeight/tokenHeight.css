@@ -196,3 +196,14 @@ body {
   font-size: 13px;
   color: var(--obr-text-secondary, rgba(255, 255, 255, 0.7));
 }
+
+/* Rows stacked in one embed (see TerrainPicker): each as tall as it is. */
+.picker-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.picker-stack > .step-row {
+  height: auto;
+}

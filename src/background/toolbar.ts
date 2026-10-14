@@ -1,11 +1,12 @@
 import OBR from "@owlbear-rodeo/sdk";
 import { getPluginId } from "../util/getPluginId";
 import { languageFromMetadata } from "../i18n/language";
-import { globalSettingsFromMetadata } from "../settings/globalSettings";
+import { globalSettingsFromMetadata, terrainVisibility } from "../settings/globalSettings";
 import { createMeasureTool } from "./createMeasureTool";
 import { createThemeAction } from "./createThemeAction";
 import { createSettingsAction } from "./createSettingsAction";
-import { createTokenFootprintMenu, createTokenHeightMenu } from "./createTokenHeightMenu";
+import { createTerrainMenu, createTokenFootprintMenu, createTokenHeightMenu } from "./createTokenHeightMenu";
+import { createTerrainVisibilityAction } from "./createTerrainVisibilityAction";
 import { createDistancesAction } from "./createDistancesAction";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
 import { heightStepOf } from "../engine/heights";
@@ -24,7 +25,17 @@ export function registerToolbar(metadata: Record<string, unknown>) {
   const altitudeMenu = (settings.enableAltitude ?? true) && settings.showAltitudeMenu;
   const distancePanel = settings.distancePanel ?? "off";
   const heightStep = heightStepOf(bandSetFromMetadata(metadata));
-  const signature = JSON.stringify([language, settings.hotkeyActivate, altitudeMenu, distancePanel, heightStep]);
+  const altitude = settings.enableAltitude ?? true;
+  const terrainMode = terrainVisibility(settings);
+  const signature = JSON.stringify([
+    language,
+    settings.hotkeyActivate,
+    altitudeMenu,
+    distancePanel,
+    heightStep,
+    altitude,
+    terrainMode,
+  ]);
   if (signature === lastSignature) {
     return;
   }
@@ -44,6 +55,14 @@ export function registerToolbar(metadata: Record<string, unknown>) {
     createTokenHeightMenu(language, heightStep);
   } else if (!firstTime) {
     OBR.contextMenu.remove(getPluginId("menu/tokenHeight"));
+  }
+  // Terrain is part of heights: off with them.
+  if (altitude) {
+    createTerrainMenu(language);
+    createTerrainVisibilityAction(language, terrainMode);
+  } else if (!firstTime) {
+    OBR.contextMenu.remove(getPluginId("menu/terrain"));
+    OBR.tool.removeAction(getPluginId("action/terrainVisibility"));
   }
 }
 
