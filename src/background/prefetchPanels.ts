@@ -10,7 +10,7 @@
 // modulepreload tags), and the fonts from its stylesheets: only the latin
 // ones, the subset the panels' text uses.
 
-const PAGES = ["/settings.html", "/distances.html", "/token-height.html", "/theme.html"];
+const PAGES = ["/settings.html", "/distances.html", "/token-height.html", "/theme.html", "/terrain-visibility.html"];
 /** After the room's own loading, so it doesn't compete with it. */
 const DELAY_MS = 4000;
 /** A few at a time, like a page would. */

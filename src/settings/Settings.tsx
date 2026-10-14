@@ -41,7 +41,9 @@ const BODY_PADDING_BOTTOM = 8;
 // MUI's tabs keep a 90px minimum and wide side padding each, so four of
 // them overflowed the panel; let them share its width instead.
 // Five tabs in uppercase: a little smaller and tighter than MUI's default (14px), so "MEASURES"/"TERRENO" fit beside the rest.
-const tabSx = { minWidth: 0, px: 0.5, fontSize: 12.5, letterSpacing: "0.02em" };
+// Each as wide as its label plus an equal share of what's left (fullWidth
+// alone makes them all the same width, so short labels got wide gaps).
+const tabSx = { minWidth: 0, px: 0.5, fontSize: 12.5, letterSpacing: "0.02em", flexBasis: "auto" };
 
 export function Settings() {
   const {

@@ -1,5 +1,6 @@
 import OBR from "@owlbear-rodeo/sdk";
 import { getPluginId } from "../util/getPluginId";
+import { GLASS_FRAME } from "../util/glass";
 import everyoneIcon from "../assets/terrain-everyone.svg";
 import gmIcon from "../assets/terrain-gm.svg";
 import hiddenIcon from "../assets/terrain-hidden.svg";
@@ -40,10 +41,13 @@ export function createTerrainVisibilityAction(language: Language, mode: TerrainV
     onClick(_, elementId) {
       OBR.popover.open({
         id: TERRAIN_VISIBILITY_POPOVER_ID,
-        url: "/token-height.html?view=terrainVisibility",
-        // Three 36px rows, 6px apart, inside 8px of padding.
-        width: 220,
-        height: 136,
+        url: "/terrain-visibility.html",
+        // The page draws its own glass frame (GlassFrame), like the others,
+        // and fits the height to its rows; wide enough for "Hidden from
+        // everyone" on one line.
+        width: 260 + GLASS_FRAME,
+        height: 3 * 40 + 2 * 4 + 2 * 8 + GLASS_FRAME,
+        hidePaper: true,
         anchorElementId: elementId,
         anchorOrigin: { horizontal: "CENTER", vertical: "BOTTOM" },
         transformOrigin: { horizontal: "CENTER", vertical: "TOP" },

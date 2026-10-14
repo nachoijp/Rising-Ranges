@@ -86,7 +86,8 @@ export const SIZE_RANGES = {
   ring: [0.01, 0.2] as [number, number],
   circle: [0.5, 1.5] as [number, number],
   marker: [0.5, 2] as [number, number],
-  markerDistance: [0, 0.4] as [number, number],
+  // Below 0 the marker goes over the image: a slim figure on wide art (often on axonometric maps) can have its label right beside it.
+  markerDistance: [-1, 0.5] as [number, number],
   label: [0.5, 2] as [number, number],
 };
 

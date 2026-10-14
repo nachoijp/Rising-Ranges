@@ -1,6 +1,6 @@
 ---
 title: Rising Ranges
-description: A relative, 3D-aware range and altitude measuring tool — drag to see live range rings, per-token readings, and optional persistent height markers
+description: A relative, 3D-aware range and elevation measuring tool — drag to see live range rings, per-token readings, and optional persistent elevation markers
 author: Ignacio Pedraza
 image: https://raw.githubusercontent.com/nachoijp/Rising-Ranges/main/docs/screenshots/in-action.png
 icon: https://raw.githubusercontent.com/nachoijp/Rising-Ranges/main/public/logo.png
@@ -13,9 +13,9 @@ learn-more: https://github.com/nachoijp/Rising-Ranges#readme
 
 # Rising Ranges
 
-A relative, 3D-aware range and altitude measuring tool. Drag from an Origin — a
+A relative, 3D-aware range and elevation measuring tool. Drag from an Origin — a
 point or a token — and see live range rings, a Reading on every other token,
-and optional persistent height markers.
+and optional persistent elevation markers.
 
 ![Measuring with rings and readings](https://raw.githubusercontent.com/nachoijp/Rising-Ranges/main/docs/screenshots/in-action.png)
 
@@ -26,11 +26,11 @@ and optional persistent height markers.
   your own).
 - **Fixed Measurement** — hold Shift as you let go of a Measurement and it
   stays on the map, for everyone, while you move tokens around it.
-- **Height / altitude tracking** — right-click a token to set a persistent
-  height marker, or nudge height live with hotkeys while measuring, range by
-  range or one grid cell at a time. Readings account for height in 3D, with a
+- **Elevation tracking** — right-click a token to set a persistent
+  elevation marker, or nudge elevation live with hotkeys while measuring, range by
+  range or one grid cell at a time. Readings account for elevation in 3D, with a
   choice of spherical, cubic, or cylindrical distance, and big creatures take
-  up height too.
+  up space upwards too.
 - **Three built-in presets** — Dagger, Steel (Draw Steel's distances,
   measured square by square), and Dragons — or build your own set of ranges
   from scratch.
@@ -40,7 +40,7 @@ and optional persistent height markers.
   Protanopia, or your own colors; each player sees everything in their own.
 - **Bilingual** — Español / English, switchable per room.
 - **Configurable hotkeys and feature toggles** — strip it back to plain
-  range-rings with no per-token readings or height tracking at all, if that's
+  range-rings with no per-token readings or elevation tracking at all, if that's
   all you need.
 
 ## How to use
@@ -50,17 +50,17 @@ and optional persistent height markers.
 2. Every other token gets a live Reading showing which range band it's in,
    with an arrow if it's above or below you.
 3. While measuring, use the configurable hotkeys to raise or lower the
-   Origin's height, or put it back on the ground.
-4. Right-click any token to set a persistent height marker that sticks around
+   Origin's elevation, or put it back on the ground.
+4. Right-click any token to set a persistent elevation marker that sticks around
    outside of a measurement.
 
-![Height markers on several tokens](https://raw.githubusercontent.com/nachoijp/Rising-Ranges/main/docs/screenshots/height-markers.png)
+![Elevation markers on several tokens](https://raw.githubusercontent.com/nachoijp/Rising-Ranges/main/docs/screenshots/height-markers.png)
 
 ## Build your own ranges
 
 Start from Dagger, Steel, or Dragons — duplicate one to edit it — or build
 your own: name each range, set its radius and icon, and choose how distance
-is calculated (spherical / cubic / cylindrical), whether heights step by range
+is calculated (spherical / cubic / cylindrical), whether elevations step by range
 or by grid cell, and how forgiving Tolerance is. An optional Final Range
 names everything past the farthest one.
 
@@ -88,7 +88,7 @@ handle.
 
 Set the room's language and hotkeys, and toggle whole feature groups on or
 off — including stripping the extension back to plain range-rings with no
-readings or height tracking. Every setting applies right away, and a Help
+readings or elevation tracking. Every setting applies right away, and a Help
 button in the General tab brings you back to the full manual.
 
 ![General settings](https://raw.githubusercontent.com/nachoijp/Rising-Ranges/main/docs/screenshots/general-tab.png)
@@ -97,7 +97,7 @@ button in the General tab brings you back to the full manual.
 
 Base, three color-blind themes, or a Custom one with up to 12 colors of your
 own. Each player picks their own and sees everything in it — rings, Readings
-and height markers — whoever is measuring.
+and elevation markers — whoever is measuring.
 
 ![Theme picker](https://raw.githubusercontent.com/nachoijp/Rising-Ranges/main/docs/screenshots/themes.png)
 
@@ -105,7 +105,7 @@ and height markers — whoever is measuring.
 
 This project is a modified version of [Ranges](https://github.com/owlbear-rodeo/ranges)
 by Owlbear Rodeo, licensed under the GNU GPLv3. It merges Ranges' range-ring
-rendering with a relative altitude/height mechanic and a configurable 3D
+rendering with a relative elevation mechanic and a configurable 3D
 distance engine.
 
 ## Support

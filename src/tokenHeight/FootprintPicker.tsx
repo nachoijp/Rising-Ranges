@@ -20,7 +20,12 @@ function shared(tokens: Item[], read: (token: Item) => number | undefined): Cell
  * or a size typed by hand; and how tall the token is, Auto (its image's top)
  * or typed by hand (see setTokenTall).
  */
-export function FootprintPicker() {
+export function FootprintPicker({
+  part,
+}: {
+  /** Only one of its parts, as a section of the Elevation entry (which already says to select a token). */
+  part?: "footprint" | "tall";
+} = {}) {
   const t = useTranslation();
   const [selection, setSelection] = useState<string[]>([]);
   const [current, setCurrent] = useState<Cells>(undefined);
@@ -72,61 +77,70 @@ export function FootprintPicker() {
   }
 
   if (selection.length === 0) {
+    if (part) {
+      return null;
+    }
     return <div style={{ fontSize: 13, opacity: 0.7 }}>{t("tokenHeight.selectToken")}</div>;
   }
 
   return (
     <div role="group" aria-label={t("footprint.label")} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <div className="step-row" style={{ height: "auto" }}>
-        <button
-          className={current === "auto" ? "step-button ground active" : "step-button ground"}
-          style={{ marginLeft: 0 }}
-          title={t("footprint.autoTooltip")}
-          aria-pressed={current === "auto"}
-          onClick={() => apply("auto")}
-        >
-          {t("footprint.auto")}
-        </button>
-        {FOOTPRINTS.map((cells) => (
+      {part !== "tall" && (
+        <>
+          <div className="step-row" style={{ height: "auto" }}>
+            <button
+              className={current === "auto" ? "step-button ground active" : "step-button ground"}
+              style={{ marginLeft: 0 }}
+              title={t("footprint.autoTooltip")}
+              aria-pressed={current === "auto"}
+              onClick={() => apply("auto")}
+            >
+              {t("footprint.auto")}
+            </button>
+            {FOOTPRINTS.map((cells) => (
+              <button
+                key={cells}
+                className={current === cells ? "step-button active" : "step-button"}
+                style={{ flex: 1, fontSize: 14 }}
+                title={t("footprint.cells", { cells: String(cells) })}
+                aria-label={t("footprint.cells", { cells: String(cells) })}
+                aria-pressed={current === cells}
+                onClick={() => apply(cells)}
+              >
+                {cells}×{cells}
+              </button>
+            ))}
+          </div>
+          <CellsField
+            label={t("footprint.custom")}
+            current={current}
+            clamp={clampFootprint}
+            active={typeof current === "number" && !(FOOTPRINTS as readonly number[]).includes(current)}
+            onSet={apply}
+          />
+        </>
+      )}
+      {part !== "footprint" && (
+        <div className="step-row" style={{ height: "auto" }}>
           <button
-            key={cells}
-            className={current === cells ? "step-button active" : "step-button"}
-            style={{ flex: 1, fontSize: 14 }}
-            title={t("footprint.cells", { cells: String(cells) })}
-            aria-label={t("footprint.cells", { cells: String(cells) })}
-            aria-pressed={current === cells}
-            onClick={() => apply(cells)}
+            className={tall === "auto" ? "step-button ground active" : "step-button ground"}
+            style={{ marginLeft: 0 }}
+            title={t("footprint.tallAutoTooltip")}
+            aria-pressed={tall === "auto"}
+            onClick={() => applyTall("auto")}
           >
-            {cells}×{cells}
+            {t("footprint.auto")}
           </button>
-        ))}
-      </div>
-      <CellsField
-        label={t("footprint.custom")}
-        current={current}
-        clamp={clampFootprint}
-        active={typeof current === "number" && !(FOOTPRINTS as readonly number[]).includes(current)}
-        onSet={apply}
-      />
-      <div className="step-row" style={{ height: "auto" }}>
-        <button
-          className={tall === "auto" ? "step-button ground active" : "step-button ground"}
-          style={{ marginLeft: 0 }}
-          title={t("footprint.tallAutoTooltip")}
-          aria-pressed={tall === "auto"}
-          onClick={() => applyTall("auto")}
-        >
-          {t("footprint.auto")}
-        </button>
-        <CellsField
-          label={t("footprint.tall")}
-          current={tall}
-          clamp={clampTall}
-          active={typeof tall === "number"}
-          onSet={applyTall}
-          grow
-        />
-      </div>
+          <CellsField
+            label={t("footprint.tall")}
+            current={tall}
+            clamp={clampTall}
+            active={typeof tall === "number"}
+            onSet={applyTall}
+            grow
+          />
+        </div>
+      )}
     </div>
   );
 }

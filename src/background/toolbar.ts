@@ -57,11 +57,17 @@ export function registerToolbar(metadata: Record<string, unknown>) {
   } else if (!firstTime) {
     OBR.tool.removeAction(getPluginId("action/distances"));
   }
-  createTokenFootprintMenu(language);
+  // The footprint is in the Elevation entry while heights are on, on its own otherwise.
   if (altitudeMenu) {
     createTokenHeightMenu(language, heightStep);
-  } else if (!firstTime) {
-    OBR.contextMenu.remove(getPluginId("menu/tokenHeight"));
+    if (!firstTime) {
+      OBR.contextMenu.remove(getPluginId("menu/tokenFootprint"));
+    }
+  } else {
+    createTokenFootprintMenu(language);
+    if (!firstTime) {
+      OBR.contextMenu.remove(getPluginId("menu/tokenHeight"));
+    }
   }
   // Terrain is part of heights: off with them, or turned off, or on an axonometric grid.
   if (terrain) {

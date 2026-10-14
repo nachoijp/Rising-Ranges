@@ -18,7 +18,8 @@ import {
 } from "../settings/globalSettings";
 import { terrainShapes, type TerrainShape } from "../terrain/terrain";
 import { terrainLayers } from "../terrain/terrainLayers";
-import { markerBaseColor } from "../tokenHeight/markers";
+import { markerBaseColor, markerLookFromMetadata } from "../tokenHeight/markers";
+import { followMap, LABEL_FONT_SIZE } from "../render/lecturaItems";
 import { getStoredTheme, THEME_STORAGE_KEYS, type Color, type Theme } from "../theme/themes";
 import { applyLabelTextStyle, getColorString } from "../util/color";
 import { formatDistance } from "../util/flattenGridScale";
@@ -190,24 +191,33 @@ function wanted(): { items: Item[]; signature: string } {
     }
   }
   if (look.labels && gridScale) {
+    const labelSize = markerLookFromMetadata(metadata).tuning.size;
     for (const shape of shapes) {
-      out.push(attach(label(shape, gridScale, layerColor(shape.height, { ...look, color: "height" }, range, theme), z++), shape.id));
+      const color = layerColor(shape.height, { ...look, color: "height" }, range, theme);
+      out.push(attach(label(shape, gridScale, color, labelSize, z++), shape.id));
     }
   }
-  const signature = JSON.stringify(out.map((item) => [(item as unknown as { commands?: unknown }).commands, item.attachedTo, item.metadata, item.zIndex, JSON.stringify((item as unknown as { style?: unknown }).style), (item as unknown as { text?: { plainText?: string } }).text?.plainText, item.position]));
+  const signature = JSON.stringify(out.map((item) => [(item as unknown as { commands?: unknown }).commands, item.attachedTo, item.metadata, item.zIndex, JSON.stringify((item as unknown as { style?: unknown }).style), JSON.stringify((item as unknown as { text?: unknown }).text), item.position]));
   return { items: out, signature };
 }
 
-/** A zone's height written on it, at the top of its outline. */
-function label(shape: TerrainShape, scale: GridScale, color: Color, zIndex: number): Item {
+/**
+ * A zone's height written on it, centered on the topmost point of its
+ * outline (on the edge itself, wherever the shape is lopsided). Lettered
+ * like a token's height label (see heightOverlays.ts): same size setting,
+ * outline and growing with the map as it's zoomed.
+ */
+function label(shape: TerrainShape, scale: GridScale, color: Color, size: number, zIndex: number): Item {
   const points = shape.rings.flat();
   const top = points.reduce((best, p) => (p[1] < best[1] ? p : best), points[0]);
-  const centerX = points.reduce((sum, p) => sum + p[0], 0) / points.length;
   const text = `${shape.height > 0 ? "▲" : shape.height < 0 ? "▼" : ""} ${formatDistance(scale, Math.abs(shape.height))}`.trim();
   const item = buildLabel()
     .plainText(text)
-    .position({ x: centerX, y: top[1] + dpi * 0.35 })
+    .position({ x: top[0], y: top[1] })
     .pointerHeight(0)
+    .fontSize(LABEL_FONT_SIZE * size)
+    .padding(4 * size)
+    .cornerRadius(12 * size)
     .backgroundColor(getColorString(color))
     .backgroundOpacity(0.85)
     .layer("DRAWING")
@@ -217,7 +227,7 @@ function label(shape: TerrainShape, scale: GridScale, color: Color, zIndex: numb
     .build();
   applyLabelTextStyle(item, color, 1);
   item.metadata[ITEM_KEY] = true;
-  return item;
+  return followMap(item);
 }
 
 async function redraw() {

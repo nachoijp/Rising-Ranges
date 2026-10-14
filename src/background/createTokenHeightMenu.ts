@@ -9,7 +9,8 @@ import type { HeightStep } from "../engine/types";
 
 /**
  * A token's footprint set by hand (see footprint.ts): a row of sizes, on
- * the same page as the height picker.
+ * the same page as the height picker. Its own entry only while heights are
+ * off; with them, it's in the Elevation entry (createTokenHeightMenu).
  */
 export function createTokenFootprintMenu(language: Language) {
   OBR.contextMenu.create({
@@ -31,6 +32,9 @@ export function createTokenFootprintMenu(language: Language) {
   });
 }
 
+/** Item types that can't be terrain (see canBeTerrain). */
+const NOT_TERRAIN_TYPES = ["IMAGE", "TEXT", "LABEL", "LINE", "RULER", "POINTER", "WALL", "LIGHT", "EFFECT", "GRID"];
+
 /**
  * A shape's "Terrain height" (see terrain.ts), for the GM: how high the
  * ground is inside it, on the same page as the height picker.
@@ -44,12 +48,12 @@ export function createTerrainMenu(language: Language) {
         label: translate(language, "terrain.label"),
         filter: {
           roles: ["GM"],
-          // Terrain is part of the map (see terrain.ts).
+          // Terrain is part of the map (see terrain.ts): its shapes, curves
+          // and paths. Written as "on the Map and none of the other types":
+          // with "||" between the types, a curve or path on any layer got in.
           every: [
             { key: "layer", value: "MAP" },
-            { key: "type", value: "SHAPE", coordinator: "||" },
-            { key: "type", value: "CURVE", coordinator: "||" },
-            { key: "type", value: "PATH" },
+            ...NOT_TERRAIN_TYPES.map((type) => ({ key: "type", value: type, operator: "!=" as const })),
           ],
         },
       },
@@ -59,7 +63,11 @@ export function createTerrainMenu(language: Language) {
   });
 }
 
-/** The picker's height: a table of Bandas, or one row to step cell by cell. */
+/**
+ * The token's elevation — a table of Bandas, or one row to step cell by
+ * cell — with its footprint and its own height below, in one entry.
+ * "Elevation" is how high a token is; "Height", how tall it is.
+ */
 export function createTokenHeightMenu(language: Language, heightStep: HeightStep) {
   OBR.contextMenu.create({
     id: getPluginId("menu/tokenHeight"),
@@ -77,11 +85,16 @@ export function createTokenHeightMenu(language: Language, heightStep: HeightStep
       },
     ],
     embed: {
-      url: "/token-height.html",
+      url: "/token-height.html?view=elevation",
       // Bandas: 160 clipped the bottom row live; 210 left too much empty
       // space below it. Splitting the difference — still an estimate.
       // Cells: one 36px row plus the 8px padding around it.
-      height: heightStep === "unit" ? 52 : 185,
+      height: (heightStep === "unit" ? 52 : 185) + SECTION_TITLE_HEIGHT + FOOTPRINT_SECTION_HEIGHT,
     },
   });
 }
+
+/** Each section's title (.section-title). */
+const SECTION_TITLE_HEIGHT = 20;
+/** The footprint (its sizes and a custom size) and the token's height under the elevation, each after a divider and its title. */
+const FOOTPRINT_SECTION_HEIGHT = 17 + SECTION_TITLE_HEIGHT + 36 + 8 + 36 + 17 + SECTION_TITLE_HEIGHT + 36;

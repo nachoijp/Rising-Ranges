@@ -3,8 +3,8 @@ import ReactDOM from "react-dom/client";
 
 import { TokenHeightPicker } from "./TokenHeightPicker";
 import { FootprintPicker } from "./FootprintPicker";
+import { ElevationPanel } from "./ElevationPanel";
 import { TerrainPicker } from "./TerrainPicker";
-import { TerrainVisibilityPicker } from "./TerrainVisibilityPicker";
 import { PluginGate } from "../util/PluginGate";
 import { OBRContextProvider } from "../settings/OBRContext";
 
@@ -18,8 +18,8 @@ function View({ name }: { name: string | null }) {
   if (name === "terrain") {
     return <TerrainPicker />;
   }
-  if (name === "terrainVisibility") {
-    return <TerrainVisibilityPicker />;
+  if (name === "elevation") {
+    return <ElevationPanel />;
   }
   if (name === "footprint") {
     return <FootprintPicker />;
@@ -31,7 +31,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <PluginGate>
       <OBRContextProvider>
-        {/* One page for the context-menu embeds and the terrain visibility popover. */}
+        {/* One page for the context-menu embeds. */}
         <View name={new URLSearchParams(window.location.search).get("view")} />
       </OBRContextProvider>
     </PluginGate>
