@@ -32,6 +32,7 @@ const es = {
   "settings.bandShape.tooltip": "Forma de los anillos alrededor del Origen.",
   "settings.bandShape.circleAria": "Círculo",
   "settings.bandShape.squareAria": "Cuadrado",
+  "settings.bandShape.hexAria": "Hexágono (solo en grillas hexagonales)",
 
   "settings.iconPosition.label": "Posición",
   "settings.iconPosition.tooltip": "De qué lado del token va el marcador.",
@@ -161,6 +162,8 @@ const es = {
   "footprint.cells": "{cells} × {cells} casillas",
   "footprint.custom": "A medida",
   "footprint.customUnit": "casillas",
+  "footprint.tall": "Alto",
+  "footprint.tallAutoTooltip": "Alto según su imagen (se usa al hundirlo bajo el suelo)",
   "tokenHeight.up": "Arriba",
   "tokenHeight.down": "Abajo",
   "tokenHeight.raise": "Subir una casilla",

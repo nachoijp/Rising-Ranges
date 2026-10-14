@@ -8,6 +8,8 @@ import OBR, {
   type ToolEvent,
   type Vector2,
 } from "@owlbear-rodeo/sdk";
+import { axonometryOf } from "../engine/axonometry";
+import { isHexShape, onGrid, snapToOrigin } from "../engine/hex";
 import measureIcon from "../assets/range.svg";
 import { canUpdateItem } from "./permission";
 import {
@@ -15,6 +17,7 @@ import {
   mirrorEnd,
   mirrorHeightText,
   mirrorPinned,
+  mirrorReshape,
   mirrorStart,
   mirrorStates,
 } from "./measureMirror";
@@ -29,8 +32,8 @@ import {
 import { clearFixedMedicion, hasFixedMedicion, pinFixedMedicion, setFixedLive } from "./fixedMedicion";
 import { setDraggedToken } from "./heightOverlays";
 import { sameLecturaState, type LecturaContext, type LecturaState } from "../render/lecturaItems";
-import { buildBandRingItems, buildGradientShaders, buildOriginAnchor } from "../render/bandRings";
-import { getGridAxonometry, prefetchGridAxonometry } from "../util/gridAxonometry";
+import { buildBandRingItems, buildGradientShaders, buildOriginAnchor, originShapeKey, reshapeOrigin } from "../render/bandRings";
+import { getGridType, knownHexCenter, prefetchGridAxonometry } from "../util/gridAxonometry";
 import { getTokenRadius } from "../render/iconAnchor";
 import { getPluginId } from "../util/getPluginId";
 import { getMetadata } from "../util/getMetadata";
@@ -116,6 +119,16 @@ let activeOriginRadius = 0;
 let originHeight = 0;
 /** tokenId -> signed height in grid units, from the height markers. */
 let activeTokenHeights: Map<string, number> = new Map();
+/** A Medición from a free point on a hex grid follows the pointer cell by cell (see onCell); null otherwise. */
+let freePointCells: "hexHorizontal" | "hexVertical" | null = null;
+/** Which Origen that free hex Medición has now (see originShapeKey): its rings are reshaped when it changes. */
+let activeOriginShape: string | null = null;
+
+/** Where the Origen goes for a point: on a hex grid from a free point, its cell's center or, near one, a corner (see snapToOrigin). */
+function onCell(point: Vector2, dpi: number): Vector2 {
+  const gridCenter = knownHexCenter();
+  return freePointCells && gridCenter && dpi ? snapToOrigin(point, gridCenter, dpi, freePointCells).point : point;
+}
 // The measured tokens as they were when the Medición started: moves come in
 // far faster than fresh reads could, so Lecturas measure this snapshot.
 // Hidden ones only for the GM.
@@ -171,17 +184,29 @@ function scheduleRefresh(pointerPosition: Vector2) {
     if (!pendingPointerPosition) {
       return;
     }
-    activeCenter = pendingPointerPosition;
-    activeLecturaCenter = pendingPointerPosition;
+    activeCenter = onCell(pendingPointerPosition, activeDpi);
+    activeLecturaCenter = activeCenter;
     pendingPointerPosition = null;
     refreshBandPositions();
     refreshLecturas();
     measureView?.moveHeightLabel(activeCenter);
+    // From a cell's center to a corner or back: the rings and gradient change shape, here and for everyone.
+    const shapeKey = freePointCells && activeBandSet ? originShapeKey(activeCenter, activeDpi, activeBandSet) : null;
+    const reshape = shapeKey !== null && shapeKey !== activeOriginShape;
+    if (reshape) {
+      activeOriginShape = shapeKey;
+      mirrorReshape(activeCenter);
+    }
     if (originItems.length > 0) {
+      const center = activeCenter;
+      const bandSet = activeBandSet;
       OBR.scene.local.updateItems(originItems, (items) => {
         for (const item of items) {
           const offset = getMetadata(item.metadata, getPluginId("offset"), { x: 0, y: 0 });
-          item.position = Math2.subtract(activeCenter, offset);
+          item.position = Math2.subtract(center, offset);
+        }
+        if (reshape && bandSet) {
+          reshapeOrigin(items, center, bandSet, activeDpi);
         }
       });
     }
@@ -338,6 +363,8 @@ function cleanup() {
   hiddenTokenIds = new Set();
   secretMedicion = false;
   activeTokenHeights = new Map();
+  freePointCells = null;
+  activeOriginShape = null;
   pendingPointerPosition = null;
   pendingLecturaPosition = null;
   originHeightBeforeEdit = 0;
@@ -432,7 +459,7 @@ async function releaseMedicion(pin: boolean) {
   const pinRequest =
     pin && !fixedDrag && activeBandSet && pinnedGeneration !== generation
       ? {
-          center: pendingPointerPosition ?? activeCenter,
+          center: pendingPointerPosition ? onCell(pendingPointerPosition, activeDpi) : activeCenter,
           height: activeAltitudeEnabled ? originHeight : 0,
           radius: activeOriginRadius,
           secret: secretMedicion,
@@ -554,17 +581,18 @@ async function startFixedDrag(event: ToolEvent) {
   // waits for it (downTargetCheck), and its Lectura would otherwise be
   // measured from the ground meanwhile.
   const ready = (async () => {
-    const [canUpdate, sceneMetadata, dpi, axonometry, heightMarkers] = await Promise.all([
+    const [canUpdate, sceneMetadata, dpi, gridType, heightMarkers] = await Promise.all([
       canUpdateItem(target),
       OBR.scene.getMetadata(),
       OBR.scene.grid.getDpi(),
-      getGridAxonometry(),
+      getGridType(),
       getAllTokenHeightMarkers(),
     ]);
     if (generation !== toolDownGeneration || !canUpdate) {
       return;
     }
-    activeBandSet = bandSetFromMetadata(sceneMetadata);
+    const axonometry = axonometryOf(gridType);
+    activeBandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
     activeSettings = globalSettingsFromMetadata(sceneMetadata);
     activeAltitudeEnabled = activeSettings.enableAltitude ?? true;
     activeMarkerLook = markerLookFromMetadata(sceneMetadata);
@@ -622,7 +650,7 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
         const generation = toolDownGeneration;
 
         const tokenPosition = event.target && !event.target.locked && event.target.position;
-        const initialPosition = tokenPosition || event.pointerPosition;
+        let initialPosition = tokenPosition || event.pointerPosition;
         // So a grabbed token doesn't jump to center on the pointer.
         grabOffset = tokenPosition ? Math2.subtract(event.pointerPosition, tokenPosition) : { x: 0, y: 0 };
 
@@ -640,11 +668,11 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
             : Promise.resolve();
         downTargetCheck = permissionCheck.catch(() => {});
         const writesBeforeFetch = writesSoFar();
-        const [sceneMetadata, dpi, gridScale, axonometry, characterImages, allHeightMarkers, role] = await Promise.all([
+        const [sceneMetadata, dpi, gridScale, gridType, characterImages, allHeightMarkers, role] = await Promise.all([
           OBR.scene.getMetadata(),
           OBR.scene.grid.getDpi(),
           OBR.scene.grid.getScale(),
-          getGridAxonometry(),
+          getGridType(),
           OBR.scene.items.getItems<Image>((item): item is Image => isImage(item) && item.layer === "CHARACTER"),
           getAllTokenHeightMarkers(),
           OBR.player.getRole(),
@@ -654,7 +682,13 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
           return;
         }
         const language = languageFromMetadata(sceneMetadata);
-        const bandSet = bandSetFromMetadata(sceneMetadata);
+        const axonometry = axonometryOf(gridType);
+        // "hex" made the grid's own hex, or a circle off a hex grid (see hex.ts).
+        const bandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
+        // From a free point on a hex grid: from the center of its cell, so the Bandas take whole cells.
+        freePointCells = !tokenPosition && isHexShape(bandSet.shape) ? bandSet.shape : null;
+        initialPosition = onCell(initialPosition, dpi);
+        activeOriginShape = freePointCells ? originShapeKey(initialPosition, dpi, bandSet) : null;
 
         const theme = getStoredTheme();
         activeCenter = initialPosition;

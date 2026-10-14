@@ -1,4 +1,5 @@
 import { buildPath, buildShape, Command, Math2, type Item, type Vector2 } from "@owlbear-rodeo/sdk";
+import { cellCorners, isHexShape } from "../engine/hex";
 import { floorExtent } from "../engine/axonometry";
 import { BandShape } from "../engine/types";
 
@@ -31,7 +32,19 @@ export function buildFloorShape(
   const { halfWidth, halfHeight } = floorExtent(radius, shape, axonometry);
   let item: Item;
   let offset: Vector2;
-  if (shape === "square" && axonometry) {
+  if (isHexShape(shape)) {
+    // Shaped like a cell (see hex.ts), its sides `radius` from its center, so a token's Lectura fills its cell; hex grids are flat (axonometry 0).
+    const corners = cellCorners(radius, shape);
+    offset = { x: 0, y: 0 };
+    item = buildPath()
+      .commands([
+        [Command.MOVE, corners[0].x, corners[0].y],
+        ...corners.slice(1).map((corner): [Command.LINE, number, number] => [Command.LINE, corner.x, corner.y]),
+        [Command.CLOSE],
+      ])
+      .position(center)
+      .build();
+  } else if (shape === "square" && axonometry) {
     // The grid's own cell shape: Owlbear has no rhombus Shape.
     offset = { x: 0, y: 0 };
     item = buildPath()

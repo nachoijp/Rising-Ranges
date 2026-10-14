@@ -35,3 +35,35 @@ export function setTokenFootprint(item: Item, cells: number | undefined) {
     item.metadata[METADATA_KEY] = cells;
   }
 }
+
+// How tall a token is, in cells, when it's set by hand (the same menu): how
+// far down a sunk token goes for its head to be below its depth (see
+// sunkHead), instead of its image's top — art with empty space above it, or
+// a raised weapon or wings, would go too far. Unset = from its image.
+// Only for drawing: distances still take a token's height from its footprint.
+
+const TALL_KEY = getPluginId("tall");
+
+/** The range a height typed by hand is kept to, in cells. */
+export const MIN_TALL = 0.25;
+export const MAX_TALL = 20;
+
+/** A height typed by hand, kept in range and to two decimals. */
+export function clampTall(cells: number): number {
+  return Math.round(Math.min(MAX_TALL, Math.max(MIN_TALL, cells)) * 100) / 100;
+}
+
+/** How tall the token is in cells, if set by hand. */
+export function getTokenTall(item: Item): number | undefined {
+  const stored = item.metadata[TALL_KEY];
+  return typeof stored === "number" && Number.isFinite(stored) && stored > 0 ? stored : undefined;
+}
+
+/** Sets a token draft's height (undefined = from its image again). */
+export function setTokenTall(item: Item, cells: number | undefined) {
+  if (cells === undefined) {
+    delete item.metadata[TALL_KEY];
+  } else {
+    item.metadata[TALL_KEY] = cells;
+  }
+}

@@ -1,4 +1,5 @@
 import type { Image } from "@owlbear-rodeo/sdk";
+import { groundOffset } from "../engine/hex";
 import { BandSet } from "../engine/types";
 import {
   DEFAULT_TOLERANCE,
@@ -50,7 +51,8 @@ export function computeDistanceRows(
     const tokenRadius = getTokenRadius(token, dpi, axonometry);
     const dz = bodyCenterHeight(heights.get(token.id) ?? 0, tokenRadius) - originCenter;
     const excessSum = originExcess + excessRadius(tokenRadius);
-    const { distance, horizontal, vertical } = bodyDistance(dx, dy, dz, excessSum, bandSet.metric);
+    const ground = groundOffset(dx, dy, bandSet.shape);
+    const { distance, horizontal, vertical } = bodyDistance(ground.x, ground.y, dz, excessSum, bandSet.metric);
     return {
       token,
       bandIndex: findBandIndex(matchedDistance(distance, tolerance), bandSet),

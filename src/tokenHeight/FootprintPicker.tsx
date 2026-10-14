@@ -1,23 +1,30 @@
 import { useEffect, useState } from "react";
 import OBR, { type Item } from "@owlbear-rodeo/sdk";
 
-import { clampFootprint, FOOTPRINTS, getTokenFootprint, setTokenFootprint } from "./footprint";
+import { clampFootprint, clampTall, FOOTPRINTS, getTokenFootprint, getTokenTall, setTokenFootprint, setTokenTall } from "./footprint";
 import { watchTheme } from "./theme";
 import { useTranslation } from "../i18n/useTranslation";
 
 import "./tokenHeight.css";
 
-/** The selection's footprint: a number of cells, "auto" (from the image), or undefined when they differ. */
-function sharedFootprint(tokens: Item[]): number | "auto" | undefined {
-  const values = tokens.map((token) => getTokenFootprint(token) ?? "auto");
+type Cells = number | "auto" | undefined;
+
+/** The selection's value: a number of cells, "auto" (from the image), or undefined when they differ. */
+function shared(tokens: Item[], read: (token: Item) => number | undefined): Cells {
+  const values = tokens.map((token) => read(token) ?? "auto");
   return values.length > 0 && values.every((value) => value === values[0]) ? values[0] : undefined;
 }
 
-/** The context menu's "Footprint": Auto (from the image), 1–4 cells across, or a size typed by hand. */
+/**
+ * The context menu's "Footprint": Auto (from the image), 1–4 cells across,
+ * or a size typed by hand; and how tall the token is, Auto (its image's top)
+ * or typed by hand (see setTokenTall).
+ */
 export function FootprintPicker() {
   const t = useTranslation();
   const [selection, setSelection] = useState<string[]>([]);
-  const [current, setCurrent] = useState<number | "auto" | undefined>(undefined);
+  const [current, setCurrent] = useState<Cells>(undefined);
+  const [tall, setTall] = useState<Cells>(undefined);
 
   useEffect(() => {
     watchTheme();
@@ -31,9 +38,13 @@ export function FootprintPicker() {
   useEffect(() => {
     if (selection.length === 0) {
       setCurrent(undefined);
+      setTall(undefined);
       return;
     }
-    OBR.scene.items.getItems(selection).then((tokens) => setCurrent(sharedFootprint(tokens)));
+    OBR.scene.items.getItems(selection).then((tokens) => {
+      setCurrent(shared(tokens, getTokenFootprint));
+      setTall(shared(tokens, getTokenTall));
+    });
   }, [selection]);
 
   async function apply(value: number | "auto") {
@@ -46,6 +57,18 @@ export function FootprintPicker() {
       }
     });
     setCurrent(value);
+  }
+
+  async function applyTall(value: number | "auto") {
+    if (selection.length === 0) {
+      return;
+    }
+    await OBR.scene.items.updateItems(selection, (tokens) => {
+      for (const token of tokens) {
+        setTokenTall(token, value === "auto" ? undefined : value);
+      }
+    });
+    setTall(value);
   }
 
   if (selection.length === 0) {
@@ -78,13 +101,54 @@ export function FootprintPicker() {
           </button>
         ))}
       </div>
-      <CustomFootprint current={current} onSet={apply} />
+      <CellsField
+        label={t("footprint.custom")}
+        current={current}
+        clamp={clampFootprint}
+        active={typeof current === "number" && !(FOOTPRINTS as readonly number[]).includes(current)}
+        onSet={apply}
+      />
+      <div className="step-row" style={{ height: "auto" }}>
+        <button
+          className={tall === "auto" ? "step-button ground active" : "step-button ground"}
+          style={{ marginLeft: 0 }}
+          title={t("footprint.tallAutoTooltip")}
+          aria-pressed={tall === "auto"}
+          onClick={() => applyTall("auto")}
+        >
+          {t("footprint.auto")}
+        </button>
+        <CellsField
+          label={t("footprint.tall")}
+          current={tall}
+          clamp={clampTall}
+          active={typeof tall === "number"}
+          onSet={applyTall}
+          grow
+        />
+      </div>
     </div>
   );
 }
 
-/** "Custom: [2.5] squares" — any size, for what the presets don't cover. */
-function CustomFootprint({ current, onSet }: { current: number | "auto" | undefined; onSet: (cells: number) => void }) {
+/** "Custom: [2.5] squares" — a number of cells typed by hand, for what the buttons don't cover. */
+function CellsField({
+  label,
+  current,
+  clamp,
+  active,
+  onSet,
+  grow,
+}: {
+  label: string;
+  current: Cells;
+  clamp: (cells: number) => number;
+  /** Outlined like an active button: the value is one only this field gives. */
+  active: boolean;
+  onSet: (cells: number) => void;
+  /** Sharing its row with a button. */
+  grow?: boolean;
+}) {
   const t = useTranslation();
   const shown = typeof current === "number" ? String(current) : "";
   const [draft, setDraft] = useState(shown);
@@ -96,7 +160,7 @@ function CustomFootprint({ current, onSet }: { current: number | "auto" | undefi
       setDraft(shown);
       return;
     }
-    const cells = clampFootprint(value);
+    const cells = clamp(value);
     if (cells === current) {
       setDraft(shown);
     } else {
@@ -104,17 +168,15 @@ function CustomFootprint({ current, onSet }: { current: number | "auto" | undefi
     }
   }
 
-  // Outlined like an active preset when the size is one only this field gives.
-  const custom = typeof current === "number" && !(FOOTPRINTS as readonly number[]).includes(current);
   return (
-    <label className={custom ? "step-field active" : "step-field"} style={{ flex: "none" }}>
-      <span className="step-unit">{t("footprint.custom")}</span>
+    <label className={active ? "step-field active" : "step-field"} style={{ flex: grow ? 1 : "none" }}>
+      <span className="step-unit">{label}</span>
       <input
         className="step-input"
         inputMode="decimal"
         value={draft}
         placeholder="—"
-        aria-label={t("footprint.custom")}
+        aria-label={label}
         onChange={(event) => setDraft(event.target.value)}
         onBlur={commit}
         onKeyDown={(event) => {

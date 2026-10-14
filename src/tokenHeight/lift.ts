@@ -2,6 +2,7 @@ import type { Image, Item, Vector2 } from "@owlbear-rodeo/sdk";
 import { getPluginId } from "../util/getPluginId";
 import { isPlainObject } from "../util/isPlainObject";
 import { isPoint } from "../util/isPoint";
+import { getTokenTall } from "./footprint";
 
 // On an axonometric grid a raised token is drawn raised (see isoLift.ts):
 // its image is moved up on screen by its height, while the token itself —
@@ -128,13 +129,29 @@ export function headAbove(token: Image, dpi: number): number {
 }
 
 /**
+ * How much further down a sunk token goes for its head to be below its
+ * depth (see sunkLift): its height set by hand, or else its image's height
+ * on screen, rounded up to whole cells so
+ * its feet still land on the grid — one cell of height is `dpi` px up the
+ * screen, as a raised token moves.
+ */
+export function sunkHead(floor: Image, dpi: number): number {
+  // Its height set by hand if it has one (see footprint.ts), else its image's top.
+  const tall = getTokenTall(floor);
+  const cells = tall ?? headAbove(floor, dpi) / dpi;
+  // A hair under, so exactly N cells isn't taken as N + 1.
+  return Math.ceil(cells - 1e-6) * dpi;
+}
+
+/**
  * How far down a sunk token is drawn (px on screen, negative), `depth` px
- * below the floor: its head goes there, not its feet. Art for these grids
- * is mostly taller than wide, and moved down by its feet a shallow one
- * still covers the floor where it is.
+ * below the floor: by its head, not its feet — its head at its depth or a
+ * little below (see sunkHead). Art for these grids is mostly taller than
+ * wide, and moved down by its feet a shallow one still covers the floor
+ * where it is.
  */
 export function sunkLift(floor: Image, depth: number, dpi: number): number {
-  return -Math.round(depth + headAbove(floor, dpi));
+  return -Math.round(depth + sunkHead(floor, dpi));
 }
 
 /**

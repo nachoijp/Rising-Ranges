@@ -25,7 +25,7 @@ import { globalSettingsFromMetadata, liftsTokens } from "../settings/globalSetti
 import { computeIconAnchor, getTokenBounds, getTokenRadius } from "../render/iconAnchor";
 import { getTokenFootprint } from "../tokenHeight/footprint";
 import { buildFloorShape } from "../render/floorShape";
-import { activeLift, asDrawn, headAbove, onFloor } from "../tokenHeight/lift";
+import { activeLift, asDrawn, onFloor, sunkHead } from "../tokenHeight/lift";
 import { axonometryOf } from "../engine/axonometry";
 import { getGridAxonometry } from "../util/gridAxonometry";
 import { iconStackExtent } from "../render/iconStack";
@@ -468,7 +468,7 @@ function computeWanted(): Map<string, Wanted> {
       }
       if (settings.isoTether ?? true) {
         // A sunk one's reaches its head, where its depth is (see sunkLift).
-        const reach = lift < 0 ? Math.min(0, lift + Math.round(headAbove(floor, dpi))) : lift;
+        const reach = lift < 0 ? Math.min(0, lift + Math.round(sunkHead(floor, dpi))) : lift;
         const tether = wantedTether(floor, reach, height, bandSet, held);
         wanted.set(`tether:${token.id}`, { ...around(tether), held, live });
       }

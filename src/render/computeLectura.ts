@@ -1,4 +1,6 @@
 import type { GridScale, Image, Vector2 } from "@owlbear-rodeo/sdk";
+import { originCells } from "../util/gridAxonometry";
+import { groundOffset } from "../engine/hex";
 import { getTokenRadius } from "./iconAnchor";
 import type { LecturaState } from "./lecturaItems";
 import { DEFAULT_TOLERANCE, bodyCenterHeight, bodyDistance, excessRadius, matchedDistance } from "../engine/distance";
@@ -54,7 +56,9 @@ function lecturaDistance(
   const tokenRadius = getTokenRadius(token, dpi, axonometry);
   const dz = bodyCenterHeight(tokenHeight, tokenRadius) - bodyCenterHeight(origin.height, origin.radius);
   const excessRadiusSum = excessRadius(origin.radius) + excessRadius(tokenRadius);
-  const { distance } = bodyDistance(dx, dy, dz, excessRadiusSum, bandSet.metric);
+  // From a corner on a hex grid, to the nearest of the three cells around it.
+  const ground = groundOffset(dx, dy, bandSet.shape, originCells(origin.center, dpi, bandSet.shape));
+  const { distance } = bodyDistance(ground.x, ground.y, dz, excessRadiusSum, bandSet.metric);
   const tolerance = (bandSet.tolerance ?? DEFAULT_TOLERANCE) / 100;
   return { matched: matchedDistance(distance, tolerance), shown: distance };
 }

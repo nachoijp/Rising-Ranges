@@ -156,7 +156,15 @@ export function BandItem({
             fill="none"
             xmlns="http://www.w3.org/2000/svg"
           >
-            {bandShape === "circle" ? (
+            {bandShape === "hex" || bandShape === "hexHorizontal" || bandShape === "hexVertical" ? (
+              <polygon
+                points={[0, 60, 120, 180, 240, 300]
+                  .map((deg) => `${12 + iconRadius * Math.cos(((deg + 30) * Math.PI) / 180)},${12 + iconRadius * Math.sin(((deg + 30) * Math.PI) / 180)}`)
+                  .join(" ")}
+                stroke="currentColor"
+                strokeWidth="2"
+              />
+            ) : bandShape === "circle" ? (
               <circle
                 cx="12"
                 cy="12"

@@ -3,7 +3,11 @@ export type DistanceMetric = "spherical" | "cubic" | "cylindrical";
 /** Which side of a token's baseline a marker represents. */
 export type Direction = "up" | "down";
 
-export type BandShape = "circle" | "square";
+/**
+ * "hex" is what's stored and chosen; where a Medición starts it becomes the
+ * grid's own hexHorizontal / hexVertical, or a circle off a hex grid (see hex.ts).
+ */
+export type BandShape = "circle" | "square" | "hex" | "hexHorizontal" | "hexVertical";
 
 /** What one raise/lower step moves a token by: to the next Banda, or one grid cell. */
 export type HeightStep = "band" | "unit";

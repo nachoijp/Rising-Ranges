@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import OBR, { isImage, type GridScale, type Image, type Item } from "@owlbear-rodeo/sdk";
+import OBR, { isImage, type GridScale, type GridType, type Image, type Item } from "@owlbear-rodeo/sdk";
 
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
@@ -31,7 +31,8 @@ import { globalSettingsFromMetadata } from "../settings/globalSettings";
 import { isTokenHeightMarker, tokenHeightsFromMarkers } from "../tokenHeight/markers";
 import { computeDistanceRows, tokenName } from "./rows";
 import { axonometryOf } from "../engine/axonometry";
-import { getGridAxonometry } from "../util/gridAxonometry";
+import { getGridType } from "../util/gridAxonometry";
+import { onGrid } from "../engine/hex";
 import {
   DISTANCES_POPOVER_ID,
   PANEL_MAX_HEIGHT,
@@ -42,7 +43,7 @@ import {
 } from "./panelPopover";
 
 /** `axonometry`: the grid's rhombus ratio, 0 on a flat grid (see axonometry.ts). */
-type Grid = { dpi: number; scale: GridScale; axonometry: number };
+type Grid = { dpi: number; scale: GridScale; axonometry: number; type: GridType };
 
 // Five columns in a narrow popover: tighter than MUI's small-table padding.
 const cellSx = { px: 0.75, py: 0.5 };
@@ -167,17 +168,17 @@ export function DistancePanel() {
       OBR.scene.items.getItems(),
       OBR.scene.grid.getDpi(),
       OBR.scene.grid.getScale(),
-      getGridAxonometry(),
+      getGridType(),
       OBR.player.getRole(),
       OBR.player.getSelection(),
     ])
-      .then(([metadata, items, dpi, scale, axonometry, role, selection]) => {
+      .then(([metadata, items, dpi, scale, type, role, selection]) => {
         if (!mounted) {
           return;
         }
         setMetadata(metadata);
         setItems(items);
-        setGrid({ dpi, scale, axonometry });
+        setGrid({ dpi, scale, axonometry: axonometryOf(type), type });
         setRole(role);
         setSelection(selection ?? []);
       })
@@ -191,7 +192,7 @@ export function DistancePanel() {
           OBR.scene.grid.getScale(),
           axonometryOf(grid.type),
         ]);
-        setGrid({ dpi, scale, axonometry });
+        setGrid({ dpi, scale, axonometry, type: grid.type });
       }),
       OBR.player.onChange((player) => {
         setRole(player.role);
@@ -296,7 +297,7 @@ export function DistancePanel() {
     );
   }
 
-  const bandSet = bandSetFromMetadata(metadata);
+  const bandSet = onGrid(bandSetFromMetadata(metadata), grid.type);
   const altitude = settings.enableAltitude ?? true;
   const heights = altitude
     ? tokenHeightsFromMarkers(items.filter(isTokenHeightMarker), bandSet)

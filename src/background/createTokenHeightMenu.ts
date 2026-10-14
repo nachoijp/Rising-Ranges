@@ -26,7 +26,7 @@ export function createTokenFootprintMenu(language: Language) {
         },
       },
     ],
-    embed: { url: "/token-height.html?view=footprint", height: 96 },
+    embed: { url: "/token-height.html?view=footprint", height: 140 },
   });
 }
 

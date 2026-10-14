@@ -1,4 +1,4 @@
-import OBR, { isImage, isLabel, type GridScale, type Image, type Item, type Vector2 } from "@owlbear-rodeo/sdk";
+import OBR, { isImage, isLabel, type GridScale, type GridType, type Image, type Item, type Vector2 } from "@owlbear-rodeo/sdk";
 import unpinIcon from "../assets/unpin.svg";
 import { getPluginId } from "../util/getPluginId";
 import { getMetadata } from "../util/getMetadata";
@@ -12,7 +12,8 @@ import { translate } from "../i18n/translate";
 import { isTokenHeightMarker, tokenHeightsFromMarkers } from "../tokenHeight/markers";
 import { buildBandRingItems, buildGradientShaders } from "../render/bandRings";
 import { axonometryOf } from "../engine/axonometry";
-import { getGridAxonometry } from "../util/gridAxonometry";
+import { getGridType } from "../util/gridAxonometry";
+import { onGrid } from "../engine/hex";
 import {
   applyLecturaState,
   buildHeightLabelItem,
@@ -64,6 +65,8 @@ let items: Item[] = [];
 let dpi = 0;
 /** The grid's rhombus ratio, 0 on a flat grid (see axonometry.ts). */
 let axonometry = 0;
+/** The scene grid's type: a "hex" BandSet only measures hex by hex on a hex grid (see hex.ts). */
+let gridType: GridType = "SQUARE";
 let gridScale: GridScale | null = null;
 let role: "GM" | "PLAYER" = "PLAYER";
 /** Where this client is dragging a token right now, and its height there — newer than the scene. */
@@ -376,7 +379,7 @@ async function reconcile() {
     }
     drawnLecturas.clear();
   } else {
-    const bandSet = bandSetFromMetadata(metadata);
+    const bandSet = onGrid(bandSetFromMetadata(metadata), gridType);
     const settings = globalSettingsFromMetadata(metadata);
     const altitude = settings.enableAltitude ?? true;
     const display = resolveDisplay(settings.display, bandSet, settings);
@@ -569,18 +572,19 @@ function schedule() {
 }
 
 async function loadScene() {
-  const [nextMetadata, nextItems, nextDpi, nextScale, nextAxonometry] = await Promise.all([
+  const [nextMetadata, nextItems, nextDpi, nextScale, nextGridType] = await Promise.all([
     OBR.scene.getMetadata(),
     OBR.scene.items.getItems(),
     OBR.scene.grid.getDpi(),
     OBR.scene.grid.getScale(),
-    getGridAxonometry(),
+    getGridType(),
   ]);
   metadata = nextMetadata;
   items = nextItems;
   dpi = nextDpi;
   gridScale = nextScale;
-  axonometry = nextAxonometry;
+  gridType = nextGridType;
+  axonometry = axonometryOf(nextGridType);
   sceneReady = true;
   resync = true;
   schedule();
@@ -616,6 +620,7 @@ export async function startFixedMedicion() {
     schedule();
   });
   OBR.scene.grid.onChange(async (grid) => {
+    gridType = grid.type;
     [dpi, gridScale, axonometry] = await Promise.all([
       OBR.scene.grid.getDpi(),
       OBR.scene.grid.getScale(),

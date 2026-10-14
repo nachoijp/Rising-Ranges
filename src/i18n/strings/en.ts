@@ -35,6 +35,7 @@ const en: Record<TranslationKey, string> = {
   "settings.bandShape.tooltip": "Shape of the rings around the Origin.",
   "settings.bandShape.circleAria": "Circle",
   "settings.bandShape.squareAria": "Square",
+  "settings.bandShape.hexAria": "Hexagon (hex grids only)",
 
   "settings.iconPosition.label": "Position",
   "settings.iconPosition.tooltip": "Which side of the token the marker goes on.",
@@ -163,6 +164,8 @@ const en: Record<TranslationKey, string> = {
   "footprint.cells": "{cells} × {cells} squares",
   "footprint.custom": "Custom",
   "footprint.customUnit": "squares",
+  "footprint.tall": "Height",
+  "footprint.tallAutoTooltip": "Height from its image (used when it's sunk below the floor)",
   "tokenHeight.selectToken": "Select a token.",
   "tokenHeight.up": "Up",
   "tokenHeight.down": "Down",

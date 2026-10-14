@@ -10,7 +10,7 @@ import {
   type LecturaContext,
   type LecturaState,
 } from "../render/lecturaItems";
-import { buildBandRingItems, buildGradientShaders } from "../render/bandRings";
+import { buildBandRingItems, buildGradientShaders, reshapeOrigin } from "../render/bandRings";
 import { getStoredTheme } from "../theme/themes";
 import { showPinnedFixedMedicion } from "./fixedMedicion";
 
@@ -58,7 +58,13 @@ type UpdateMessage = {
 type EndMessage = { type: "end"; sessionId: number };
 /** The Medición was left in place as this Medición fija: shown before the Medición goes (receivers before 1.3.0 ignore it). */
 type PinMessage = { type: "pin"; sessionId: number; fixed: unknown };
-type MirrorMessage = StartMessage | UpdateMessage | EndMessage | PinMessage;
+/**
+ * A free hex Medición's Origen moved from a cell's center to a corner or
+ * back: its rings and gradient take the new shape (see reshapeOrigin).
+ * Receivers before 1.4.0 ignore it.
+ */
+type ReshapeMessage = { type: "reshape"; sessionId: number; center: Vector2 };
+type MirrorMessage = StartMessage | UpdateMessage | EndMessage | PinMessage | ReshapeMessage;
 
 /**
  * One Medición's client-local Lecturas + height label (+ extra items, e.g.
@@ -74,6 +80,18 @@ export class LocalMeasureView {
   private ended = false;
 
   constructor(private ctx: LecturaContext) {}
+
+  /** A free hex Medición's Origen changed between a cell's center and a corner: its rings and gradient take that shape. */
+  reshapeOrigin(center: Vector2) {
+    this.enqueue(async () => {
+      const ids = this.itemIds.filter((id) => id !== this.heightLabelId);
+      if (ids.length > 0) {
+        await OBR.scene.local.updateItems(ids, (drafts) => {
+          reshapeOrigin(drafts, center, this.ctx.bandSet, this.ctx.dpi);
+        });
+      }
+    });
+  }
 
   private enqueue(task: () => Promise<unknown>) {
     this.queue = this.queue.then(task).catch((error) => {
@@ -300,6 +318,13 @@ export function mirrorHeightText(text: string) {
   scheduleFlush();
 }
 
+export function mirrorReshape(center: Vector2) {
+  if (!activeSessionId) {
+    return;
+  }
+  send({ type: "reshape", sessionId: activeSessionId, center });
+}
+
 export function mirrorPinned(fixed: unknown) {
   if (!activeSessionId) {
     return;
@@ -391,6 +416,10 @@ export function startMeasureMirrorReceiver() {
     if (message.type === "end") {
       sessions.delete(connectionId);
       await current.view.end();
+      return;
+    }
+    if (message.type === "reshape") {
+      current.view.reshapeOrigin(message.center);
       return;
     }
     if (message.type === "pin") {

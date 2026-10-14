@@ -50,6 +50,13 @@ export function floorExtent(
   shape: BandShape,
   axonometry: number
 ): { halfWidth: number; halfHeight: number } {
+  // Shaped like a cell (see hex.ts): its sides `radius` away, its corners further — sideways on hexHorizontal, up and down on hexVertical.
+  if (shape === "hexHorizontal") {
+    return { halfWidth: radius / Math.cos(Math.PI / 6), halfHeight: radius };
+  }
+  if (shape === "hexVertical") {
+    return { halfWidth: radius, halfHeight: radius / Math.cos(Math.PI / 6) };
+  }
   if (!axonometry) {
     return { halfWidth: radius, halfHeight: radius };
   }
