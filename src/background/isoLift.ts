@@ -29,6 +29,7 @@ function wantedLifts(): Map<string, number> {
   const settings = globalSettingsFromMetadata(metadata);
   const lifting = liftsTokens(settings, gridType);
   const bandSet = bandSetFromMetadata(metadata);
+  const byHead = settings.isoSunkHead ?? true;
   const heights = new Map<string, number>();
   if (lifting) {
     for (const item of items) {
@@ -46,7 +47,7 @@ function wantedLifts(): Map<string, number> {
     if (height || getTokenLift(item)) {
       // Whole px: the same on every client, and no rewrite over float noise.
       // Up by its feet, down by its head (see sunkLift).
-      wanted.set(item.id, height < 0 ? sunkLift(onFloor(item), -height * dpi, dpi) : Math.round(height * dpi));
+      wanted.set(item.id, height < 0 ? sunkLift(onFloor(item), -height * dpi, dpi, byHead) : Math.round(height * dpi));
     }
   }
   return wanted;

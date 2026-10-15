@@ -135,7 +135,11 @@ export function headAbove(token: Image, dpi: number): number {
  * its feet still land on the grid — one cell of height is `dpi` px up the
  * screen, as a raised token moves.
  */
-export function sunkHead(floor: Image, dpi: number): number {
+export function sunkHead(floor: Image, dpi: number, byHead = true): number {
+  // Drawn down by its feet instead (GlobalSettings.isoSunkHead off).
+  if (!byHead) {
+    return 0;
+  }
   // Its height set by hand if it has one (see footprint.ts), else its image's top.
   const tall = getTokenTall(floor);
   const cells = tall ?? headAbove(floor, dpi) / dpi;
@@ -150,8 +154,8 @@ export function sunkHead(floor: Image, dpi: number): number {
  * wide, and moved down by its feet a shallow one still covers the floor
  * where it is.
  */
-export function sunkLift(floor: Image, depth: number, dpi: number): number {
-  return -Math.round(depth + sunkHead(floor, dpi));
+export function sunkLift(floor: Image, depth: number, dpi: number, byHead = true): number {
+  return -Math.round(depth + sunkHead(floor, dpi, byHead));
 }
 
 /**

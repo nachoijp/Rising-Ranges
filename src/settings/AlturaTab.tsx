@@ -201,6 +201,15 @@ export function AlturaTab({
                 disabled={!settings.isoLift}
                 onChange={(isoTether) => onChangeSettings({ isoTether })}
               />
+              <SettingSwitch
+                label={t("settings.altura.isoSunkHead")}
+                checked={settings.isoSunkHead ?? true}
+                disabled={!settings.isoLift}
+                onChange={(isoSunkHead) => onChangeSettings({ isoSunkHead })}
+              />
+              <Typography variant="caption" color="text.secondary" sx={{ px: 1 }}>
+                {t("settings.altura.isoSunkHeadHint")}
+              </Typography>
             </Stack>
           </FoldedSection>
         </>

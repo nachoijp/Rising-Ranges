@@ -40,6 +40,12 @@ export type GlobalSettings = {
   /** With isoLift: a line from the floor up (or down) to the token. Missing = true. */
   isoTether?: boolean;
   /**
+   * With isoLift: a sunk token is drawn down by its head (its head at its
+   * depth, see sunkLift) rather than by its feet, which leaves the light on
+   * the floor above it uncovered. Missing = true.
+   */
+  isoSunkHead?: boolean;
+  /**
    * What a height is shown and set against, with terrain (see terrain.ts):
    * "terrain" = above the ground each token stands on, "fixed" = above one
    * fixed ground for the whole map (like sea level). Distances are the same
@@ -158,6 +164,7 @@ function isGlobalSettings(value: unknown): value is GlobalSettings {
     optionalBoolean(value.isoLift) &&
     optionalBoolean(value.isoShadow) &&
     optionalBoolean(value.isoTether) &&
+    optionalBoolean(value.isoSunkHead) &&
     (value.markerStyle === undefined ||
       value.markerStyle === "icons" ||
       value.markerStyle === "label" ||

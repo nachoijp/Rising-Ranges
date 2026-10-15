@@ -1,7 +1,7 @@
 import OBR, { type GridType } from "@owlbear-rodeo/sdk";
 import { getPluginId } from "../util/getPluginId";
 import { languageFromMetadata } from "../i18n/language";
-import { globalSettingsFromMetadata, terrainOn, terrainVisibility } from "../settings/globalSettings";
+import { globalSettingsFromMetadata, liftsTokens, terrainOn, terrainVisibility } from "../settings/globalSettings";
 import { getGridType } from "../util/gridAxonometry";
 import { createMeasureTool } from "./createMeasureTool";
 import { createThemeAction } from "./createThemeAction";
@@ -33,6 +33,8 @@ export function registerToolbar(metadata: Record<string, unknown>) {
   const altitude = settings.enableAltitude ?? true;
   const terrain = terrainOn(settings, gridType);
   const terrainMode = terrainVisibility(settings);
+  // The token's "Height when sunk" only does something while sunk tokens are drawn down by their head.
+  const tall = liftsTokens(settings, gridType) && (settings.isoSunkHead ?? true);
   const signature = JSON.stringify([
     language,
     settings.hotkeyActivate,
@@ -42,6 +44,7 @@ export function registerToolbar(metadata: Record<string, unknown>) {
     altitude,
     terrain,
     terrainMode,
+    tall,
   ]);
   if (signature === lastSignature) {
     return;
@@ -59,12 +62,12 @@ export function registerToolbar(metadata: Record<string, unknown>) {
   }
   // The footprint is in the Elevation entry while heights are on, on its own otherwise.
   if (altitudeMenu) {
-    createTokenHeightMenu(language, heightStep);
+    createTokenHeightMenu(language, heightStep, tall);
     if (!firstTime) {
       OBR.contextMenu.remove(getPluginId("menu/tokenFootprint"));
     }
   } else {
-    createTokenFootprintMenu(language);
+    createTokenFootprintMenu(language, tall);
     if (!firstTime) {
       OBR.contextMenu.remove(getPluginId("menu/tokenHeight"));
     }

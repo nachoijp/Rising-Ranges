@@ -12,7 +12,7 @@ import type { HeightStep } from "../engine/types";
  * Elevation entry's last two sections (see ElevationPanel). Its own entry
  * only while the Elevation one is off.
  */
-export function createTokenFootprintMenu(language: Language) {
+export function createTokenFootprintMenu(language: Language, tall: boolean) {
   OBR.contextMenu.create({
     id: getPluginId("menu/tokenFootprint"),
     icons: [
@@ -28,8 +28,8 @@ export function createTokenFootprintMenu(language: Language) {
         },
       },
     ],
-    // The 8px padding around both sections, without the divider above the first.
-    embed: { url: "/token-height.html?view=footprint", height: 16 + FOOTPRINT_SECTION_HEIGHT - 17 },
+    // The 8px padding around its sections, without the divider above the first.
+    embed: { url: `/token-height.html?view=footprint${tallParam(tall)}`, height: 16 + footprintSectionHeight(tall) - 17 },
   });
 }
 
@@ -69,7 +69,7 @@ export function createTerrainMenu(language: Language) {
  * cell — with its footprint and its own height below, in one entry.
  * "Elevation" is how high a token is; "Height", how tall it is.
  */
-export function createTokenHeightMenu(language: Language, heightStep: HeightStep) {
+export function createTokenHeightMenu(language: Language, heightStep: HeightStep, tall: boolean) {
   OBR.contextMenu.create({
     id: getPluginId("menu/tokenHeight"),
     icons: [
@@ -86,16 +86,24 @@ export function createTokenHeightMenu(language: Language, heightStep: HeightStep
       },
     ],
     embed: {
-      url: "/token-height.html?view=elevation",
+      url: `/token-height.html?view=elevation${tallParam(tall)}`,
       // Bandas: 160 clipped the bottom row live; 210 left too much empty
       // space below it. Splitting the difference — still an estimate.
       // Cells: one 36px row plus the 8px padding around it.
-      height: (heightStep === "unit" ? 52 : 185) + SECTION_TITLE_HEIGHT + FOOTPRINT_SECTION_HEIGHT,
+      height: (heightStep === "unit" ? 52 : 185) + SECTION_TITLE_HEIGHT + footprintSectionHeight(tall),
     },
   });
 }
 
 /** Each section's title (.section-title). */
 const SECTION_TITLE_HEIGHT = 20;
-/** The footprint (its sizes and a custom size) and the token's height under the elevation, each after a divider and its title. */
-const FOOTPRINT_SECTION_HEIGHT = 17 + SECTION_TITLE_HEIGHT + 36 + 8 + 36 + 17 + SECTION_TITLE_HEIGHT + 36;
+/**
+ * The footprint (its sizes and a custom size) under the elevation, and the
+ * token's height when sunk if it's shown, each after a divider and its title.
+ */
+function footprintSectionHeight(tall: boolean): number {
+  return 17 + SECTION_TITLE_HEIGHT + 36 + 8 + 36 + (tall ? 17 + SECTION_TITLE_HEIGHT + 36 : 0);
+}
+
+/** Leaves out the "Height when sunk" section (see ElevationPanel) when it would do nothing. */
+const tallParam = (tall: boolean) => (tall ? "" : "&tall=0");

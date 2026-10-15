@@ -43,7 +43,7 @@ Right-click any token and open **Elevation** to set a persistent elevation marke
 
 ![Elevation context menu, one cell at a time](docs/screenshots/height-menu-cells.png)
 
-The same menu sets the token's **Footprint** — how many cells it takes up on the floor, from its image (*Auto*) or set by hand — and its **Height**, how tall it is, used when it's sunk below the floor.
+The same menu sets the token's **Footprint** — how many cells it takes up on the floor, from its image (*Auto*) or set by hand — and, while tokens are drawn at their elevation (see below), its **Height when sunk**: how tall it is, so a token below the floor is drawn that much further down (rounded up to whole cells). It never changes distances.
 
 ## Isometric, dimetric and hex grids
 
@@ -53,7 +53,7 @@ On hex grids the rings follow the cells: a range is every cell within that many 
 
 ![Perspective view settings](docs/screenshots/perspective-settings.png)
 
-Under **Perspective view** in the Elevation tab, **Draw tokens at their elevation** moves each token's image up (or down) by its elevation, so you can tell a token that's high up from one that's far away; the token itself stays on its square. A shadow on the floor (a light when it's below it) and a line down to it show where it really stands. It needs a GM in the room, whose client moves the images: turn it off before removing the extension.
+Under **Perspective view** in the Elevation tab, **Draw tokens at their elevation** moves each token's image up (or down) by its elevation, so you can tell a token that's high up from one that's far away; the token itself stays on its square. A shadow on the floor (a light when it's below it) and a line down to it show where it really stands. A token below the floor goes down by its head, so its light stays in view; turn off **Sink tokens by their head** to move it down by its feet instead. It needs a GM in the room, whose client moves the images: turn it off before removing the extension.
 
 ## Build your own ranges
 

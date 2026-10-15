@@ -485,7 +485,7 @@ function computeWanted(): Map<string, Wanted> {
       }
       if (settings.isoTether ?? true) {
         // A sunk one's reaches its head, where its depth is (see sunkLift).
-        const reach = lift < 0 ? Math.min(0, lift + Math.round(sunkHead(floor, dpi))) : lift;
+        const reach = lift < 0 ? Math.min(0, lift + Math.round(sunkHead(floor, dpi, settings.isoSunkHead ?? true))) : lift;
         const tether = wantedTether(floor, reach, height, bandSet, held);
         wanted.set(`tether:${token.id}`, { ...around(tether), held, live });
       }

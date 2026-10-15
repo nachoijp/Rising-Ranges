@@ -9,10 +9,13 @@ import "./tokenHeight.css";
 /**
  * The context menu's "Elevation": three titled sections — how high the
  * token is (its elevation), its footprint, and how tall it is (its
- * height). With heights off, the "Footprint" entry: the last two alone.
+ * height, only where sunk tokens are drawn down by their head). With the
+ * Elevation entry off, the "Footprint" entry: the last two alone.
  * createTokenHeightMenu sizes the embed to these heights.
  */
 export function ElevationPanel({ elevation = true }: { elevation?: boolean }) {
+  // Left out when it would change nothing (see createTokenHeightMenu): only sunk tokens drawn down by their head use it.
+  const tall = new URLSearchParams(window.location.search).get("tall") !== "0";
   const { bandSet } = useOBRContext();
   const t = useTranslation();
   // The picker's own area: the Bandas table, or the one row to step cell by cell.
@@ -30,9 +33,15 @@ export function ElevationPanel({ elevation = true }: { elevation?: boolean }) {
       )}
       <div className="section-title">{t("footprint.label")}</div>
       <FootprintPicker part="footprint" />
-      <hr className="section-divider" />
-      <div className="section-title">{t("footprint.tallSection")}</div>
-      <FootprintPicker part="tall" />
+      {tall && (
+        <>
+          <hr className="section-divider" />
+          <div className="section-title" title={t("footprint.tallTooltip")}>
+            {t("footprint.tallSection")}
+          </div>
+          <FootprintPicker part="tall" />
+        </>
+      )}
     </div>
   );
 }
