@@ -8,9 +8,9 @@ import { translate } from "../i18n/translate";
 import type { HeightStep } from "../engine/types";
 
 /**
- * A token's footprint set by hand (see footprint.ts): a row of sizes, on
- * the same page as the height picker. Its own entry only while heights are
- * off; with them, it's in the Elevation entry (createTokenHeightMenu).
+ * A token's footprint and height set by hand (see footprint.ts): the
+ * Elevation entry's last two sections (see ElevationPanel). Its own entry
+ * only while the Elevation one is off.
  */
 export function createTokenFootprintMenu(language: Language) {
   OBR.contextMenu.create({
@@ -28,7 +28,8 @@ export function createTokenFootprintMenu(language: Language) {
         },
       },
     ],
-    embed: { url: "/token-height.html?view=footprint", height: 140 },
+    // The 8px padding around both sections, without the divider above the first.
+    embed: { url: "/token-height.html?view=footprint", height: 16 + FOOTPRINT_SECTION_HEIGHT - 17 },
   });
 }
 

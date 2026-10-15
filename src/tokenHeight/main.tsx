@@ -2,7 +2,6 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import { TokenHeightPicker } from "./TokenHeightPicker";
-import { FootprintPicker } from "./FootprintPicker";
 import { ElevationPanel } from "./ElevationPanel";
 import { TerrainPicker } from "./TerrainPicker";
 import { PluginGate } from "../util/PluginGate";
@@ -22,7 +21,7 @@ function View({ name }: { name: string | null }) {
     return <ElevationPanel />;
   }
   if (name === "footprint") {
-    return <FootprintPicker />;
+    return <ElevationPanel elevation={false} />;
   }
   return <TokenHeightPicker />;
 }
