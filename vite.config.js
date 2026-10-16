@@ -34,6 +34,7 @@ export default defineConfig({
         tokenHeight: resolve(__dirname, "token-height.html"),
         distances: resolve(__dirname, "distances.html"),
         terrainVisibility: resolve(__dirname, "terrain-visibility.html"),
+        vistazo: resolve(__dirname, "vistazo.html"),
       },
     },
   },

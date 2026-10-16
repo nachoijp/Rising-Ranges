@@ -11,6 +11,7 @@ import { createTerrainVisibilityAction } from "./createTerrainVisibilityAction";
 import { createDistancesAction } from "./createDistancesAction";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
 import { heightStepOf } from "../engine/heights";
+import { translate } from "../i18n/translate";
 
 // Everything this extension adds to Owlbear's own UI — the Medición mode,
 // the toolbar actions, the Altura context menu — registered from the
@@ -52,6 +53,8 @@ export function registerToolbar(metadata: Record<string, unknown>) {
   const firstTime = lastSignature === null;
   lastSignature = signature;
 
+  // The Vistazo 3D is the action at the top (manifest.json); its title follows the language.
+  OBR.action.setTitle(translate(language, "vistazo.title")).catch(() => {});
   createMeasureTool(language, settings);
   createThemeAction(language);
   createSettingsAction(language);

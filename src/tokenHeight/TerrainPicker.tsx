@@ -3,7 +3,7 @@ import OBR, { type Item } from "@owlbear-rodeo/sdk";
 
 import { useOBRContext } from "../settings/OBRContext";
 import { clampHeight } from "../engine/heights";
-import { canBeTerrain, getTerrainHeight, setTerrainHeight } from "../terrain/terrain";
+import { canBeTerrain, getTerrainHeight, getTerrainStand, setTerrainHeight, setTerrainStand } from "../terrain/terrain";
 import { UnitStepper } from "./TokenHeightPicker";
 import { watchTheme } from "./theme";
 import { useTranslation } from "../i18n/useTranslation";
@@ -49,9 +49,26 @@ export function TerrainPicker() {
     await OBR.scene.items.updateItems(ids, (drafts) => {
       for (const draft of drafts) {
         setTerrainHeight(draft, next && clampHeight(next(getTerrainHeight(draft) ?? 0)));
+        if (!next) {
+          setTerrainStand(draft, false);
+        }
       }
     });
     setShapes(await OBR.scene.items.getItems(ids));
+  }
+
+  /** Stands the selected zones up in the Vistazo 3D, or lays them flat again (all alike). */
+  async function toggleStand(stand: boolean) {
+    const ids = shapes.filter((shape) => getTerrainHeight(shape) !== undefined).map((shape) => shape.id);
+    if (ids.length === 0) {
+      return;
+    }
+    await OBR.scene.items.updateItems(ids, (drafts) => {
+      for (const draft of drafts) {
+        setTerrainStand(draft, stand);
+      }
+    });
+    setShapes(await OBR.scene.items.getItems(selection));
   }
 
   if (shapes.length === 0) {
@@ -59,6 +76,7 @@ export function TerrainPicker() {
   }
 
   const anyTerrain = shapes.some((shape) => getTerrainHeight(shape) !== undefined);
+  const standing = anyTerrain && shapes.every((shape) => getTerrainHeight(shape) === undefined || getTerrainStand(shape));
   return (
     <div className="picker-stack" role="group" aria-label={t("terrain.label")}>
       <UnitStepper
@@ -67,9 +85,21 @@ export function TerrainPicker() {
         onStep={(direction) => apply((height) => height + direction)}
         onSet={(height) => apply(() => height)}
       />
-      <button className="step-button ground" style={{ marginLeft: 0 }} disabled={!anyTerrain} onClick={() => apply(undefined)}>
-        {t("terrain.remove")}
-      </button>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button
+          className={"step-button ground" + (standing ? " active" : "")}
+          style={{ marginLeft: 0 }}
+          disabled={!anyTerrain}
+          aria-pressed={standing}
+          title={t("terrain.standHint")}
+          onClick={() => toggleStand(!standing)}
+        >
+          {t("terrain.stand")}
+        </button>
+        <button className="step-button ground" disabled={!anyTerrain} onClick={() => apply(undefined)}>
+          {t("terrain.remove")}
+        </button>
+      </div>
     </div>
   );
 }

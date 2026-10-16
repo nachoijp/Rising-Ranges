@@ -51,6 +51,25 @@ export function setTerrainHeight(item: Item, height: number | undefined) {
   }
 }
 
+const STAND_KEY = getPluginId("terrainStand");
+
+/**
+ * Whether the Vistazo 3D stands the zone up: a part of the map drawn as if
+ * upright (a statue, a wall seen from the front) is turned up on its edge
+ * nearest the map's middle. Only how it's drawn there; it measures as usual.
+ */
+export function getTerrainStand(item: Item): boolean {
+  return item.metadata[STAND_KEY] === true;
+}
+
+export function setTerrainStand(item: Item, stand: boolean) {
+  if (stand) {
+    item.metadata[STAND_KEY] = true;
+  } else {
+    delete item.metadata[STAND_KEY];
+  }
+}
+
 /** A zone, ready to be asked whether a point is in it. */
 export type TerrainZone = {
   id: string;

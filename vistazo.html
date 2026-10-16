@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rising Ranges — Vistazo 3D</title>
+  </head>
+  <body>
+    <p class="message" id="message" hidden></p>
+    <div class="app" id="app">
+      <div class="stage" id="stage" tabindex="0">
+        <div class="hud">
+          <svg viewBox="-20 -20 40 40" aria-hidden="true">
+            <circle r="18" fill="rgba(0,0,0,.35)" stroke="rgba(255,255,255,.35)" />
+            <g id="needle">
+              <path d="M0-14 L5 0 L0-3 L-5 0Z" fill="#e8665a" />
+              <path d="M0 14 L5 0 L0 3 L-5 0Z" fill="#dfe8e5" />
+              <text y="-15.5" font-size="7" text-anchor="middle" fill="#fff" font-family="sans-serif">N</text>
+            </g>
+          </svg>
+          <span id="status"></span>
+        </div>
+        <div class="hint" data-t="vistazo.hint"></div>
+        <button class="panel-toggle" id="panelToggle" type="button" data-title="vistazo.panel" aria-pressed="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM15 5v14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" /></svg>
+        </button>
+        <div class="loading" id="loading" data-t="vistazo.loading"></div>
+      </div>
+
+      <aside>
+        <h1 data-t="vistazo.title"></h1>
+        <p class="note" id="terrainOff" data-t="vistazo.terrainOff" hidden></p>
+        <button class="primary" id="toggle" type="button"></button>
+
+        <fieldset>
+          <legend data-t="vistazo.camera"></legend>
+          <label class="row" for="tilt"><span data-t="vistazo.tilt"></span><output id="tiltOut"></output><input id="tilt" type="range" min="0" max="150" step="1" /></label>
+          <label class="row" for="yaw"><span data-t="vistazo.turn"></span><output id="yawOut"></output><input id="yaw" type="range" min="-180" max="180" step="1" /></label>
+          <label class="row" for="persp"><span data-t="vistazo.perspective"></span><output id="perspOut"></output><input id="persp" type="range" min="0" max="100" step="1" /></label>
+          <div><button class="ghost" id="reset" type="button" data-t="vistazo.reset"></button></div>
+        </fieldset>
+
+        <fieldset>
+          <legend data-t="vistazo.relief"></legend>
+          <label class="row" for="hscale"><span data-t="vistazo.heightScale"></span><output id="hscaleOut"></output><input id="hscale" type="range" min="0.5" max="3" step="0.25" /></label>
+          <label class="row" for="shade"><span data-t="vistazo.wallShade"></span><output id="shadeOut"></output><input id="shade" type="range" min="0" max="100" step="5" /></label>
+          <label class="check" for="tint"><input id="tint" type="checkbox" /><span data-t="vistazo.tint"></span></label>
+          <label class="check" for="showTok"><input id="showTok" type="checkbox" /><span data-t="vistazo.showTokens"></span></label>
+          <label class="check" for="xray"><input id="xray" type="checkbox" /><span data-t="vistazo.xray"></span></label>
+          <label class="check" for="edges"><input id="edges" type="checkbox" /><span data-t="vistazo.edges"></span></label>
+          <label class="check" for="levels"><input id="levels" type="checkbox" /><span data-t="vistazo.levels"></span></label>
+          <label class="check" for="grid"><input id="grid" type="checkbox" /><span data-t="vistazo.grid"></span></label>
+          <label class="check" for="distances"><input id="distances" type="checkbox" /><span data-t="vistazo.distances"></span></label>
+          <label class="row" for="anchor"
+            ><span data-t="vistazo.anchor"></span>
+            <select id="anchor">
+              <option value="center" data-t="vistazo.anchorCenter"></option>
+              <option value="base" data-t="vistazo.anchorBase"></option>
+            </select>
+          </label>
+        </fieldset>
+      </aside>
+      <div class="resize" id="resize" data-title="vistazo.resize"></div>
+    </div>
+    <script type="module" src="/src/vistazo/main.ts"></script>
+  </body>
+</html>

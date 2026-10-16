@@ -1,0 +1,447 @@
+/* The Vistazo 3D's page. Colours come from Owlbear's theme (main.ts sets the tokens). */
+:root {
+  --bg: #222639;
+  --panel: #3d4051;
+  --fg: #ffffff;
+  --muted: rgba(255, 255, 255, 0.7);
+  --accent: #bb99ff;
+  --accent-fg: rgba(0, 0, 0, 0.87);
+  --line: color-mix(in srgb, var(--fg) 16%, transparent);
+  --stage: #0d1110;
+  --stage-fg: #e1e8e6;
+  color-scheme: dark;
+}
+[hidden] {
+  display: none !important;
+}
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: transparent;
+  color: var(--fg);
+  font: 14px/1.4 Roboto, "Segoe UI", system-ui, sans-serif;
+  overflow: hidden;
+}
+.app {
+  box-sizing: border-box;
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 250px;
+  gap: 10px;
+  padding: 10px;
+  background: var(--bg);
+}
+.app {
+  position: relative;
+}
+.app.compact {
+  grid-template-columns: minmax(0, 1fr);
+  padding: 6px;
+}
+.app.compact aside,
+.app.compact .hint {
+  display: none;
+}
+.panel-toggle {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.4);
+  color: var(--stage-fg);
+  z-index: 20000;
+}
+.panel-toggle svg {
+  width: 18px;
+  height: 18px;
+}
+.panel-toggle[aria-pressed="true"] {
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--accent);
+}
+.resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background: linear-gradient(135deg, transparent 50%, var(--muted) 50%, var(--muted) 58%, transparent 58%, transparent 70%, var(--muted) 70%, var(--muted) 78%, transparent 78%);
+  z-index: 20001;
+}
+.message {
+  margin: 0;
+  padding: 16px;
+  background: var(--bg);
+  color: var(--muted);
+}
+
+/* ---------- The stage ---------- */
+.stage {
+  position: relative;
+  overflow: hidden;
+  border-radius: 8px;
+  background: radial-gradient(120% 90% at 50% 40%, #29312e 0%, var(--stage) 70%);
+  perspective-origin: 50% 50%;
+  touch-action: none;
+  cursor: grab;
+  outline: none;
+  min-height: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.stage:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.stage.dragging {
+  cursor: grabbing;
+}
+.cam {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+}
+.layer3d {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-style: preserve-3d;
+}
+.gridlines {
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(to right, rgba(0, 0, 0, 0.35) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.35) 1px, transparent 1px);
+  background-size: 50px 50px;
+}
+.piece,
+.wall,
+.base,
+.stem {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+}
+.piece {
+  overflow: hidden;
+}
+.piece .maps {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+}
+.piece .maps img {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  max-width: none;
+  -webkit-user-drag: none;
+}
+.piece::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--tint);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.tinted .piece::after {
+  opacity: 0.5;
+}
+.xray .piece,
+.xray .wall {
+  opacity: 0.45;
+}
+.below .piece {
+  filter: brightness(0.55);
+}
+.noedge .wall.edge {
+  display: none;
+}
+.wall {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+.base {
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  background: rgba(0, 0, 0, 0.35);
+  box-sizing: border-box;
+}
+.stem {
+  width: 2px;
+  background: repeating-linear-gradient(to bottom, #fff 0 6px, transparent 6px 11px);
+  opacity: 0.9;
+}
+
+/* ---------- Tokens, on a flat layer above ---------- */
+.ov {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.tok {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+}
+.tok .disc {
+  position: absolute;
+}
+.tok img {
+  pointer-events: auto;
+  cursor: pointer;
+  border-radius: 50%;
+}
+.tok.selected img {
+  box-shadow: 0 0 0 3px var(--accent), 0 0 12px var(--accent);
+}
+
+/* ---------- Distance lines, under the tokens ---------- */
+.lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.dline line {
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.dline line.casing {
+  stroke: rgba(0, 0, 0, 0.55);
+  stroke-width: 6;
+}
+.dline.hidden line:not(.casing) {
+  stroke-dasharray: 6 6;
+}
+.dline text {
+  font: 600 12px Roboto, "Segoe UI", system-ui, sans-serif;
+  fill: #fff;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.8);
+  stroke-width: 3px;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+.tok img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  filter: drop-shadow(0 3px 3px rgba(0, 0, 0, 0.5));
+  -webkit-user-drag: none;
+}
+.tok img,
+.tok .lbl {
+  transition: opacity 0.15s;
+}
+.tok .lbl {
+  position: absolute;
+  bottom: calc(100% + 3px);
+  left: 50%;
+  transform: translateX(-50%);
+  font: 500 12px/1.15 Roboto, "Segoe UI", system-ui, sans-serif;
+  color: #fff;
+  background: rgba(12, 18, 16, 0.78);
+  padding: 2px 6px 3px;
+  border-radius: 4px;
+  white-space: nowrap;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.tok .lbl span {
+  display: block;
+  font-weight: 700;
+}
+.tok .lbl small {
+  display: block;
+  font-size: 11px;
+  opacity: 0.85;
+}
+.tok.buried .lbl,
+.tok.gmhidden .lbl {
+  font-style: italic;
+}
+.tok.gmhidden img {
+  opacity: 0.6;
+}
+.tok.hidden img {
+  opacity: 0.15;
+}
+.tok.hidden .lbl {
+  opacity: 0.6;
+}
+.tok.buried.hidden img {
+  opacity: 0.5;
+  filter: grayscale(0.4) drop-shadow(0 0 2px rgba(0, 0, 0, 0.6));
+}
+.xray .tok.hidden img {
+  opacity: 0.6;
+}
+.notok .tok,
+.notok .base,
+.notok .stem {
+  display: none;
+}
+.hud {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--stage-fg);
+  font-size: 13px;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+.hud svg {
+  width: 32px;
+  height: 32px;
+}
+.hint {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 8px;
+  color: var(--stage-fg);
+  opacity: 0.75;
+  font-size: 12px;
+  pointer-events: none;
+}
+.loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--stage-fg);
+}
+
+/* ---------- The controls ---------- */
+aside {
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+h1 {
+  font-size: 18px;
+  font-weight: 500;
+  margin: 0;
+}
+.note {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+button {
+  font: inherit;
+  cursor: pointer;
+}
+button.primary {
+  font-weight: 500;
+  background: var(--accent);
+  color: var(--accent-fg);
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+button.ghost {
+  font-size: 13px;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 10px;
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+legend {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0;
+  margin-bottom: 6px;
+}
+.row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  align-items: center;
+}
+.row output {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-size: 13px;
+}
+.row input[type="range"] {
+  grid-column: 1 / -1;
+  width: 100%;
+  accent-color: var(--accent);
+  margin: 0;
+}
+.row select {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+.check {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.check input {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+@media (max-width: 640px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  aside {
+    max-height: 40vh;
+  }
+}

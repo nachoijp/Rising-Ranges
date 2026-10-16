@@ -16,6 +16,7 @@ import OBR, {
   type Vector2,
 } from "@owlbear-rodeo/sdk";
 import { getPluginId } from "../util/getPluginId";
+import { sendLiveDrag } from "../vistazo/live";
 import { applyLabelTextStyle, getColorString, getIconStrokeColor } from "../util/color";
 import { formatDistance } from "../util/flattenGridScale";
 import { getStoredTheme, THEME_STORAGE_KEYS } from "../theme/themes";
@@ -566,6 +567,8 @@ async function reconcile() {
 
 /** The token this client is dragging is at `position` now; null once it's dropped and saved. */
 export function setDraggedToken(tokenId: string, position: Vector2 | null) {
+  // The Vistazo 3D follows it too (see vistazo/live.ts).
+  sendLiveDrag({ tokenId, position });
   if (position) {
     dragged = { tokenId, position };
     // What was built during this drag isn't attached: it's moved along by
