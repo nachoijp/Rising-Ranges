@@ -4,7 +4,7 @@ import { bandSetFromMetadata } from "../bandSets/bandSets";
 import { onGrid } from "../engine/hex";
 import { tokenName } from "../distances/rows";
 import { globalSettingsFromMetadata, terrainOn } from "../settings/globalSettings";
-import { getTerrainStand, terrainShapes } from "../terrain/terrain";
+import { getTerrainStand, terrainShapes, type TerrainStandEdge } from "../terrain/terrain";
 import { terrainLayers } from "../terrain/terrainLayers";
 import { isTokenHeightMarker, tokenHeightsFromMarkers } from "../tokenHeight/markers";
 import { onFloor } from "../tokenHeight/lift";
@@ -49,6 +49,9 @@ export type Token = {
   item: Image;
 };
 
+/** An image of the Props layer, where it lies, to draw flat on the ground or standing. */
+export type Prop = { id: string; url: string; x: number; y: number; size: number; width: number; height: number; transform: string; rotation: number; terrain: number };
+
 /** The part of the scene that only changes with the map and the terrain, kept while only tokens move. */
 type Terrain = {
   /** What it was built from: the same key, the same terrain. */
@@ -72,6 +75,7 @@ export type VistazoScene = Terrain & {
   /** The grid is square: its cells can be drawn on the ground. */
   squareGrid: boolean;
   tokens: Token[];
+  props: Prop[];
   /** Each token's height above the ground, terrain under it included (as the Distancias panel has it). */
   heights: Map<string, number>;
 };
@@ -181,6 +185,27 @@ export function buildScene(
     return token;
   });
 
+  const props: Prop[] = items
+    .filter((item): item is Image => isImage(item) && item.layer === "PROP" && item.visible)
+    .sort((a, b) => a.zIndex - b.zIndex)
+    .map((item) => {
+      const [x, y] = imageToScene(item, dpi, item.image.width / 2, item.image.height / 2);
+      const k = dpi / item.grid.dpi;
+      const map = mapImage(item, dpi);
+      return {
+        id: item.id,
+        url: item.image.url,
+        x,
+        y,
+        size: Math.max(item.image.width * Math.abs(item.scale.x), item.image.height * Math.abs(item.scale.y)) * k,
+        width: item.image.width,
+        height: item.image.height,
+        transform: map.transform,
+        rotation: item.rotation,
+        terrain: measuredAt(x, y),
+      };
+    });
+
   return {
     terrainKey: terrain.terrainKey,
     maps: terrain.maps,
@@ -194,6 +219,7 @@ export function buildScene(
     scale,
     squareGrid: gridType === "SQUARE",
     tokens,
+    props,
     heights,
   };
 }
@@ -238,7 +264,14 @@ function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dp
   // left out, and if the bare ground fails, the whole map is drawn at 0
   // under everything instead (the zones above it still cover it).
   const pieces: Piece[] = [];
-  const standing = new Set(items.filter(getTerrainStand).map((item) => item.id));
+  const standing = new Map<string, TerrainStandEdge>();
+  for (const item of items) {
+    const edge = getTerrainStand(item);
+    if (edge) {
+      standing.set(item.id, edge);
+    }
+  }
+  const asked = new Map<Piece, TerrainStandEdge>();
   let layers: ReturnType<typeof terrainLayers> = [];
   try {
     layers = terrainLayers(shapes);
@@ -252,7 +285,13 @@ function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dp
     try {
       const shape = polygonClipping.intersection(layer.shape, world);
       if (shape.length > 0) {
-        pieces.push({ height: layer.height, shape, stand: layer.zoneId && standing.has(layer.zoneId) ? "bottom" : undefined });
+        const piece: Piece = { height: layer.height, shape };
+        const edge = layer.zoneId ? standing.get(layer.zoneId) : undefined;
+        if (edge) {
+          piece.stand = "bottom";
+          asked.set(piece, edge);
+        }
+        pieces.push(piece);
       }
     } catch (error) {
       console.error("Rising Ranges: Vistazo left out a terrain zone", layer.zoneId, error);
@@ -310,14 +349,11 @@ function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dp
     const dy = middle.y - (py0 + py1) / 2;
     const cx = (px0 + px1) / 2;
     const cy = (py0 + py1) / 2;
-    const [edge, beside]: [StandEdge, Pair] =
-      Math.abs(dy) >= Math.abs(dx)
-        ? dy >= 0
-          ? ["bottom", [cx, py1 + probe]]
-          : ["top", [cx, py0 - probe]]
-        : dx >= 0
-          ? ["right", [px1 + probe, cy]]
-          : ["left", [px0 - probe, cy]];
+    // The edge asked for, or the one facing the middle.
+    const wanted = asked.get(piece) ?? "auto";
+    const edge: StandEdge =
+      wanted !== "auto" ? wanted : Math.abs(dy) >= Math.abs(dx) ? (dy >= 0 ? "bottom" : "top") : dx >= 0 ? "right" : "left";
+    const beside: Pair = { bottom: [cx, py1 + probe], top: [cx, py0 - probe], right: [px1 + probe, cy], left: [px0 - probe, cy] }[edge] as Pair;
     // A block as deep as the picture is tall, its front the picture standing up.
     piece.stand = edge;
     piece.standBase = heightAt(beside[0], beside[1]) ?? 0;

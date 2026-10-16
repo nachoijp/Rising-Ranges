@@ -45,6 +45,7 @@
           <legend data-t="vistazo.relief"></legend>
           <label class="row" for="hscale"><span data-t="vistazo.heightScale"></span><output id="hscaleOut"></output><input id="hscale" type="range" min="0.5" max="3" step="0.25" /></label>
           <label class="row" for="shade"><span data-t="vistazo.wallShade"></span><output id="shadeOut"></output><input id="shade" type="range" min="0" max="100" step="5" /></label>
+          <label class="row" for="relief"><span data-t="vistazo.reliefHeight"></span><output id="reliefOut"></output><input id="relief" type="range" min="0" max="100" step="5" /></label>
           <label class="check" for="tint"><input id="tint" type="checkbox" /><span data-t="vistazo.tint"></span></label>
           <label class="check" for="showTok"><input id="showTok" type="checkbox" /><span data-t="vistazo.showTokens"></span></label>
           <label class="check" for="xray"><input id="xray" type="checkbox" /><span data-t="vistazo.xray"></span></label>
@@ -52,6 +53,14 @@
           <label class="check" for="levels"><input id="levels" type="checkbox" /><span data-t="vistazo.levels"></span></label>
           <label class="check" for="grid"><input id="grid" type="checkbox" /><span data-t="vistazo.grid"></span></label>
           <label class="check" for="distances"><input id="distances" type="checkbox" /><span data-t="vistazo.distances"></span></label>
+          <label class="row" for="props"
+            ><span data-t="vistazo.props"></span>
+            <select id="props">
+              <option value="flat" data-t="vistazo.propsFlat"></option>
+              <option value="stand" data-t="vistazo.propsStand"></option>
+              <option value="none" data-t="vistazo.propsNone"></option>
+            </select>
+          </label>
           <label class="row" for="anchor"
             ><span data-t="vistazo.anchor"></span>
             <select id="anchor">
@@ -59,6 +68,27 @@
               <option value="base" data-t="vistazo.anchorBase"></option>
             </select>
           </label>
+        </fieldset>
+        <fieldset>
+          <legend data-t="vistazo.labels"></legend>
+          <label class="row" for="tokenLabels"
+            ><span data-t="vistazo.tokenLabels"></span>
+            <select id="tokenLabels">
+              <option value="full" data-t="vistazo.labelFull"></option>
+              <option value="height" data-t="vistazo.labelHeight"></option>
+              <option value="name" data-t="vistazo.labelName"></option>
+              <option value="none" data-t="vistazo.labelNone"></option>
+            </select>
+          </label>
+          <label class="row" for="distanceLabels"
+            ><span data-t="vistazo.distanceLabels"></span>
+            <select id="distanceLabels">
+              <option value="full" data-t="vistazo.labelBandDistance"></option>
+              <option value="distance" data-t="vistazo.labelDistance"></option>
+              <option value="none" data-t="vistazo.labelNone"></option>
+            </select>
+          </label>
+          <label class="row" for="labelSize"><span data-t="vistazo.labelSize"></span><output id="labelSizeOut"></output><input id="labelSize" type="range" min="0.6" max="1.6" step="0.1" /></label>
         </fieldset>
       </aside>
       <div class="resize" id="resize" data-title="vistazo.resize"></div>

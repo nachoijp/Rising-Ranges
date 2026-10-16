@@ -53,18 +53,30 @@ export function setTerrainHeight(item: Item, height: number | undefined) {
 
 const STAND_KEY = getPluginId("terrainStand");
 
+/** The edge a standing zone stands on in the Vistazo 3D, or "auto": the one facing the map's middle. */
+export type TerrainStandEdge = "auto" | "top" | "bottom" | "left" | "right";
+
+const STAND_EDGES: readonly TerrainStandEdge[] = ["top", "bottom", "left", "right"];
+
 /**
- * Whether the Vistazo 3D stands the zone up: a part of the map drawn as if
- * upright (a statue, a wall seen from the front) is turned up on its edge
- * nearest the map's middle. Only how it's drawn there; it measures as usual.
+ * Whether the Vistazo 3D stands the zone up, and on which edge: a part of
+ * the map drawn as if upright (a statue, a wall seen from the front) is
+ * turned up on that edge. Stored as true (auto) or the edge's name. Only
+ * how it's drawn there; it measures as usual.
  */
-export function getTerrainStand(item: Item): boolean {
-  return item.metadata[STAND_KEY] === true;
+export function getTerrainStand(item: Item): TerrainStandEdge | undefined {
+  const stored = item.metadata[STAND_KEY];
+  if (stored === true) {
+    return "auto";
+  }
+  return STAND_EDGES.includes(stored as TerrainStandEdge) ? (stored as TerrainStandEdge) : undefined;
 }
 
-export function setTerrainStand(item: Item, stand: boolean) {
-  if (stand) {
+export function setTerrainStand(item: Item, stand: TerrainStandEdge | undefined) {
+  if (stand === "auto") {
     item.metadata[STAND_KEY] = true;
+  } else if (stand) {
+    item.metadata[STAND_KEY] = stand;
   } else {
     delete item.metadata[STAND_KEY];
   }

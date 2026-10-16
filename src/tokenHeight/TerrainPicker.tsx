@@ -3,12 +3,21 @@ import OBR, { type Item } from "@owlbear-rodeo/sdk";
 
 import { useOBRContext } from "../settings/OBRContext";
 import { clampHeight } from "../engine/heights";
-import { canBeTerrain, getTerrainHeight, getTerrainStand, setTerrainHeight, setTerrainStand } from "../terrain/terrain";
+import { canBeTerrain, getTerrainHeight, getTerrainStand, setTerrainHeight, setTerrainStand, type TerrainStandEdge } from "../terrain/terrain";
 import { UnitStepper } from "./TokenHeightPicker";
 import { watchTheme } from "./theme";
 import { useTranslation } from "../i18n/useTranslation";
 
 import "./tokenHeight.css";
+
+/** The edges a standing zone can stand on, as the menu shows them: the arrow points down to its base. */
+const STAND_CHOICES = [
+  ["auto", "Auto", "terrain.standAuto"],
+  ["bottom", "↓", "terrain.standBottom"],
+  ["top", "↑", "terrain.standTop"],
+  ["left", "←", "terrain.standLeft"],
+  ["right", "→", "terrain.standRight"],
+] as const;
 
 /** The selected shapes' ground height: a number, or undefined when they differ or none is terrain. */
 function sharedHeight(shapes: Item[]): number | undefined {
@@ -50,15 +59,15 @@ export function TerrainPicker() {
       for (const draft of drafts) {
         setTerrainHeight(draft, next && clampHeight(next(getTerrainHeight(draft) ?? 0)));
         if (!next) {
-          setTerrainStand(draft, false);
+          setTerrainStand(draft, undefined);
         }
       }
     });
     setShapes(await OBR.scene.items.getItems(ids));
   }
 
-  /** Stands the selected zones up in the Vistazo 3D, or lays them flat again (all alike). */
-  async function toggleStand(stand: boolean) {
+  /** Stands the selected zones up in the Vistazo 3D on `stand`'s edge, or lays them flat again (all alike). */
+  async function toggleStand(stand: TerrainStandEdge | undefined) {
     const ids = shapes.filter((shape) => getTerrainHeight(shape) !== undefined).map((shape) => shape.id);
     if (ids.length === 0) {
       return;
@@ -76,7 +85,11 @@ export function TerrainPicker() {
   }
 
   const anyTerrain = shapes.some((shape) => getTerrainHeight(shape) !== undefined);
-  const standing = anyTerrain && shapes.every((shape) => getTerrainHeight(shape) === undefined || getTerrainStand(shape));
+  const terrainShapes = shapes.filter((shape) => getTerrainHeight(shape) !== undefined);
+  const standing = terrainShapes.length > 0 && terrainShapes.every((shape) => getTerrainStand(shape) !== undefined);
+  // The edge they all stand on, if it's the same.
+  const edges = new Set(terrainShapes.map((shape) => getTerrainStand(shape)));
+  const edge = standing && edges.size === 1 ? [...edges][0] : undefined;
   return (
     <div className="picker-stack" role="group" aria-label={t("terrain.label")}>
       <UnitStepper
@@ -92,13 +105,29 @@ export function TerrainPicker() {
           disabled={!anyTerrain}
           aria-pressed={standing}
           title={t("terrain.standHint")}
-          onClick={() => toggleStand(!standing)}
+          onClick={() => toggleStand(standing ? undefined : "auto")}
         >
           {t("terrain.stand")}
         </button>
         <button className="step-button ground" disabled={!anyTerrain} onClick={() => apply(undefined)}>
           {t("terrain.remove")}
         </button>
+      </div>
+      <div style={{ display: "flex", gap: 4, alignItems: "center" }} role="group" aria-label={t("terrain.standEdge")} title={t("terrain.standEdge")}>
+        {STAND_CHOICES.map(([value, symbol, label]) => (
+          <button
+            key={value}
+            className={"step-button ground" + (edge === value ? " active" : "")}
+            style={{ marginLeft: 0, minWidth: 30, padding: "0 6px" }}
+            disabled={!standing}
+            aria-pressed={edge === value}
+            aria-label={t(label)}
+            title={t(label)}
+            onClick={() => toggleStand(value)}
+          >
+            {symbol}
+          </button>
+        ))}
       </div>
     </div>
   );

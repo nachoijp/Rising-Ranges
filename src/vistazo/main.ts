@@ -26,7 +26,7 @@ const POSE = { tilt: 55, yaw: -25 };
 const OPTIONS_KEY = "rising-ranges/vistazo-options";
 
 function readOptions(): Options {
-  const defaults: Options = { heightScale: 1, shade: 0.6, perspective: 45, tint: false, tokens: true, xray: false, edges: true, anchor: "center", levels: true, grid: false, distances: true };
+  const defaults: Options = { heightScale: 1, shade: 0.6, perspective: 45, tint: false, tokens: true, xray: false, edges: true, anchor: "center", levels: true, grid: false, distances: true, tokenLabels: "full", distanceLabels: "full", labelSize: 1, relief: 0.5, props: "flat" };
   try {
     return { ...defaults, ...JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? "{}") };
   } catch {
@@ -202,13 +202,17 @@ async function start() {
             : token.terrain < 0
               ? t("vistazo.inPit")
               : t("vistazo.onGround");
-    return { title: `${token.name} · ${distance(total)}`, detail: token.hidden ? `${detail} · ${t("vistazo.hidden")}` : detail };
+    return { name: token.name, height: distance(total), detail: token.hidden ? `${detail} · ${t("vistazo.hidden")}` : detail };
   };
 
   // ---------- View ----------
   const stage = $("stage");
   let options = readOptions();
   const view = new VistazoView(stage, tokenText, options);
+  if (!view.ready) {
+    message(t("vistazo.noWebgl"));
+    return;
+  }
   view.setOptions(options);
   const camera = view.camera;
 
@@ -426,6 +430,13 @@ async function start() {
     check("levels").checked = options.levels;
     check("grid").checked = options.grid;
     check("distances").checked = options.distances;
+    $<HTMLSelectElement>("tokenLabels").value = options.tokenLabels;
+    $<HTMLSelectElement>("props").value = options.props;
+    $<HTMLSelectElement>("distanceLabels").value = options.distanceLabels;
+    $<HTMLInputElement>("labelSize").value = String(options.labelSize);
+    $("labelSizeOut").textContent = `${Math.round(options.labelSize * 100)}%`;
+    $<HTMLInputElement>("relief").value = String(Math.round(options.relief * 100));
+    $("reliefOut").textContent = `${Math.round(options.relief * 100)}%`;
     anchor.value = options.anchor;
   }
   persp.oninput = () => set({ perspective: Number(persp.value) });
@@ -438,6 +449,16 @@ async function start() {
   check("levels").onchange = () => set({ levels: check("levels").checked });
   check("grid").onchange = () => set({ grid: check("grid").checked });
   check("distances").onchange = () => set({ distances: check("distances").checked });
+  const props = $<HTMLSelectElement>("props");
+  props.onchange = () => set({ props: props.value as Options["props"] });
+  const tokenLabels = $<HTMLSelectElement>("tokenLabels");
+  tokenLabels.onchange = () => set({ tokenLabels: tokenLabels.value as Options["tokenLabels"] });
+  const distanceLabels = $<HTMLSelectElement>("distanceLabels");
+  distanceLabels.onchange = () => set({ distanceLabels: distanceLabels.value as Options["distanceLabels"] });
+  const labelSize = $<HTMLInputElement>("labelSize");
+  labelSize.oninput = () => set({ labelSize: Number(labelSize.value) });
+  const relief = $<HTMLInputElement>("relief");
+  relief.oninput = () => set({ relief: Number(relief.value) / 100 });
   anchor.onchange = () => set({ anchor: anchor.value === "base" ? "base" : "center" });
   showOptions();
 
@@ -475,7 +496,8 @@ async function start() {
       lines.push({
         id: row.token.id,
         color: getColorString(theme.colors[row.bandIndex % theme.colors.length]),
-        label: `${bands[row.bandIndex].name} · ${formatDistance(scale, row.distance)}`,
+        band: bands[row.bandIndex].name,
+        distance: formatDistance(scale, row.distance),
       });
     }
     view.setDistances(origin.id, lines);

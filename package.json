@@ -12,6 +12,7 @@
   "devDependencies": {
     "@types/react": "^19.1.11",
     "@types/react-dom": "^19.1.8",
+    "@types/three": "^0.170.0",
     "@vitejs/plugin-react": "^5.0.1",
     "typescript": "~5.8.3",
     "vite": "^7.1.2",
@@ -26,6 +27,7 @@
     "@owlbear-rodeo/sdk": "^3.1.0",
     "polygon-clipping": "0.15.7",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "three": "^0.170.0"
   }
 }

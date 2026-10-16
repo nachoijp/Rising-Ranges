@@ -59,8 +59,8 @@ export function createTerrainMenu(language: Language) {
         },
       },
     ],
-    // The stepper's row and the remove button below it, plus padding.
-    embed: { url: "/token-height.html?view=terrain", height: 96 },
+    // The stepper's row, the stand and remove buttons, and the stand's edge, plus padding.
+    embed: { url: "/token-height.html?view=terrain", height: 140 },
   });
 }
 
