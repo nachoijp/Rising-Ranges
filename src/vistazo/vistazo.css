@@ -312,7 +312,8 @@ body {
 .tok.prop.flat .lbl {
   pointer-events: none;
 }
-.tok.selected img {
+.tok.selected img,
+.tok.selected video {
   box-shadow: 0 0 0 3px var(--accent), 0 0 12px var(--accent);
 }
 

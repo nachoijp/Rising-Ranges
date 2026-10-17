@@ -65,7 +65,7 @@ const POSE = { tilt: 55, yaw: -25 };
 const OPTIONS_KEY = "rising-ranges/vistazo-options";
 
 function readOptions(): Options {
-  const defaults: Options = { heightScale: 1, shade: 0.6, perspective: 45, tint: false, tokens: true, xray: false, edges: true, anchor: "center", levels: true, grid: false, distances: true, tokenLabels: "full", distanceLabels: "full", labelSize: 1, relief: 0.5, props: "flat", showProps: true, propShadows: true, propLines: true, propLabels: false, wallStyle: "fold", rings: true, ringFill: false, playerView: false };
+  const defaults: Options = { heightScale: 1, shade: 0.6, perspective: 45, tint: false, tokens: true, xray: false, edges: true, anchor: "center", levels: true, grid: false, distances: true, tokenLabels: "full", distanceLabels: "full", labelSize: 1, relief: 0.5, weather: true, clouds: "mist", props: "flat", showProps: true, propDistances: false, propShadows: true, propLines: true, propLabels: false, wallStyle: "fold", rings: true, ringFill: false, playerView: false };
   try {
     const stored: Options = { ...defaults, ...JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? "{}") };
     // "Hidden" was a position of the props once; now it's their own checkbox.
@@ -252,15 +252,20 @@ function setUpDrag(handle: HTMLElement) {
   });
 }
 
+/** Told when the panel's minimized or brought back (the view pauses its videos meanwhile; see start). */
+let onMinimized: (minimized: boolean) => void = () => {};
+
 function setUpResizing() {
   setUpDrag($("grip"));
   setUpDrag($("barGrip"));
   $("minimize").onclick = () => {
     document.documentElement.classList.add("minimized");
+    onMinimized(true);
     resizePanel(BAR_WIDTH, BAR_HEIGHT);
   };
   $("restore").onclick = () => {
     document.documentElement.classList.remove("minimized");
+    onMinimized(false);
     const saved = readSize();
     resizePanel(saved.width ?? 900, saved.height ?? 600);
   };
@@ -443,6 +448,8 @@ async function start() {
     $("playerView").closest("label")!.hidden = true;
   }
   const view = new VistazoView(stage, tokenText, options);
+  // Minimized, nothing of it shows: its videos (webm tokens and props) stop until it's back.
+  onMinimized = (minimized) => view.setPaused(minimized);
   if (!view.ready) {
     message(t("vistazo.noWebgl"));
     return;
@@ -902,6 +909,10 @@ async function start() {
     camera.yaw = Number(yaw.value);
     view.apply();
   };
+  /** The clouds' choice, only when there are clouds to draw (Weather's, with the weather on). */
+  function showCloudsChoice() {
+    $("cloudsRow").hidden = !options.weather || !scene?.weather.some((weather) => weather.type === "CLOUD");
+  }
   const set = (change: Partial<Options>) => {
     options = { ...options, ...change };
     saveOptions(options);
@@ -909,6 +920,10 @@ async function start() {
     showOptions();
     if ("playerView" in change) {
       refresh();
+    }
+    // The lines to the props come and go with these.
+    if ("propDistances" in change || "showProps" in change) {
+      showDistances();
     }
   };
   const persp = $<HTMLInputElement>("persp");
@@ -933,9 +948,13 @@ async function start() {
     check("rings").checked = options.rings;
     check("playerView").checked = options.playerView;
     check("ringFill").checked = options.ringFill;
+    check("weather").checked = options.weather;
+    $<HTMLSelectElement>("clouds").value = options.clouds;
+    showCloudsChoice();
     check("showProps").checked = options.showProps;
     $("propsMore").hidden = !options.showProps;
     check("propShadows").checked = options.propShadows;
+    check("propDistances").checked = options.propDistances;
     check("propLines").checked = options.propLines;
     check("propLabels").checked = options.propLabels;
     $<HTMLSelectElement>("tokenLabels").value = options.tokenLabels;
@@ -961,8 +980,12 @@ async function start() {
   check("rings").onchange = () => set({ rings: check("rings").checked });
   check("playerView").onchange = () => set({ playerView: check("playerView").checked });
   check("ringFill").onchange = () => set({ ringFill: check("ringFill").checked });
+  check("weather").onchange = () => set({ weather: check("weather").checked });
+  const clouds = $<HTMLSelectElement>("clouds");
+  clouds.onchange = () => set({ clouds: clouds.value === "shadows" ? "shadows" : "mist" });
   check("showProps").onchange = () => set({ showProps: check("showProps").checked });
   check("propShadows").onchange = () => set({ propShadows: check("propShadows").checked });
+  check("propDistances").onchange = () => set({ propDistances: check("propDistances").checked });
   check("propLines").onchange = () => set({ propLines: check("propLines").checked });
   check("propLabels").onchange = () => set({ propLabels: check("propLabels").checked });
   const wallStyle = $<HTMLSelectElement>("wallStyle");
@@ -995,8 +1018,16 @@ async function start() {
    * With one token selected, lines to every other token within a Banda —
    * the same readings as the Distancias panel (heights with the terrain).
    */
+  /** The selected token, or prop (with the lines to props on): where the lines and rings go from. */
+  const selectedOrigin = () => {
+    if (!scene || selection.length !== 1) {
+      return undefined;
+    }
+    const withProps = options.propDistances && options.showProps;
+    return scene.tokens.find((token) => token.id === selection[0]) ?? (withProps ? scene.props.find((prop) => prop.id === selection[0]) : undefined);
+  };
   const showDistances = () => {
-    const origin = selection.length === 1 ? scene?.tokens.find((token) => token.id === selection[0]) : undefined;
+    const origin = selectedOrigin();
     if (!scene || !origin) {
       view.setDistances(null, []);
       view.setReach(null);
@@ -1025,17 +1056,20 @@ async function start() {
   };
   /** The distance lines from the selected token, where it is now. */
   const showLines = () => {
-    const origin = selection.length === 1 ? scene?.tokens.find((token) => token.id === selection[0]) : undefined;
+    const origin = selectedOrigin();
     if (!scene || !origin) {
       return;
     }
     const bandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
     const bands = measuredBands(bandSet);
     const theme = getStoredTheme();
+    // To the props as well, with their option on (and the props shown): each at its own height.
+    const props = options.propDistances && options.showProps ? scene.props.filter((prop) => prop.id !== origin.id) : [];
+    const heights = props.length > 0 ? new Map([...scene.heights, ...props.map((prop) => [prop.id, prop.terrain + prop.own] as const)]) : scene.heights;
     const rows = computeDistanceRows(
       origin.item,
-      scene.tokens.filter((token) => token.id !== origin.id).map((token) => token.item),
-      scene.heights,
+      [...scene.tokens.filter((token) => token.id !== origin.id).map((token) => token.item), ...props.map((prop) => prop.item)],
+      heights,
       bandSet,
       dpi,
       0
@@ -1233,6 +1267,7 @@ async function start() {
         view.setFog(null);
       }
       $("terrainOff").hidden = !scene.terrainOff;
+      showCloudsChoice();
       view.setScene(scene);
       showDistances();
     } catch (error) {

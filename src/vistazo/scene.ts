@@ -15,8 +15,11 @@ import {
   type TerrainWallStyle,
 } from "../terrain/terrain";
 import { terrainLayers } from "../terrain/terrainLayers";
+import { itemOutline } from "../terrain/terrain";
+import { weatherOf, type Weather } from "./weather";
 import { isTokenHeightMarker, tokenHeightsFromMarkers } from "../tokenHeight/markers";
 import { onFloor } from "../tokenHeight/lift";
+import { getTokenRadius } from "../render/iconAnchor";
 
 // What the Vistazo draws, read from the scene: the map images where they
 // lie, the terrain as non-overlapping pieces (terrainLayers: where zones
@@ -71,8 +74,10 @@ export type Token = {
   video: boolean;
   x: number;
   y: number;
-  /** Its footprint across, in scene px. */
+  /** Its image's size across, in scene px. */
   size: number;
+  /** Half its footprint, scene px: as it's measured (set by hand, or from its image; see getTokenRadius). */
+  radius: number;
   /** The terrain it stands on, and its own height above that, in grid units. */
   terrain: number;
   own: number;
@@ -108,6 +113,8 @@ export type Prop = {
   own: number;
   item: Image;
   base?: VistazoBase;
+  /** Half its footprint, scene px, as a token's (the Elevation menu's footprint works on props too). */
+  radius: number;
 };
 
 /** A Props-layer image as the Vistazo draws it: where it is, the terrain under it and its own height. */
@@ -132,6 +139,7 @@ export function propOf(item: Image, dpi: number, measuredAt: (x: number, y: numb
     own,
     item,
     base: getVistazoBase(item),
+    radius: getTokenRadius(item, dpi, 0) * dpi,
   };
 }
 
@@ -172,6 +180,8 @@ export type VistazoScene = Terrain & {
   props: Prop[];
   /** Each token's height above the ground, terrain under it included (as the Distancias panel has it). */
   heights: Map<string, number>;
+  /** The Weather extension's weather on the scene's items (see weather.ts). */
+  weather: Weather[];
 };
 
 /** Where an image's own pixel (u, v) lies in the scene: position + R(rotation)·(scale·k·(p − offset)), k = scene dpi / image dpi. */
@@ -276,8 +286,6 @@ export function buildScene(
   sight: Sight | null = null
 ): VistazoScene {
   const settings = globalSettingsFromMetadata(metadata);
-  // The player view shows the heights too: whether the terrain's drawn on the map for them is another matter.
-  void playerView;
   const terrainOff = !terrainOn(settings, gridType);
   const altitude = settings.enableAltitude ?? true;
   // Characters, and mounts with them (a horse is a creature too).
@@ -301,6 +309,7 @@ export function buildScene(
       x,
       y,
       size: Math.max(floor.image.width * Math.abs(floor.scale.x), floor.image.height * Math.abs(floor.scale.y)) * k,
+      radius: getTokenRadius(floor, dpi, 0) * dpi,
       terrain: measuredAt(x, y),
       own: own.get(item.id) ?? 0,
       rotation: item.rotation,
@@ -339,6 +348,11 @@ export function buildScene(
     tokens,
     props,
     heights,
+    // Hidden from the players, its weather is too.
+    weather: items
+      .filter((item) => item.visible || !playerView)
+      .map((item) => weatherOf(item, isImage(item) ? mapImage(item, dpi).corners : itemOutline(item).flat()))
+      .filter((weather): weather is Weather => weather !== null),
   };
 }
 

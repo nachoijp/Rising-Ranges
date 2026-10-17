@@ -5,6 +5,7 @@ import { distance3D } from "../engine/distance";
 import { cellCorners, groundOffset } from "../engine/hex";
 import type { Fog } from "./fog";
 import { visibleBox, type VisibleBox } from "./visibleBox";
+import { buildWeather, cloudShadowMaterial, setWeatherTime, type CloudStyle } from "./weather";
 
 // The Vistazo's 3D view. The terrain is drawn with WebGL (three.js): each
 // piece lies at its height with the map as its texture, walls go down to
@@ -60,8 +61,14 @@ export type Options = {
   relief: number;
   /** The Props layer: lying on the ground as on the map, standing up like the tokens, or left out. */
   props: "flat" | "stand" | "none";
+  /** The Weather extension's rain, snow, sand, embers, petals and clouds, drawn here (see weather.ts). */
+  weather: boolean;
+  /** Its clouds as a mist over the map, or their shadows on it. */
+  clouds: CloudStyle;
   /** Whether the props show at all ("none" above is how it was stored before this option). */
   showProps: boolean;
+  /** The selected token's distance lines go to the props too (main.ts works them out). */
+  propDistances: boolean;
   /** A prop's shadow (on the ground under it), its dashed line down when it's raised, and its label. */
   propShadows: boolean;
   propLines: boolean;
@@ -181,6 +188,17 @@ export class VistazoView {
   private canvasSize = { w: 0, h: 0 };
   /** The props as last drawn (see propsKey): rebuilt when they change. */
   private drawnProps = "";
+  /** The flat props' videos (webm): drawn again on each new frame of theirs (see watchVideo). */
+  private videoTextures = new Set<THREE.VideoTexture>();
+  private videoFrame = 0;
+  /** The panel minimized: every video paused (see setPaused). */
+  private paused = false;
+  /** The weather's particles (see weather.ts), what they were built from, and the frames they're drawn on. */
+  private weatherGroup = new THREE.Group();
+  /** Clouds as shadows: the terrain's fog copies again (their geometry shared, not owned), with the shadows' material. */
+  private cloudShadowGroup = new THREE.Group();
+  private weatherKey = "";
+  private weatherFrame = 0;
   /** The player view's fog: where it is, and its shade over copies of the flat pieces (as the Banda tint). */
   private readonly fogGroup = new THREE.Group();
   private fogTexture: THREE.CanvasTexture | null = null;
@@ -239,7 +257,7 @@ export class VistazoView {
     }
     this.renderer = renderer;
     this.glCamera.matrixAutoUpdate = false;
-    this.world.add(this.terrainGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup, this.fogGroup);
+    this.world.add(this.terrainGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup, this.fogGroup, this.weatherGroup, this.cloudShadowGroup);
     this.overlay = document.createElement("div");
     this.overlay.className = "ov";
     this.lines = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -268,6 +286,7 @@ export class VistazoView {
       if (!this.moveTokens(scene)) {
         this.buildTokens();
       }
+      this.updateWeather();
       this.requestApply();
       return;
     }
@@ -692,6 +711,7 @@ export class VistazoView {
     const rebuild = changed(["heightScale", "shade", "levels", "relief", "tint", "wallStyle", "rings", "ringFill"]);
     const regrid = changed(["grid"]);
     const relabel = changed(["tokenLabels", "props", "showProps", "propShadows", "propLines", "propLabels"]);
+    const reweather = changed(["weather", "clouds"]);
     this.options = { ...this.options, ...options };
     this.stage.style.setProperty("--label-scale", String(this.options.labelSize));
     this.stage.classList.toggle("notok", !this.options.tokens);
@@ -704,6 +724,9 @@ export class VistazoView {
     } else {
       if (relabel) {
         this.buildTokens();
+      }
+      if (reweather) {
+        this.updateWeather();
       }
       this.measure();
     }
@@ -850,7 +873,11 @@ export class VistazoView {
             // A video map: its first frame (the texture is a still picture).
             if (map.video) {
               const video = mediaElement(map.url, true) as HTMLVideoElement;
-              video.onloadeddata = () => resolve(video);
+              video.onloadeddata = () => {
+                // Only its first frame is used: it needn't go on playing, unseen.
+                video.pause();
+                resolve(video);
+              };
               video.onerror = reject;
               return;
             }
@@ -1263,6 +1290,9 @@ export class VistazoView {
     this.drawFog();
     this.buildTokens();
     this.buildReach();
+    // The terrain's built again: so are the cloud shadows on it.
+    this.weatherKey = "";
+    this.updateWeather();
     this.measure();
   }
 
@@ -1358,6 +1388,7 @@ export class VistazoView {
       return;
     }
     this.clear(this.tokenGroup);
+    this.videoTextures.clear();
     const u = this.u;
     const k = this.k;
     const overlay = document.createDocumentFragment();
@@ -1411,7 +1442,15 @@ export class VistazoView {
         if (prop.video) {
           // Playing on the ground, as on the map.
           const video = mediaElement(prop.url, true) as HTMLVideoElement;
-          video.onloadeddata = () => show(new THREE.VideoTexture(video));
+          video.onloadeddata = () => {
+            const texture = new THREE.VideoTexture(video);
+            show(texture);
+            this.videoTextures.add(texture);
+            this.watchVideo(texture);
+            if (this.paused) {
+              video.pause();
+            }
+          };
         } else {
           loader.load(prop.url, show);
         }
@@ -1430,7 +1469,8 @@ export class VistazoView {
         disc.append(img);
         if (propShadows) {
           // A dark base on the ground under it, as a token's.
-          const r = prop.size * u * 0.4;
+          // As big as its footprint (80% of it, as a token's).
+          const r = prop.radius * u * 0.8;
           const disc3d = new THREE.Mesh(new THREE.CircleGeometry(r, 32), fill);
           disc3d.position.set(prop.x * u, prop.y * u, zFloor + 1);
           disc3d.renderOrder = 3;
@@ -1480,7 +1520,8 @@ export class VistazoView {
     this.tokenViews = scene.tokens.map((token) => {
       const zFloor = token.terrain * k;
       const zTok = (token.terrain + token.own) * k;
-      const r = token.size * u * 0.4;
+      // Its base as big as its footprint (80% of it): as it's measured, set by hand or from its image.
+      const r = token.radius * u * 0.8;
       // Its base on the ground under it, and a dashed line up (or down) to it.
       const disc3d = new THREE.Mesh(new THREE.CircleGeometry(r, 32), fill);
       const ring3d = new THREE.Mesh(new THREE.RingGeometry(r - 2, r, 32), ring);
@@ -1524,6 +1565,128 @@ export class VistazoView {
     this.tokenViews = [...propViews, ...this.tokenViews];
     this.tokenOverlay.replaceChildren(overlay);
     this.drawnProps = propsKey(scene.props);
+    // Drawn again while minimized: its new videos paused too.
+    if (this.paused) {
+      this.pauseVideos();
+    }
+  }
+
+  /**
+   * The view only draws when something changes; a video on the ground
+   * changes with each of its frames, so it's drawn again on each new one
+   * (only the picture: nothing else is worked out again), until it's gone.
+   */
+  private watchVideo(texture: THREE.VideoTexture) {
+    const video = texture.image as HTMLVideoElement;
+    const onFrame = () => {
+      if (!this.videoTextures.has(texture)) {
+        return;
+      }
+      this.requestRender();
+      video.requestVideoFrameCallback(onFrame);
+    };
+    video.requestVideoFrameCallback(onFrame);
+  }
+
+  /** The picture drawn again, once a frame at most however many videos ask. */
+  private requestRender() {
+    if (!this.videoFrame) {
+      this.videoFrame = requestAnimationFrame(() => {
+        this.videoFrame = 0;
+        this.render();
+      });
+    }
+  }
+
+  /** Every video and the weather stopped (the panel minimized), or going again. */
+  setPaused(paused: boolean) {
+    this.paused = paused;
+    this.pauseVideos();
+    this.playWeather();
+  }
+
+  /** The weather's particles built again when what they depend on changed (the weather, the heights, the option). */
+  private updateWeather() {
+    const scene = this.scene;
+    const weathers = scene && this.options.weather ? scene.weather : [];
+    const key = JSON.stringify([weathers, this.u, this.k, this.minH, this.maxH, this.options.clouds]);
+    if (key === this.weatherKey) {
+      return;
+    }
+    this.weatherKey = key;
+    this.clear(this.weatherGroup);
+    // Their geometry is the fog copies': only their materials are let go.
+    for (const child of [...this.cloudShadowGroup.children]) {
+      this.cloudShadowGroup.remove(child);
+      ((child as THREE.Mesh).material as THREE.Material).dispose();
+    }
+    if (scene && weathers.length > 0) {
+      const frame = { u: this.u, cell: VIEW_CELL, k: this.k, lowest: this.minH, highest: this.maxH };
+      for (const object of buildWeather(weathers, frame, scene.dpi, this.options.clouds)) {
+        this.weatherGroup.add(object);
+      }
+      if (this.options.clouds === "shadows") {
+        for (const weather of weathers.filter((w) => w.type === "CLOUD")) {
+          const material = cloudShadowMaterial(weather, frame);
+          for (const copy of this.fogGroup.children as THREE.Mesh[]) {
+            const shadow = new THREE.Mesh(copy.geometry, material);
+            shadow.position.copy(copy.position);
+            // Under the fog (5), over the ground and its rings.
+            shadow.renderOrder = 4;
+            shadow.frustumCulled = false;
+            this.cloudShadowGroup.add(shadow);
+          }
+        }
+      }
+    }
+    this.playWeather();
+  }
+
+  /** Whether there's weather to animate (particles, haze or cloud shadows). */
+  private get hasWeather() {
+    return this.weatherGroup.children.length > 0 || this.cloudShadowGroup.children.length > 0;
+  }
+
+  /**
+   * While there's weather (and the panel shows), it's drawn again about 30
+   * times a second: its particles move on the GPU, so only their time changes.
+   */
+  private playWeather() {
+    if (this.weatherFrame || this.paused || !this.hasWeather) {
+      return;
+    }
+    let last = 0;
+    const tick = (time: number) => {
+      if (this.paused || !this.hasWeather) {
+        this.weatherFrame = 0;
+        return;
+      }
+      if (time - last >= 33) {
+        last = time;
+        this.weatherUniforms();
+        this.render();
+      }
+      this.weatherFrame = requestAnimationFrame(tick);
+    };
+    this.weatherFrame = requestAnimationFrame(tick);
+  }
+
+  /** The weather on to now, its particles sized for the camera (screen px a view unit at the eye's distance, in device px). */
+  private weatherUniforms() {
+    const pointScale = this.fit * this.camera.zoom * this.persp * (this.renderer?.getPixelRatio() ?? 1);
+    // The shadows share one material per cloud: set once is enough, but setting it again is harmless.
+    setWeatherTime([...this.weatherGroup.children, ...this.cloudShadowGroup.children], performance.now() / 1000, pointScale, this.persp, this.fit * this.camera.zoom);
+  }
+
+  private pauseVideos() {
+    const videos = [...this.stage.querySelectorAll("video"), ...[...this.videoTextures].map((texture) => texture.image as HTMLVideoElement)];
+    for (const video of videos) {
+      if (this.paused) {
+        video.pause();
+      } else {
+        void video.play().catch(() => {});
+      }
+    }
   }
 
   /** A flat prop's picture as two triangles in view units, at height z (its uv the picture's). */
@@ -1618,7 +1781,8 @@ export class VistazoView {
       }
     }
     const byId = new Map(scene.tokens.map((token) => [token.id, token]));
-    if (views.some((view) => !byId.has(view.token.id) || (view.token.own === 0) !== (byId.get(view.token.id)!.own === 0) || (view.token.own < 0) !== (byId.get(view.token.id)!.own < 0))) {
+    // A footprint changed: its base is drawn again at its new size.
+    if (views.some((view) => !byId.has(view.token.id) || (view.token.own === 0) !== (byId.get(view.token.id)!.own === 0) || (view.token.own < 0) !== (byId.get(view.token.id)!.own < 0) || view.token.radius !== byId.get(view.token.id)!.radius)) {
       return false;
     }
     const u = this.u;
@@ -1752,6 +1916,9 @@ export class VistazoView {
     for (const child of this.tokenGroup.children) {
       // A prop's pieces stay with the props option; the tokens' bases and lines go with the tokens.
       child.visible = child.userData.prop === true || this.options.tokens;
+    }
+    if (this.hasWeather) {
+      this.weatherUniforms();
     }
     this.render();
 
@@ -2086,7 +2253,7 @@ function onBase(base: [[number, number], [number, number]], mx: number, my: numb
 /** What the props are now, to tell when they've changed. */
 /** What of the props needs them drawn again when it changes (where they are, turned and raised, is moved in place). */
 function propsKey(props: VistazoScene["props"]): string {
-  return JSON.stringify(props.map((prop) => [prop.id, prop.size, prop.width, prop.height, prop.url, Math.sign(prop.own), prop.name]));
+  return JSON.stringify(props.map((prop) => [prop.id, prop.size, prop.radius, prop.width, prop.height, prop.url, Math.sign(prop.own), prop.name]));
 }
 
 /**
@@ -2114,7 +2281,7 @@ function mediaElement(url: string, video: boolean): HTMLImageElement | HTMLVideo
 
 /** A prop as the token-like parts of its view read it (place, size, label). */
 function propToken(prop: Prop): Token {
-  return { id: prop.id, name: prop.name, url: prop.url, video: prop.video, item: prop.item, base: prop.base, x: prop.x, y: prop.y, size: prop.size, terrain: prop.terrain, own: prop.own, rotation: prop.rotation, flipX: false, flipY: false, hidden: false } as Token;
+  return { id: prop.id, name: prop.name, url: prop.url, video: prop.video, item: prop.item, base: prop.base, radius: prop.radius, x: prop.x, y: prop.y, size: prop.size, terrain: prop.terrain, own: prop.own, rotation: prop.rotation, flipX: false, flipY: false, hidden: false } as Token;
 }
 
 /**
