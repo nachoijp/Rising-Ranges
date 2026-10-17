@@ -34,6 +34,9 @@ export function createTokenFootprintMenu(language: Language, tall: boolean) {
 }
 
 /** Item types that can't be terrain (see canBeTerrain). */
+/** The layers whose images can't have a height (see createTokenHeightMenu): all but Character, Mount and Prop. */
+const NOT_HEIGHT_LAYERS = ["MAP", "GRID", "DRAWING", "ATTACHMENT", "NOTE", "TEXT", "RULER", "FOG", "POINTER", "POST_PROCESS", "CONTROL", "POPOVER"];
+
 const NOT_TERRAIN_TYPES = ["IMAGE", "TEXT", "LABEL", "LINE", "RULER", "POINTER", "WALL", "LIGHT", "EFFECT", "GRID"];
 
 /**
@@ -77,9 +80,13 @@ export function createTokenHeightMenu(language: Language, heightStep: HeightStep
         icon: heightIcon,
         label: translate(language, "toolbar.altura"),
         filter: {
+          // Images on the Character, Mount and Prop layers: a prop's height is drawn too (the Vistazo
+          // raises it), but only characters are measured (the Medición and the Distancias panel).
+          // Written as "an image, on none of the other layers": with "||" between the layers, how
+          // Owlbear groups it with the "&&" isn't sure (see the terrain menu's filter).
           every: [
-            { key: "layer", value: "CHARACTER" },
             { key: "type", value: "IMAGE" },
+            ...NOT_HEIGHT_LAYERS.map((layer) => ({ key: "layer", value: layer, operator: "!=" as const })),
           ],
           permissions: ["UPDATE"],
         },
@@ -87,10 +94,9 @@ export function createTokenHeightMenu(language: Language, heightStep: HeightStep
     ],
     embed: {
       url: `/token-height.html?view=elevation${tallParam(tall)}`,
-      // Bandas: 160 clipped the bottom row live; 210 left too much empty
-      // space below it. Splitting the difference — still an estimate.
-      // Cells: one 36px row plus the 8px padding around it.
-      height: (heightStep === "unit" ? 52 : 185) + SECTION_TITLE_HEIGHT + footprintSectionHeight(tall),
+      // Bandas: the table's 150 px (see ElevationPanel) plus the 8px padding around it.
+      // Cells: one 36px row plus the same padding.
+      height: (heightStep === "unit" ? 52 : 166) + SECTION_TITLE_HEIGHT + footprintSectionHeight(tall),
     },
   });
 }
@@ -102,8 +108,11 @@ const SECTION_TITLE_HEIGHT = 20;
  * token's height when sunk if it's shown, each after a divider and its title.
  */
 function footprintSectionHeight(tall: boolean): number {
-  return 17 + SECTION_TITLE_HEIGHT + 36 + 8 + 36 + (tall ? 17 + SECTION_TITLE_HEIGHT + 36 : 0);
+  return 17 + SECTION_TITLE_HEIGHT + 36 + 8 + 36 + (tall ? 17 + SECTION_TITLE_HEIGHT + 36 : 0) + BASE_SECTION_HEIGHT;
 }
+
+/** The Vistazo 3D's base (see VistazoBasePicker): a divider, its title and its thumbnail, and a little room under it at the menu's bottom. */
+const BASE_SECTION_HEIGHT = 17 + SECTION_TITLE_HEIGHT + 96 + 8;
 
 /** Leaves out the "Height when sunk" section (see ElevationPanel) when it would do nothing. */
 const tallParam = (tall: boolean) => (tall ? "" : "&tall=0");

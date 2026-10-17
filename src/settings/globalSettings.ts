@@ -30,6 +30,8 @@ export type GlobalSettings = {
   display?: StoredDisplaySettings;
   /** Who gets the Distancias panel's toolbar button. Missing = "off". */
   distancePanel?: DistancePanelAccess;
+  /** Who gets the Vistazo 3D's toolbar button (see vistazoAccess). Missing = "gm". */
+  vistazo?: DistancePanelAccess;
   /**
    * On an isometric/dimetric grid, draws each raised token raised (see
    * lift.ts) — it changes the tokens themselves, so it's opt-in. Missing = false.
@@ -112,6 +114,11 @@ export function resolveTerrainLook(settings: GlobalSettings): TerrainLook {
 }
 export type TerrainVisibility = "hidden" | "gm" | "everyone";
 
+/** Who can open the Vistazo 3D: the GM unless set otherwise. */
+export function vistazoAccess(settings: GlobalSettings): DistancePanelAccess {
+  return settings.vistazo ?? "gm";
+}
+
 export function terrainVisibility(settings: GlobalSettings): TerrainVisibility {
   return settings.terrainVisibility ?? "gm";
 }
@@ -173,6 +180,7 @@ function isGlobalSettings(value: unknown): value is GlobalSettings {
       value.distancePanel === "off" ||
       value.distancePanel === "gm" ||
       value.distancePanel === "everyone") &&
+    (value.vistazo === undefined || value.vistazo === "off" || value.vistazo === "gm" || value.vistazo === "everyone") &&
     (value.groundLevel === undefined || value.groundLevel === "terrain" || value.groundLevel === "fixed") &&
     optionalBoolean(value.enableTerrain) &&
     // Each field inside is checked (and falls back) on its own in resolveTerrainLook.

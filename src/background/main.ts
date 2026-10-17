@@ -9,6 +9,9 @@ import { registerToolbar, watchToolbar } from "./toolbar";
 import { prefetchPanels } from "./prefetchPanels";
 import { startTerrainStyle } from "./terrainStyle";
 import { startTerrainView } from "./terrainView";
+import { SYNC_CHANNEL, type SyncMessage } from "../vistazo/sync";
+import { isVistazoOpen, openVistazoPanel, watchVistazoPanel } from "../vistazo/panel";
+import { globalSettingsFromMetadata, vistazoAccess } from "../settings/globalSettings";
 
 async function waitUntilOBRReady() {
   return new Promise<void>((resolve) => {
@@ -67,6 +70,7 @@ async function init() {
   const sceneReady = await waitUntilSceneReady(SCENE_READY_TIMEOUT_MS);
   registerToolbar(sceneReady ? await OBR.scene.getMetadata() : {});
   watchToolbar();
+  watchSyncedView();
   prefetchPanels();
 
   // These work on scene items, so they wait for a scene themselves.
@@ -87,6 +91,28 @@ async function init() {
   });
   startIsoLift().catch((error) => {
     console.error("Rising Ranges: failed to start raised tokens", error);
+  });
+}
+
+/**
+ * A player's Vistazo opens by itself when the GM syncs their view (see
+ * vistazo/sync.ts), if the scene lets players have it; the page then follows the camera.
+ */
+function watchSyncedView() {
+  watchVistazoPanel();
+  OBR.broadcast.onMessage(SYNC_CHANNEL, async (event) => {
+    const message = event.data as SyncMessage;
+    if (message.type !== "camera" || isVistazoOpen()) {
+      return;
+    }
+    try {
+      const [role, metadata] = await Promise.all([OBR.player.getRole(), OBR.scene.getMetadata()]);
+      if (role !== "GM" && vistazoAccess(globalSettingsFromMetadata(metadata)) === "everyone") {
+        await openVistazoPanel();
+      }
+    } catch {
+      // No scene: nothing to open.
+    }
   });
 }
 

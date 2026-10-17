@@ -6,12 +6,5 @@
   "homepage_url": "https://github.com/nachoijp/Rising-Ranges#readme",
   "icon": "/logo.png",
   "background_url": "/background.html",
-  "action": {
-    "title": "Vistazo 3D",
-    "icon": "/vistazo.svg",
-    "popover": "/vistazo.html",
-    "width": 900,
-    "height": 600
-  },
   "description": "Relative 3D range and altitude measuring for Owlbear Rodeo"
 }

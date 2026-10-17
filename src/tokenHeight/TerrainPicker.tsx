@@ -48,7 +48,9 @@ const WALL_CHOICES = [
   ["flat", "terrain.wallFlat"],
   ["stretch", "terrain.wallStretch"],
   ["fold", "terrain.wallFold"],
-  ["stone", "terrain.wallStone"],
+  // "stone" is brick (see WallStyle in vistazo/render.ts).
+  ["stone", "terrain.wallBrick"],
+  ["rubble", "terrain.wallRubble"],
   ["earth", "terrain.wallEarth"],
   ["wood", "terrain.wallWood"],
 ] as const;

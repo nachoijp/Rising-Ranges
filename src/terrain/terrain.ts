@@ -89,10 +89,10 @@ export function setTerrainStand(item: Item, stand: TerrainStandEdge | undefined)
 }
 
 /** What a zone's walls show in the Vistazo 3D (see vistazo/render.ts WallStyle). */
-export type TerrainWallStyle = "flat" | "stretch" | "fold" | "stone" | "earth" | "wood";
+export type TerrainWallStyle = "flat" | "stretch" | "fold" | "stone" | "rubble" | "earth" | "wood";
 
 const WALL_KEY = getPluginId("terrainWall");
-const WALL_STYLES: readonly TerrainWallStyle[] = ["flat", "stretch", "fold", "stone", "earth", "wood"];
+const WALL_STYLES: readonly TerrainWallStyle[] = ["flat", "stretch", "fold", "stone", "rubble", "earth", "wood"];
 
 /** The zone's own wall style, if it has one (otherwise the Vistazo's own choice applies). */
 export function getTerrainWall(item: Item): TerrainWallStyle | undefined {

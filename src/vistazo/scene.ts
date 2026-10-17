@@ -3,6 +3,7 @@ import polygonClipping, { type MultiPolygon, type Pair } from "polygon-clipping"
 import { bandSetFromMetadata } from "../bandSets/bandSets";
 import { onGrid } from "../engine/hex";
 import { tokenName } from "../distances/rows";
+import { getVistazoBase, type VistazoBase } from "../tokenHeight/footprint";
 import { globalSettingsFromMetadata, terrainOn } from "../settings/globalSettings";
 import {
   getTerrainStand,
@@ -24,7 +25,11 @@ import { onFloor } from "../tokenHeight/lift";
 // heights in grid units.
 
 /** An image of the Map layer: drawn as an <img> of its own size under `transform`. */
-export type MapImage = { url: string; width: number; height: number; transform: string; corners: Pair[] };
+/** `video`: an animated image (webm and the like), drawn with a video element. */
+export type MapImage = { url: string; video: boolean; width: number; height: number; transform: string; corners: Pair[] };
+
+/** Whether an image item is a video (Owlbear takes webm and the like as images). */
+const isVideo = (item: Image) => item.image.mime.startsWith("video");
 
 /** The edge a standing zone turns up on: the one nearest the map's middle. */
 export type StandEdge = "top" | "bottom" | "left" | "right";
@@ -62,6 +67,8 @@ export type Token = {
   id: string;
   name: string;
   url: string;
+  /** An animated image (webm), drawn with a video element. */
+  video: boolean;
   x: number;
   y: number;
   /** Its footprint across, in scene px. */
@@ -77,10 +84,56 @@ export type Token = {
   hidden: boolean;
   /** The item itself, for the distance math (computeDistanceRows). */
   item: Image;
+  /** Where its picture touches the ground standing, if set by hand (see getVistazoBase). */
+  base?: VistazoBase;
 };
 
 /** An image of the Props layer, where it lies, to draw flat on the ground or standing. */
-export type Prop = { id: string; url: string; x: number; y: number; size: number; width: number; height: number; transform: string; rotation: number; terrain: number };
+/** `own`: its height above the terrain, set like a token's (the Elevation menu works on props too). */
+export type Prop = {
+  id: string;
+  name: string;
+  url: string;
+  video: boolean;
+  x: number;
+  y: number;
+  size: number;
+  width: number;
+  height: number;
+  transform: string;
+  /** Its picture's corners on the map, scene px (where a click picks it lying flat). */
+  corners: Pair[];
+  rotation: number;
+  terrain: number;
+  own: number;
+  item: Image;
+  base?: VistazoBase;
+};
+
+/** A Props-layer image as the Vistazo draws it: where it is, the terrain under it and its own height. */
+export function propOf(item: Image, dpi: number, measuredAt: (x: number, y: number) => number, own: number): Prop {
+  const [x, y] = imageToScene(item, dpi, item.image.width / 2, item.image.height / 2);
+  const k = dpi / item.grid.dpi;
+  const map = mapImage(item, dpi);
+  return {
+    id: item.id,
+    name: tokenName(item),
+    url: item.image.url,
+    video: isVideo(item),
+    x,
+    y,
+    size: Math.max(item.image.width * Math.abs(item.scale.x), item.image.height * Math.abs(item.scale.y)) * k,
+    width: item.image.width,
+    height: item.image.height,
+    transform: map.transform,
+    corners: map.corners,
+    rotation: item.rotation,
+    terrain: measuredAt(x, y),
+    own,
+    item,
+    base: getVistazoBase(item),
+  };
+}
 
 /** The part of the scene that only changes with the map and the terrain, kept while only tokens move. */
 type Terrain = {
@@ -138,6 +191,7 @@ function mapImage(item: Image, dpi: number): MapImage {
   const { width, height } = item.image;
   return {
     url: item.image.url,
+    video: isVideo(item),
     width,
     height,
     transform:
@@ -226,7 +280,8 @@ export function buildScene(
   void playerView;
   const terrainOff = !terrainOn(settings, gridType);
   const altitude = settings.enableAltitude ?? true;
-  const tokenItems = items.filter((item): item is Image => isImage(item) && item.layer === "CHARACTER");
+  // Characters, and mounts with them (a horse is a creature too).
+  const tokenItems = items.filter((item): item is Image => isImage(item) && (item.layer === "CHARACTER" || item.layer === "MOUNT"));
   const key = terrainKeyOf(items, tokenItems, dpi, terrainOff, sight);
   const terrain = previous && previous.terrainKey === key ? previous : buildTerrain(key, items, tokenItems, dpi, terrainOff, sight);
   const { measuredAt } = terrain;
@@ -242,6 +297,7 @@ export function buildScene(
       id: item.id,
       name: tokenName(item),
       url: item.image.url,
+      video: isVideo(item),
       x,
       y,
       size: Math.max(floor.image.width * Math.abs(floor.scale.x), floor.image.height * Math.abs(floor.scale.y)) * k,
@@ -252,6 +308,7 @@ export function buildScene(
       flipY: item.scale.y < 0,
       hidden: !item.visible,
       item,
+      base: getVistazoBase(item),
     };
     heights.set(item.id, token.terrain + token.own);
     return token;
@@ -260,23 +317,7 @@ export function buildScene(
   const props: Prop[] = items
     .filter((item): item is Image => isImage(item) && item.layer === "PROP" && item.visible)
     .sort((a, b) => a.zIndex - b.zIndex)
-    .map((item) => {
-      const [x, y] = imageToScene(item, dpi, item.image.width / 2, item.image.height / 2);
-      const k = dpi / item.grid.dpi;
-      const map = mapImage(item, dpi);
-      return {
-        id: item.id,
-        url: item.image.url,
-        x,
-        y,
-        size: Math.max(item.image.width * Math.abs(item.scale.x), item.image.height * Math.abs(item.scale.y)) * k,
-        width: item.image.width,
-        height: item.image.height,
-        transform: map.transform,
-        rotation: item.rotation,
-        terrain: measuredAt(x, y),
-      };
-    });
+    .map((item) => propOf(item, dpi, measuredAt, own.get(item.id) ?? 0));
 
   return {
     terrainKey: terrain.terrainKey,

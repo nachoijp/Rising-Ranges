@@ -9,7 +9,7 @@ import { ChoiceGroup, SECTION_GAP } from "./controls";
 import { useOBRContext } from "./OBRContext";
 import { useTranslation } from "../i18n/useTranslation";
 import type { Language } from "../i18n/language";
-import { groundHotkey, type DistancePanelAccess, type GlobalSettings } from "./globalSettings";
+import { groundHotkey, type DistancePanelAccess, type GlobalSettings, vistazoAccess } from "./globalSettings";
 
 const README_URL = "https://github.com/nachoijp/Rising-Ranges#readme";
 
@@ -82,6 +82,19 @@ export function GeneralTab({
         tooltip={t("settings.global.distancePanelTooltip")}
         value={settings.distancePanel ?? "off"}
         onChange={(distancePanel) => onChangeSettings({ distancePanel })}
+        options={[
+          { value: "off", label: t("settings.global.distancePanelOff") },
+          { value: "gm", label: t("settings.global.distancePanelGm") },
+          { value: "everyone", label: t("settings.global.distancePanelEveryone") },
+        ]}
+      />
+
+      <ChoiceGroup<DistancePanelAccess>
+        id="vistazo-label"
+        label={t("settings.global.vistazo")}
+        tooltip={t("settings.global.vistazoTooltip")}
+        value={vistazoAccess(settings)}
+        onChange={(vistazo) => onChangeSettings({ vistazo })}
         options={[
           { value: "off", label: t("settings.global.distancePanelOff") },
           { value: "gm", label: t("settings.global.distancePanelGm") },

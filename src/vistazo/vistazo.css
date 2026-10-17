@@ -9,7 +9,6 @@
   --line: color-mix(in srgb, var(--fg) 16%, transparent);
   --stage: #0d1110;
   --stage-fg: #e1e8e6;
-  color-scheme: dark;
 }
 [hidden] {
   display: none !important;
@@ -19,30 +18,46 @@ body {
   height: 100%;
   margin: 0;
 }
+/* Its colour scheme on the body, not the root: an iframe whose root's scheme differs from Owlbear's
+   page gets an opaque backdrop from the browser, which hid the glass. */
 body {
+  color-scheme: dark;
   background: transparent;
   color: var(--fg);
   font: 14px/1.4 Roboto, "Segoe UI", system-ui, sans-serif;
   overflow: hidden;
 }
+/* The same translucent frame as the extension's other panels (GlassFrame): an outer blurred
+   frame and an inner panel 7px in, both with a faint border. */
 .app {
+  position: relative;
+  box-sizing: border-box;
+  height: 100%;
+  padding: 7px;
+  background: var(--glass-outer);
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  border: 1px solid var(--divider);
+  border-radius: 16px;
+}
+.glass-inner {
   box-sizing: border-box;
   height: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 250px;
-  gap: 10px;
-  padding: 10px;
-  background: var(--bg);
+  /* The 3D view right up to the inner panel's edges (clipped to its corners): one margin around it, not two. */
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--glass-inner);
+  border: 1px solid var(--divider);
+  border-radius: 14px;
+  box-shadow: 0 10px 34px -10px rgba(0, 0, 0, 0.5);
 }
-.app {
-  position: relative;
-}
-.app.compact {
+.app.compact .glass-inner {
   grid-template-columns: minmax(0, 1fr);
-  padding: 6px;
 }
-.app.compact aside,
-.app.compact .hint {
+.app.compact aside {
   display: none;
 }
 .panel-toggle {
@@ -60,8 +75,137 @@ body {
   color: var(--stage-fg);
   z-index: 20000;
 }
-.full-toggle {
-  right: 44px;
+/* The stage's buttons, top right; beside the title instead while the settings show (see main.ts). */
+.tools {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 6px;
+  z-index: 20000;
+}
+.tools .panel-toggle {
+  position: static;
+}
+.aside-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+}
+.aside-head h1 {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aside-head .tools {
+  position: static;
+  gap: 2px;
+}
+.aside-head .panel-toggle {
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  color: var(--muted);
+}
+.aside-head .panel-toggle:hover {
+  background: var(--line);
+  color: var(--fg);
+}
+.aside-head .panel-toggle[aria-pressed="true"] {
+  background: transparent;
+  color: var(--accent);
+}
+/* What only applies with its checkbox on (a prop's position and marks), hidden with it off. */
+.sub {
+  display: flex;
+  flex-direction: column;
+  gap: inherit;
+}
+.grip {
+  right: auto;
+  left: 8px;
+  cursor: grab;
+  touch-action: none;
+}
+.grip:active {
+  cursor: grabbing;
+}
+.full .grip {
+  display: none;
+}
+.full .minimize-toggle {
+  display: none;
+}
+/* Minimized: only a bar with its name and a button to bring it back. */
+.bar {
+  display: none;
+}
+.minimized .app {
+  display: none;
+}
+.minimized .bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  box-sizing: border-box;
+  height: 100%;
+  padding: 0 6px 0 4px;
+  background: var(--glass-outer);
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  border: 1px solid var(--divider);
+  border-radius: 12px;
+  color: var(--fg);
+  font-weight: 500;
+}
+.bar-grip {
+  width: 22px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  cursor: grab;
+  touch-action: none;
+  flex-shrink: 0;
+}
+.bar-grip:active {
+  cursor: grabbing;
+}
+.bar-grip svg {
+  width: 16px;
+  height: 16px;
+}
+.bar-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.bar-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bar-restore {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+}
+.bar-restore svg {
+  width: 18px;
+  height: 18px;
 }
 .full .resize {
   display: none;
@@ -78,17 +222,31 @@ body {
   position: absolute;
   right: 0;
   bottom: 0;
-  width: 16px;
-  height: 16px;
+  /* As GM Notes' handle: three short diagonal strokes in the corner. */
+  width: 20px;
+  height: 20px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 4px;
+  color: var(--muted);
+  opacity: 0.7;
   cursor: nwse-resize;
   touch-action: none;
-  background: linear-gradient(135deg, transparent 50%, var(--muted) 50%, var(--muted) 58%, transparent 58%, transparent 70%, var(--muted) 70%, var(--muted) 78%, transparent 78%);
   z-index: 20001;
+}
+.resize svg {
+  width: 11px;
+  height: 11px;
 }
 .message {
   margin: 0;
   padding: 16px;
-  background: var(--bg);
+  background: var(--glass-outer);
+  backdrop-filter: blur(18px) saturate(1.3);
+  border: 1px solid var(--divider);
+  border-radius: 16px;
   color: var(--muted);
 }
 
@@ -96,7 +254,6 @@ body {
 .stage {
   position: relative;
   overflow: hidden;
-  border-radius: 8px;
   background: radial-gradient(120% 90% at 50% 40%, #29312e 0%, var(--stage) 70%);
   perspective-origin: 50% 50%;
   touch-action: none;
@@ -137,15 +294,23 @@ body {
 .tok .disc {
   position: absolute;
 }
-.tok img {
+.tok img,
+.tok video {
   pointer-events: auto;
   cursor: pointer;
   border-radius: 50%;
 }
-.tok.prop img {
-  pointer-events: none;
+.tok.prop img,
+.tok.prop video {
   border-radius: 0;
   filter: drop-shadow(0 3px 3px rgba(0, 0, 0, 0.5));
+}
+.tok.prop.noshadow img,
+.tok.prop.noshadow video {
+  filter: none;
+}
+.tok.prop.flat .lbl {
+  pointer-events: none;
 }
 .tok.selected img {
   box-shadow: 0 0 0 3px var(--accent), 0 0 12px var(--accent);
@@ -179,7 +344,8 @@ body {
   text-anchor: middle;
   dominant-baseline: middle;
 }
-.tok img {
+.tok img,
+.tok video {
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -194,7 +360,8 @@ body {
 .tok .lbl {
   zoom: var(--label-scale, 1);
   position: absolute;
-  bottom: calc(100% + 3px);
+  /* Down to the top of what shows of the picture (--gap, set unzoomed: the label is zoomed). */
+  bottom: calc(100% + 3px - var(--gap, 0px) / var(--label-scale, 1));
   left: 50%;
   transform: translateX(-50%);
   font: 500 12px/1.15 Roboto, "Segoe UI", system-ui, sans-serif;
@@ -240,8 +407,8 @@ body {
 }
 .hud {
   position: absolute;
-  left: 10px;
-  top: 10px;
+  right: 10px;
+  bottom: 10px;
   display: flex;
   gap: 8px;
   align-items: center;
@@ -249,20 +416,86 @@ body {
   font-size: 13px;
   pointer-events: none;
   font-variant-numeric: tabular-nums;
+  z-index: 20000;
 }
-.hud svg {
-  width: 32px;
-  height: 32px;
+.compass {
+  width: 34px;
+  height: 34px;
+  pointer-events: auto;
+  cursor: pointer;
+  border-radius: 50%;
 }
-.hint {
+.compass:focus-visible {
+  outline: 2px solid var(--accent);
+}
+.guided .compass {
+  pointer-events: none;
+  cursor: default;
+}
+.help {
   position: absolute;
   left: 10px;
-  right: 10px;
-  bottom: 8px;
+  bottom: 10px;
+  z-index: 20000;
+}
+.help-button {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
   color: var(--stage-fg);
-  opacity: 0.75;
-  font-size: 12px;
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1;
+}
+.help-tip {
+  display: none;
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  width: max-content;
+  max-width: min(320px, 70vw);
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(16, 20, 19, 0.92);
+  color: #e8eeec;
+  font-size: 12.5px;
+  line-height: 1.45;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+.help-tip ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.help:hover .help-tip,
+.help-button:focus-visible + .help-tip {
+  display: block;
+}
+.guided-badge {
+  display: none;
+}
+.guided .guided-badge {
+  display: block;
+  position: absolute;
+  left: 50%;
+  top: 10px;
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--stage-fg);
+  font-size: 12.5px;
   pointer-events: none;
+  z-index: 20000;
+}
+.guided .stage {
+  cursor: default;
+}
+button.sync.on {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .loading {
   position: absolute;
@@ -274,9 +507,7 @@ body {
 
 /* ---------- The controls ---------- */
 aside {
-  background: var(--panel);
-  border-radius: 8px;
-  padding: 14px;
+  padding: 10px 10px 10px 18px;
   overflow-y: auto;
   overflow-x: hidden;
   display: flex;
@@ -298,6 +529,16 @@ button {
   font: inherit;
   cursor: pointer;
 }
+/* Side by side while both fit on one line each; otherwise one under the other, full width (not two tall buttons). */
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.buttons button {
+  flex: 1 1 auto;
+  white-space: nowrap;
+}
 button.primary {
   font-weight: 500;
   background: var(--accent);
@@ -314,6 +555,11 @@ button.ghost {
   border-radius: 6px;
   padding: 4px 10px;
 }
+/* Tighter at the sides in the top row, for their texts to fit side by side (after the rules above, which it overrides). */
+.buttons button {
+  padding-left: 5px;
+  padding-right: 5px;
+}
 button:focus-visible,
 input:focus-visible,
 select:focus-visible {
@@ -328,13 +574,38 @@ fieldset {
   gap: 8px;
 }
 legend {
+  padding: 0;
+  margin-bottom: 6px;
+  width: 100%;
+}
+.section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
   font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--muted);
-  padding: 0;
-  margin-bottom: 6px;
+  text-align: left;
+}
+.section-toggle svg {
+  width: 14px;
+  height: 14px;
+  transition: transform 0.15s;
+}
+fieldset.collapsed .section-toggle svg {
+  transform: rotate(-90deg);
+}
+fieldset.collapsed > :not(legend) {
+  display: none;
+}
+fieldset.collapsed legend {
+  margin-bottom: 0;
 }
 .row {
   display: grid;

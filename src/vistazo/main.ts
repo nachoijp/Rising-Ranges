@@ -10,9 +10,10 @@ import { onGrid } from "../engine/hex";
 import { computeDistanceRows } from "../distances/rows";
 import { getStoredTheme } from "../theme/themes";
 import { getColorString } from "../util/color";
-import { buildScene, type Token, type VistazoScene } from "./scene";
+import { buildScene, propOf, type Token, type VistazoScene } from "./scene";
 import { VistazoView, type Camera, type DistanceLine, type Options } from "./render";
 import { LIVE_DRAG_CHANNEL, type LiveDrag } from "./live";
+import { SYNC_CHANNEL, SYNC_HEARTBEAT_MS, SYNC_INTERVAL_MS, SYNC_TIMEOUT_MS, type SyncMessage } from "./sync";
 import { stepHeight } from "../engine/heights";
 import { globalSettingsFromMetadata, groundHotkey, letterToCode } from "../settings/globalSettings";
 import { setTokenHeightMarker } from "../tokenHeight/markers";
@@ -20,6 +21,23 @@ import { bodyCenterHeight, DEFAULT_TOLERANCE, excessRadius } from "../engine/dis
 import { isHexShape } from "../engine/hex";
 import { getTokenRadius } from "../render/iconAnchor";
 import { getPluginId } from "../util/getPluginId";
+import { globalSettingsFromMetadata as settingsOf, vistazoAccess } from "../settings/globalSettings";
+import {
+  BAR_HEIGHT,
+  BAR_WIDTH,
+  MIN_HEIGHT,
+  MIN_WIDTH,
+  VISTAZO_POPOVER_ID,
+  DEFAULT_POSITION,
+  closeVistazoPanel,
+  moveVistazoPanel,
+  openVistazoPanel,
+  readPanelPosition,
+  savePanelPosition,
+  type PanelPosition,
+  readPanelSize as readSize,
+  savePanelSize as saveSize,
+} from "./panel";
 import { clearOf, fogOver } from "./fog";
 import { DragPath } from "../util/dragPath";
 import "./vistazo.css";
@@ -30,6 +48,9 @@ import "./vistazo.css";
  * bar. Going there and back keeps the camera (CAMERA_KEY, read once).
  */
 const FULL = new URLSearchParams(location.search).has("full");
+
+/** The controls' help, one line each (the ? at the stage's corner). */
+const HELP_KEYS = ["vistazo.help1", "vistazo.help2", "vistazo.help3", "vistazo.help4", "vistazo.help5", "vistazo.help6", "vistazo.help7"] as const;
 const FULL_MODAL_ID = getPluginId("vistazo/full");
 const CAMERA_KEY = "rising-ranges/vistazo-camera";
 
@@ -44,9 +65,14 @@ const POSE = { tilt: 55, yaw: -25 };
 const OPTIONS_KEY = "rising-ranges/vistazo-options";
 
 function readOptions(): Options {
-  const defaults: Options = { heightScale: 1, shade: 0.6, perspective: 45, tint: false, tokens: true, xray: false, edges: true, anchor: "center", levels: true, grid: false, distances: true, tokenLabels: "full", distanceLabels: "full", labelSize: 1, relief: 0.5, props: "flat", wallStyle: "fold", rings: true, ringFill: false, playerView: false };
+  const defaults: Options = { heightScale: 1, shade: 0.6, perspective: 45, tint: false, tokens: true, xray: false, edges: true, anchor: "center", levels: true, grid: false, distances: true, tokenLabels: "full", distanceLabels: "full", labelSize: 1, relief: 0.5, props: "flat", showProps: true, propShadows: true, propLines: true, propLabels: false, wallStyle: "fold", rings: true, ringFill: false, playerView: false };
   try {
-    return { ...defaults, ...JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? "{}") };
+    const stored: Options = { ...defaults, ...JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? "{}") };
+    // "Hidden" was a position of the props once; now it's their own checkbox.
+    if (stored.props === "none") {
+      return { ...stored, props: "flat", showProps: false };
+    }
+    return stored;
   } catch {
     return defaults;
   }
@@ -68,53 +94,182 @@ function applyTheme(theme: Theme) {
   root.setProperty("--muted", theme.text.secondary);
   root.setProperty("--accent", theme.primary.main);
   root.setProperty("--accent-fg", theme.primary.contrastText);
-  document.documentElement.style.colorScheme = theme.mode === "DARK" ? "dark" : "light";
+  // On the body (see vistazo.css): on the root it would make the browser paint the page opaque.
+  document.body.style.colorScheme = theme.mode === "DARK" ? "dark" : "light";
+  // The extension's glass panel (see GlassFrame): measured in the dark theme; the light one keeps the theme's paper.
+  const dark = theme.mode === "DARK";
+  root.setProperty("--glass-outer", dark ? "rgba(48, 52, 63, 0.62)" : withAlpha(theme.background.paper, 0.62));
+  root.setProperty("--glass-inner", withAlpha(theme.background.default, 0.2));
+  root.setProperty("--divider", dark ? "rgba(255,255,255,.09)" : "rgba(20,18,30,.10)");
 }
 
-const SIZE_KEY = "rising-ranges/vistazo-size";
-const MIN_WIDTH = 220;
-const MIN_HEIGHT = 180;
+/** A CSS colour (#rgb, #rrggbb or rgb()) at an opacity. */
+function withAlpha(color: string, alpha: number): string {
+  const hex = color.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hex) {
+    const h = hex[1].length === 3 ? hex[1].replace(/./g, (c) => c + c) : hex[1];
+    return `rgba(${parseInt(h.slice(0, 2), 16)}, ${parseInt(h.slice(2, 4), 16)}, ${parseInt(h.slice(4, 6), 16)}, ${alpha})`;
+  }
+  const rgb = color.match(/^rgba?\(([^)]+)\)$/i);
+  if (rgb) {
+    const [r, g, b] = rgb[1].split(",").map((v) => v.trim());
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+  return color;
+}
 
-type Size = { width: number; height: number; compact: boolean };
+const SECTIONS_KEY = "rising-ranges/vistazo-sections";
 
-function readSize(): Partial<Size> {
+/** Each section of the controls folds away by its title, remembered per browser. */
+function setUpSections() {
+  let folded: string[] = [];
   try {
-    return JSON.parse(localStorage.getItem(SIZE_KEY) ?? "{}");
+    folded = JSON.parse(localStorage.getItem(SECTIONS_KEY) ?? "[]");
   } catch {
-    return {};
+    // All open, then.
+  }
+  for (const section of document.querySelectorAll<HTMLFieldSetElement>("fieldset[data-section]")) {
+    const legend = section.querySelector("legend")!;
+    const title = legend.querySelector<HTMLElement>("[data-t]") ?? legend;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "section-toggle";
+    button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>`;
+    const label = document.createElement("span");
+    label.dataset.t = title.dataset.t ?? "";
+    button.append(label);
+    // Its text is the button's now: left on the legend, filling the texts in would write over the button.
+    delete legend.dataset.t;
+    legend.replaceChildren(button);
+    const id = section.dataset.section!;
+    const fold = (on: boolean) => {
+      section.classList.toggle("collapsed", on);
+      button.setAttribute("aria-expanded", String(!on));
+    };
+    fold(folded.includes(id));
+    button.onclick = () => {
+      const on = !section.classList.contains("collapsed");
+      fold(on);
+      folded = on ? [...new Set([...folded, id])] : folded.filter((f) => f !== id);
+      try {
+        localStorage.setItem(SECTIONS_KEY, JSON.stringify(folded));
+      } catch {
+        // Only a convenience.
+      }
+    };
   }
 }
 
-function saveSize(size: Partial<Size>) {
-  try {
-    localStorage.setItem(SIZE_KEY, JSON.stringify({ ...readSize(), ...size }));
-  } catch {
-    // Only a convenience.
-  }
-}
-
-/** The popover's size: the one it was left at, or most of the window the first time. */
-async function fitToWindow() {
-  const [width, height] = await Promise.all([OBR.viewport.getWidth(), OBR.viewport.getHeight()]);
-  const saved = readSize();
-  const w = Math.min(width - 40, saved.width ?? width - 120);
-  const h = Math.min(height - 80, saved.height ?? height - 140);
-  await Promise.all([
-    OBR.action.setWidth(Math.max(MIN_WIDTH, Math.round(w))),
-    OBR.action.setHeight(Math.max(MIN_HEIGHT, Math.round(h))),
-  ]);
+/** The panel's size, set from its page (Owlbear lets a page resize its popover). */
+function resizePanel(width: number, height: number) {
+  void OBR.popover.setWidth(VISTAZO_POPOVER_ID, width);
+  void OBR.popover.setHeight(VISTAZO_POPOVER_ID, height);
 }
 
 /**
- * The corner handle resizes the popover (it's Owlbear's: the page asks for
- * a new size), and the panel button hides the controls: small, with only the
- * view, it's a minimap that keeps up with the scene.
+ * The corner handle resizes the panel, the panel button hides the controls
+ * (small, with only the view, it's a minimap that keeps up with the scene),
+ * and the minimize button shrinks it to a bar, out of the way, still open.
  */
+type PanelDrag = {
+  x: number;
+  y: number;
+  from: PanelPosition;
+  to: PanelPosition;
+  screen: { width: number; height: number } | null;
+  busy: boolean;
+  moved: boolean;
+};
+
+/**
+ * A handle that drags the panel around the screen, like the Distancias
+ * panel's: the page keeps the pointer while it's held (pointer capture),
+ * each move reopens the panel further along (one at a time), in screen
+ * coordinates so the panel moving underneath doesn't throw them off. A
+ * double click sends it back to its corner.
+ */
+function setUpDrag(handle: HTMLElement) {
+  let drag: PanelDrag | null = null;
+  const size = () => ({ width: window.innerWidth, height: window.innerHeight });
+  const target = (event: PointerEvent, d: PanelDrag): PanelPosition => {
+    const to = { left: d.from.left + event.screenX - d.x, top: d.from.top + event.screenY - d.y };
+    if (!d.screen) {
+      return to;
+    }
+    const { width, height } = size();
+    return {
+      left: Math.round(Math.max(0, Math.min(to.left, d.screen.width - width))),
+      top: Math.round(Math.max(0, Math.min(to.top, d.screen.height - height))),
+    };
+  };
+  handle.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    handle.setPointerCapture(event.pointerId);
+    const position = readPanelPosition();
+    const d: PanelDrag = { x: event.screenX, y: event.screenY, from: position, to: position, screen: null, busy: false, moved: false };
+    drag = d;
+    Promise.all([OBR.viewport.getWidth(), OBR.viewport.getHeight()])
+      .then(([width, height]) => {
+        d.screen = { width, height };
+      })
+      .catch(() => {});
+  });
+  handle.addEventListener("pointermove", (event) => {
+    const d = drag;
+    if (!d || d.busy) {
+      return;
+    }
+    const to = target(event, d);
+    if (to.left === d.to.left && to.top === d.to.top) {
+      return;
+    }
+    d.to = to;
+    d.moved = true;
+    d.busy = true;
+    const { width, height } = size();
+    moveVistazoPanel(to, width, height).finally(() => {
+      d.busy = false;
+    });
+  });
+  const end = (event: PointerEvent) => {
+    const d = drag;
+    drag = null;
+    if (!d?.moved) {
+      return;
+    }
+    const to = target(event, d);
+    const { width, height } = size();
+    void moveVistazoPanel(to, width, height);
+    savePanelPosition(to);
+  };
+  handle.addEventListener("pointerup", end);
+  handle.addEventListener("pointercancel", end);
+  handle.addEventListener("dblclick", () => {
+    const { width, height } = size();
+    void moveVistazoPanel(DEFAULT_POSITION, width, height);
+    savePanelPosition(null);
+  });
+}
+
 function setUpResizing() {
+  setUpDrag($("grip"));
+  setUpDrag($("barGrip"));
+  $("minimize").onclick = () => {
+    document.documentElement.classList.add("minimized");
+    resizePanel(BAR_WIDTH, BAR_HEIGHT);
+  };
+  $("restore").onclick = () => {
+    document.documentElement.classList.remove("minimized");
+    const saved = readSize();
+    resizePanel(saved.width ?? 900, saved.height ?? 600);
+  };
   const app = $("app");
   const compact = (on: boolean) => {
     app.classList.toggle("compact", on);
     $("panelToggle").setAttribute("aria-pressed", String(!on));
+    // Its buttons beside the title while the settings show, over the 3D view otherwise.
+    (on ? $("stage") : $("asideHead")).appendChild($("tools"));
   };
   compact(readSize().compact ?? false);
   $("panelToggle").onclick = () => {
@@ -139,8 +294,7 @@ function setUpResizing() {
     const height = Math.max(MIN_HEIGHT, Math.round(start.height + event.screenY - start.y));
     cancelAnimationFrame(frame);
     frame = requestAnimationFrame(() => {
-      void OBR.action.setWidth(width);
-      void OBR.action.setHeight(height);
+      resizePanel(width, height);
       saveSize({ width, height });
     });
   });
@@ -164,8 +318,6 @@ async function start() {
   OBR.theme.onChange(applyTheme);
   if (FULL) {
     document.documentElement.classList.add("full");
-  } else {
-    void fitToWindow();
   }
   let language: Language = languageFromMetadata(metadata ?? {});
   const t = (key: TranslationKey, vars?: Record<string, string | number>) => translate(language, key, vars);
@@ -178,13 +330,16 @@ async function start() {
       } else if (FULL) {
         leaveFull();
       } else {
-        void OBR.action.close();
+        void closeVistazoPanel();
       }
     }
   });
 
-  if (role !== "GM") {
-    message(t("vistazo.gmOnly"));
+  // Who may open it (Settings → General): off, the GM, or everyone (players as players).
+  const isGM = role === "GM";
+  const access = vistazoAccess(settingsOf(metadata ?? {}));
+  if (access === "off" || (access === "gm" && !isGM)) {
+    message(t(access === "off" ? "vistazo.off" : "vistazo.gmOnly"));
     return;
   }
   // The scene may still be loading when the popover opens: say so, and start over once it's there.
@@ -209,35 +364,37 @@ async function start() {
   /** The camera handed over to the other view, for a few seconds. */
   function handCamera() {
     try {
-      localStorage.setItem(CAMERA_KEY, JSON.stringify({ at: Date.now(), camera }));
+      localStorage.setItem(CAMERA_KEY, JSON.stringify({ at: Date.now(), camera, syncing }));
     } catch {
       // It just opens as usual.
     }
   }
-  function takeCamera(): Partial<Camera> | null {
+  function takeCamera(): { camera: Partial<Camera>; syncing?: boolean } | null {
     try {
       const stored = JSON.parse(localStorage.getItem(CAMERA_KEY) ?? "null");
       localStorage.removeItem(CAMERA_KEY);
-      return stored && Date.now() - stored.at < 5000 ? stored.camera : null;
+      return stored && Date.now() - stored.at < 5000 ? stored : null;
     } catch {
       return null;
     }
   }
-  /** To full screen: this popover closes, the modal opens with its camera. */
+  /** To full screen: this panel closes, the modal opens with its camera. */
   function enterFull() {
     handCamera();
     void OBR.modal.open({ id: FULL_MODAL_ID, url: "/vistazo.html?full", fullScreen: true });
-    void OBR.action.close();
+    void closeVistazoPanel();
   }
-  /** Back from full screen: the popover opens again with its camera, and the modal closes. */
+  /** Back from full screen: the panel opens again with its camera, and the modal closes. */
   function leaveFull() {
     handCamera();
-    void OBR.action.open();
+    void openVistazoPanel();
     void OBR.modal.close(FULL_MODAL_ID);
   }
   $("fullToggle").onclick = () => (FULL ? leaveFull() : enterFull());
   $("fullToggle").dataset.title = FULL ? "vistazo.exitFull" : "vistazo.full";
   $("fullIcon").setAttribute("d", FULL ? "M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" : "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5");
+
+  setUpSections();
 
   // ---------- Texts ----------
   const fill = () => {
@@ -248,6 +405,15 @@ async function start() {
       el.title = t(el.dataset.title as TranslationKey);
       el.setAttribute("aria-label", el.title);
     }
+    // The controls' help, a list (the ? at the stage's corner); its own tooltip, not the browser's.
+    $("help").removeAttribute("title");
+    $("helpList").replaceChildren(
+      ...HELP_KEYS.map((key) => {
+        const item = document.createElement("li");
+        item.textContent = t(key);
+        return item;
+      })
+    );
   };
   fill();
 
@@ -271,6 +437,11 @@ async function start() {
   // ---------- View ----------
   const stage = $("stage");
   let options = readOptions();
+  // A player sees the scene as a player, always (the option is the GM's preview of it).
+  if (!isGM) {
+    options = { ...options, playerView: true };
+    $("playerView").closest("label")!.hidden = true;
+  }
   const view = new VistazoView(stage, tokenText, options);
   if (!view.ready) {
     message(t("vistazo.noWebgl"));
@@ -282,6 +453,9 @@ async function start() {
   const tilt = $<HTMLInputElement>("tilt");
   const yaw = $<HTMLInputElement>("yaw");
   view.onCamera = () => {
+    if (syncing) {
+      sendCamera();
+    }
     tilt.value = String(camera.tilt);
     yaw.value = String(camera.yaw);
     $("tiltOut").textContent = `${Math.round(camera.tilt)}°`;
@@ -292,6 +466,104 @@ async function start() {
   };
 
   const wrapYaw = (y: number) => ((((y + 180) % 360) + 360) % 360) - 180;
+
+  // ---------- Sync my view (see sync.ts) ----------
+  let syncing = false;
+  let lastSent = 0;
+  let sendTimer: ReturnType<typeof setTimeout> | null = null;
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  const broadcast = (message: SyncMessage) => OBR.broadcast.sendMessage(SYNC_CHANNEL, message, { destination: "REMOTE" }).catch(() => {});
+  /** The GM's camera out, at most every SYNC_INTERVAL_MS (the last position always goes). */
+  function sendCamera() {
+    if (sendTimer) {
+      return;
+    }
+    const wait = Math.max(0, SYNC_INTERVAL_MS - (performance.now() - lastSent));
+    sendTimer = setTimeout(() => {
+      sendTimer = null;
+      lastSent = performance.now();
+      void broadcast({ type: "camera", camera: { ...camera } });
+    }, wait);
+  }
+  function setSyncing(on: boolean) {
+    syncing = on;
+    $("sync").setAttribute("aria-pressed", String(on));
+    $("sync").classList.toggle("on", on);
+    // Its text by key, so a change of language (which fills the texts in again) keeps it.
+    $("sync").dataset.t = on ? "vistazo.syncStop" : "vistazo.sync";
+    $("sync").textContent = t(on ? "vistazo.syncStop" : "vistazo.sync");
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+    if (on) {
+      sendCamera();
+      heartbeat = setInterval(() => void broadcast({ type: "camera", camera: { ...camera } }), SYNC_HEARTBEAT_MS);
+    } else {
+      void broadcast({ type: "stop" });
+    }
+  }
+
+  // A player: guided while the GM's camera keeps coming, eased toward it each frame.
+  let guided = false;
+  let guide: Camera | null = null;
+  let guideAt = 0;
+  let guideFrame = 0;
+  function setGuided(on: boolean) {
+    guided = on;
+    document.documentElement.classList.toggle("guided", on);
+    for (const id of ["tilt", "yaw", "toggle", "reset"]) {
+      ($(id) as HTMLInputElement | HTMLButtonElement).disabled = on;
+    }
+    if (!on) {
+      guide = null;
+      cancelAnimationFrame(guideFrame);
+      guideFrame = 0;
+    }
+  }
+  function followGuide() {
+    guideFrame = 0;
+    if (!guided || !guide) {
+      return;
+    }
+    if (performance.now() - guideAt > SYNC_TIMEOUT_MS) {
+      setGuided(false);
+      return;
+    }
+    const ease = 0.25;
+    const turn = wrapYaw(guide.yaw - camera.yaw);
+    camera.tilt += (guide.tilt - camera.tilt) * ease;
+    camera.yaw = wrapYaw(camera.yaw + turn * ease);
+    camera.zoom += (guide.zoom - camera.zoom) * ease;
+    camera.panX += (guide.panX - camera.panX) * ease;
+    camera.panY += (guide.panY - camera.panY) * ease;
+    const from = view.focusPoint();
+    const to = guide.focus ?? view.middle();
+    camera.focus = { x: from.x + (to.x - from.x) * ease, y: from.y + (to.y - from.y) * ease, z: from.z + (to.z - from.z) * ease };
+    view.apply();
+    guideFrame = requestAnimationFrame(followGuide);
+  }
+  if (isGM) {
+    $("sync").onclick = () => setSyncing(!syncing);
+  } else {
+    $("sync").hidden = true;
+    OBR.broadcast.onMessage(SYNC_CHANNEL, (event) => {
+      const message = event.data as SyncMessage;
+      if (message.type === "stop") {
+        setGuided(false);
+        return;
+      }
+      cancelAnimationFrame(frame);
+      guide = message.camera;
+      guideAt = performance.now();
+      if (!guided) {
+        setGuided(true);
+      }
+      if (!guideFrame) {
+        guideFrame = requestAnimationFrame(followGuide);
+      }
+    });
+  }
   const clampTilt = (v: number) => Math.max(0, Math.min(150, v));
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
   let frame = 0;
@@ -343,6 +615,20 @@ async function start() {
     }
   };
   $("reset").onclick = () => animateTo({ ...POSE, zoom: 1, panX: 0, panY: 0, focus: null });
+  // The compass resets the view too.
+  const resetView = () => {
+    if (!guided) {
+      animateTo({ ...POSE, zoom: 1, panX: 0, panY: 0, focus: null });
+    }
+  };
+  $("compass").addEventListener("click", resetView);
+  $("compass").addEventListener("pointerdown", (event) => event.stopPropagation());
+  $("compass").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      resetView();
+    }
+  });
 
   // Pointer: drag orbits; the wheel held down (or Shift) pans, as in Owlbear; two fingers zoom and pan.
   const pointers = new Map<number, [number, number]>();
@@ -359,7 +645,7 @@ async function start() {
   // A double click on the terrain turns it around that point.
   let press: { token: string | null; x: number; y: number } | null = null;
   /**
-   * A token being moved here (the GM's left drag on it): it follows the
+   * A token (or prop) being moved here (the GM's left drag on it): it follows the
    * terrain under the cursor, snapped to the grid, through Owlbear's own
    * drag (others see it move, its marker rides along); Z/X (the scene's
    * keys) change its own height meanwhile. Written on release; Esc undoes it.
@@ -408,13 +694,18 @@ async function start() {
     if ((event.target as Element).closest("button")) {
       return;
     }
+    // Guided by the GM's camera: it isn't this player's to move.
+    if (guided) {
+      return;
+    }
     event.preventDefault();
     stage.focus({ preventScroll: true });
     cancelAnimationFrame(frame);
-    press = pointers.size === 0 && event.button === 0 ? { token: view.tokenAt(event.target), x: event.clientX, y: event.clientY } : null;
-    // A left press on an unlocked token, without Shift: ready to move it (from the first few px of drag).
-    const pressed = press?.token && !event.shiftKey ? scene?.tokens.find((t) => t.id === press!.token) : undefined;
-    if (pressed && !pressed.item.locked) {
+    const point = stagePoint(event);
+    press = pointers.size === 0 && event.button === 0 ? { token: view.tokenAt(event.target) ?? view.propAt(point.x, point.y), x: event.clientX, y: event.clientY } : null;
+    // A left press on an unlocked token or prop, without Shift: ready to move it (from the first few px of drag).
+    const pressed = press?.token && !event.shiftKey ? (scene?.tokens.find((t) => t.id === press!.token) ?? scene?.props.find((p) => p.id === press!.token)) : undefined;
+    if (pressed && !pressed.item.locked && isGM) {
       const at = stagePoint(event);
       const ground = view.pickTerrain(at.x, at.y);
       if (ground) {
@@ -553,6 +844,9 @@ async function start() {
     "wheel",
     (event) => {
       event.preventDefault();
+      if (guided) {
+        return;
+      }
       cancelAnimationFrame(frame);
       camera.zoom = Math.max(0.35, Math.min(8, camera.zoom * Math.exp(-event.deltaY * 0.0015)));
       view.apply();
@@ -589,7 +883,7 @@ async function start() {
       "=": () => (camera.zoom = Math.min(8, camera.zoom * 1.15)),
       "-": () => (camera.zoom = Math.max(0.35, camera.zoom / 1.15)),
     };
-    if (keys[event.key]) {
+    if (keys[event.key] && !guided) {
       event.preventDefault();
       cancelAnimationFrame(frame);
       keys[event.key]();
@@ -639,6 +933,11 @@ async function start() {
     check("rings").checked = options.rings;
     check("playerView").checked = options.playerView;
     check("ringFill").checked = options.ringFill;
+    check("showProps").checked = options.showProps;
+    $("propsMore").hidden = !options.showProps;
+    check("propShadows").checked = options.propShadows;
+    check("propLines").checked = options.propLines;
+    check("propLabels").checked = options.propLabels;
     $<HTMLSelectElement>("tokenLabels").value = options.tokenLabels;
     $<HTMLSelectElement>("props").value = options.props;
     $<HTMLSelectElement>("wallStyle").value = options.wallStyle;
@@ -662,6 +961,10 @@ async function start() {
   check("rings").onchange = () => set({ rings: check("rings").checked });
   check("playerView").onchange = () => set({ playerView: check("playerView").checked });
   check("ringFill").onchange = () => set({ ringFill: check("ringFill").checked });
+  check("showProps").onchange = () => set({ showProps: check("showProps").checked });
+  check("propShadows").onchange = () => set({ propShadows: check("propShadows").checked });
+  check("propLines").onchange = () => set({ propLines: check("propLines").checked });
+  check("propLabels").onchange = () => set({ propLabels: check("propLabels").checked });
   const wallStyle = $<HTMLSelectElement>("wallStyle");
   wallStyle.onchange = () => set({ wallStyle: wallStyle.value as Options["wallStyle"] });
   const props = $<HTMLSelectElement>("props");
@@ -768,7 +1071,13 @@ async function start() {
   function placed(from: VistazoScene, tokenId: string, position: Vector2, own?: number): VistazoScene {
     const token = from.tokens.find((t) => t.id === tokenId);
     if (!token) {
-      return from;
+      // A prop: drawn again from its image where it's been moved.
+      const prop = from.props.find((p) => p.id === tokenId);
+      if (!prop) {
+        return from;
+      }
+      const moved = propOf({ ...prop.item, position }, dpi, from.measuredAt, own ?? prop.own);
+      return { ...from, props: from.props.map((p) => (p.id === tokenId ? moved : p)) };
     }
     const x = token.x + position.x - token.item.position.x;
     const y = token.y + position.y - token.item.position.y;
@@ -777,7 +1086,7 @@ async function start() {
   }
   /** A token shown here at `position` (and `own` height, if given) before the scene says so. */
   function showTokenAt(tokenId: string, position: Vector2, own?: number) {
-    if (!scene?.tokens.some((t) => t.id === tokenId)) {
+    if (!scene?.tokens.some((t) => t.id === tokenId) && !scene?.props.some((p) => p.id === tokenId)) {
       return;
     }
     draggingId = tokenId;
@@ -917,7 +1226,7 @@ async function start() {
       if (options.playerView) {
         // As a player sees it: what's under the fog, and what the GM hides, left out.
         const fog = lastFog!.at;
-        scene = { ...scene, tokens: scene.tokens.filter((t) => live.has(t.id) || (!t.hidden && !fog(t.x, t.y))), props: scene.props.filter((p) => !fog(p.x, p.y)) };
+        scene = { ...scene, tokens: scene.tokens.filter((t) => live.has(t.id) || (!t.hidden && !fog(t.x, t.y))), props: scene.props.filter((p) => live.has(p.id) || !fog(p.x, p.y)) };
       } else if (lastFog) {
         lastFog = null;
         fogKey = "";
@@ -943,6 +1252,11 @@ async function start() {
   });
   OBR.scene.onMetadataChange((next) => {
     sceneMetadata = next;
+    const now = vistazoAccess(settingsOf(next));
+    if (now === "off" || (now === "gm" && !isGM)) {
+      void (FULL ? OBR.modal.close(FULL_MODAL_ID) : closeVistazoPanel());
+      return;
+    }
     const nextLanguage = languageFromMetadata(next);
     if (nextLanguage !== language) {
       language = nextLanguage;
@@ -972,7 +1286,7 @@ async function start() {
   });
   OBR.scene.onReadyChange((ready) => {
     if (!ready) {
-      void (FULL ? OBR.modal.close(FULL_MODAL_ID) : OBR.action.close());
+      void (FULL ? OBR.modal.close(FULL_MODAL_ID) : closeVistazoPanel());
     }
   });
 
@@ -982,8 +1296,12 @@ async function start() {
   // straight above and tilts up into 3D.
   const handed = takeCamera();
   if (handed) {
-    Object.assign(camera, handed);
+    Object.assign(camera, handed.camera);
     view.apply();
+    // The GM's sync goes on across full screen and back.
+    if (handed.syncing && isGM) {
+      setSyncing(true);
+    }
   } else {
     setTimeout(() => animateTo(POSE, 1200), 250);
   }

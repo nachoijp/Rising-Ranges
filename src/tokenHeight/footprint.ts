@@ -67,3 +67,31 @@ export function setTokenTall(item: Item, cells: number | undefined) {
     item.metadata[TALL_KEY] = cells;
   }
 }
+
+// Where a standing image touches the ground in the Vistazo 3D, when it's set
+// by hand (the same menu): a point of its picture, as fractions of its width
+// and height from its top-left. Unset = from what of it shows (see
+// visibleBox in vistazo/render.ts). Only for the Vistazo: the map and the
+// distances don't change.
+
+const VISTAZO_BASE_KEY = getPluginId("vistazoBase");
+
+export type VistazoBase = { x: number; y: number };
+
+/** Where setting it by hand starts: its bottom, in the middle. */
+export const DEFAULT_VISTAZO_BASE: VistazoBase = { x: 0.5, y: 1 };
+
+export function getVistazoBase(item: Item): VistazoBase | undefined {
+  const stored = item.metadata[VISTAZO_BASE_KEY] as Partial<VistazoBase> | undefined;
+  const ok = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+  return stored && ok(stored.x) && ok(stored.y) ? { x: stored.x, y: stored.y } : undefined;
+}
+
+/** Sets an item draft's base (undefined = from its image again). */
+export function setVistazoBase(item: Item, base: VistazoBase | undefined) {
+  if (base === undefined) {
+    delete item.metadata[VISTAZO_BASE_KEY];
+  } else {
+    item.metadata[VISTAZO_BASE_KEY] = { x: base.x, y: base.y };
+  }
+}

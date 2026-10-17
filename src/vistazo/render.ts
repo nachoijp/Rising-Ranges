@@ -1,9 +1,10 @@
 import * as THREE from "three";
 import type { MultiPolygon } from "polygon-clipping";
-import { inShape, pieceHeight, type Piece, type StandEdge, type Token, type VistazoScene } from "./scene";
+import { inShape, pieceHeight, type Piece, type Prop, type StandEdge, type Token, type VistazoScene } from "./scene";
 import { distance3D } from "../engine/distance";
 import { cellCorners, groundOffset } from "../engine/hex";
 import type { Fog } from "./fog";
+import { visibleBox, type VisibleBox } from "./visibleBox";
 
 // The Vistazo's 3D view. The terrain is drawn with WebGL (three.js): each
 // piece lies at its height with the map as its texture, walls go down to
@@ -59,6 +60,12 @@ export type Options = {
   relief: number;
   /** The Props layer: lying on the ground as on the map, standing up like the tokens, or left out. */
   props: "flat" | "stand" | "none";
+  /** Whether the props show at all ("none" above is how it was stored before this option). */
+  showProps: boolean;
+  /** A prop's shadow (on the ground under it), its dashed line down when it's raised, and its label. */
+  propShadows: boolean;
+  propLines: boolean;
+  propLabels: boolean;
   /** What the walls' faces show (see buildWalls). */
   wallStyle: WallStyle;
   /** Each Banda's limit around the selected token, drawn on the terrain. */
@@ -91,7 +98,8 @@ export type Reach = {
  * wall is taller); or a pattern drawn here (stone courses, earth strata,
  * planks) tinted with the map's colour at the edge.
  */
-export type WallStyle = "flat" | "stretch" | "fold" | "stone" | "earth" | "wood";
+// "stone" is brick courses (its name from before "rubble", irregular stones, was added; kept for what's saved).
+export type WallStyle = "flat" | "stretch" | "fold" | "stone" | "rubble" | "earth" | "wood";
 
 /** `focus`: the scene point the camera turns around (null: the map's middle), and its height in grid units. */
 export type Camera = { tilt: number; yaw: number; zoom: number; panX: number; panY: number; focus: { x: number; y: number; z: number } | null };
@@ -134,9 +142,11 @@ type TokenView = {
   detail?: HTMLElement;
   screen: { x: number; y: number };
   hidden: boolean;
-  /** A standing prop: always on its base, never selected. */
-  prop?: boolean;
+  /** A prop: standing (always on its base) or lying flat (its picture a mesh, the element only its label). */
+  prop?: PropView;
 };
+
+type PropView = { data: Prop; flat: boolean; mesh: THREE.Mesh | null; shadow: THREE.Mesh | null };
 
 type Texture = { canvas: HTMLCanvasElement; x0: number; y0: number; w: number; h: number };
 
@@ -169,8 +179,8 @@ export class VistazoView {
   private reachFrame = 0;
   private applyFrame = 0;
   private canvasSize = { w: 0, h: 0 };
-  /** The props as last drawn (flat ones are meshes: rebuilt when they change). */
-  private drawnProps: VistazoScene["props"] | null = null;
+  /** The props as last drawn (see propsKey): rebuilt when they change. */
+  private drawnProps = "";
   /** The player view's fog: where it is, and its shade over copies of the flat pieces (as the Banda tint). */
   private readonly fogGroup = new THREE.Group();
   private fogTexture: THREE.CanvasTexture | null = null;
@@ -636,15 +646,52 @@ export class VistazoView {
 
   /** A token's place, for the camera to turn around it. */
   tokenFocus(id: string): Camera["focus"] {
-    const token = this.scene?.tokens.find((t) => t.id === id);
+    const token = this.scene?.tokens.find((t) => t.id === id) ?? this.scene?.props.find((p) => p.id === id);
     return token ? { x: token.x, y: token.y, z: token.terrain + token.own } : null;
+  }
+
+  /** How the props are drawn: lying flat, standing, or not at all (their checkbox off). */
+  private get propsMode(): Options["props"] {
+    return this.options.showProps ? this.options.props : "none";
+  }
+
+  /** The topmost prop lying flat under a stage point (a standing one is picked by its element, see tokenAt). */
+  propAt(x: number, y: number): string | null {
+    if (!this.scene || this.propsMode !== "flat") {
+      return null;
+    }
+    const camM = this.camMatrix();
+    const u = this.u;
+    for (const view of [...this.tokenViews].reverse()) {
+      if (!view.prop?.flat) {
+        continue;
+      }
+      const z = view.zTok;
+      const ring = view.prop.data.corners.map(([cx, cy]) => {
+        const p = camM.transformPoint(new DOMPoint(cx * u, cy * u, z));
+        const f = this.persp / Math.max(1, this.persp - p.z);
+        return [this.width / 2 + p.x * f, this.height / 2 + p.y * f];
+      });
+      let inside = false;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const [xi, yi] = ring[i];
+        const [xj, yj] = ring[j];
+        if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
+          inside = !inside;
+        }
+      }
+      if (inside) {
+        return view.prop.data.id;
+      }
+    }
+    return null;
   }
 
   setOptions(options: Partial<Options>) {
     const changed = (keys: (keyof Options)[]) => keys.some((key) => key in options && options[key] !== this.options[key]);
     const rebuild = changed(["heightScale", "shade", "levels", "relief", "tint", "wallStyle", "rings", "ringFill"]);
     const regrid = changed(["grid"]);
-    const relabel = changed(["tokenLabels", "props"]);
+    const relabel = changed(["tokenLabels", "props", "showProps", "propShadows", "propLines", "propLabels"]);
     this.options = { ...this.options, ...options };
     this.stage.style.setProperty("--label-scale", String(this.options.labelSize));
     this.stage.classList.toggle("notok", !this.options.tokens);
@@ -782,7 +829,7 @@ export class VistazoView {
     const { x0, y0, x1, y1 } = scene.bounds;
     const w = x1 - x0;
     const h = y1 - y0;
-    const draw = (images: HTMLImageElement[], px: number) => {
+    const draw = (images: CanvasImageSource[], px: number) => {
       const canvas = document.createElement("canvas");
       canvas.width = Math.max(1, Math.ceil(w * px));
       canvas.height = Math.max(1, Math.ceil(h * px));
@@ -799,7 +846,14 @@ export class VistazoView {
     Promise.all(
       scene.maps.map(
         (map) =>
-          new Promise<HTMLImageElement>((resolve, reject) => {
+          new Promise<CanvasImageSource>((resolve, reject) => {
+            // A video map: its first frame (the texture is a still picture).
+            if (map.video) {
+              const video = mediaElement(map.url, true) as HTMLVideoElement;
+              video.onloadeddata = () => resolve(video);
+              video.onerror = reject;
+              return;
+            }
             const img = new Image();
             img.crossOrigin = "anonymous";
             img.onload = () => resolve(img);
@@ -992,7 +1046,7 @@ export class VistazoView {
         continue;
       }
       const fromMap = (style === "stretch" || style === "fold") && this.texture !== null;
-      const pattern = style === "stone" || style === "earth" || style === "wood" ? patternTexture(style) : null;
+      const pattern = style === "stone" || style === "rubble" || style === "earth" || style === "wood" ? patternTexture(style) : null;
       const positions: number[] = [];
       const colors: number[] = [];
       const uvs: number[] = [];
@@ -1254,7 +1308,7 @@ export class VistazoView {
     // Its top: the walls' pattern (stone, earth or wood; stone when they take theirs from the map),
     // tinted with the map's colour there, laid out flat a tile every two cells.
     const style = piece.walls ?? this.options.wallStyle;
-    const roof = style === "earth" || style === "wood" ? style : "stone";
+    const roof = style === "earth" || style === "wood" || style === "rubble" ? style : "stone";
     const tile = VIEW_CELL * 2;
     const roofUv = new Float32Array(position.count * 2);
     for (let i = 0; i < position.count; i++) {
@@ -1307,53 +1361,122 @@ export class VistazoView {
     const u = this.u;
     const k = this.k;
     const overlay = document.createDocumentFragment();
+    const ring = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide });
+    const fill = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide });
+    const dashes = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 6, gapSize: 5, transparent: true, opacity: 0.9 });
+    const stemOf = (at: { x: number; y: number }, zTok: number, zFloor: number) => {
+      const stem = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(at.x * u, at.y * u, zTok), new THREE.Vector3(at.x * u, at.y * u, zFloor)]),
+        dashes
+      );
+      stem.computeLineDistances();
+      return stem;
+    };
+
     // Props first, so a token is drawn over a prop where they meet.
     const propViews: TokenView[] = [];
     const loader = new THREE.TextureLoader();
     loader.setCrossOrigin("anonymous");
-    for (const prop of scene.props) {
-      if (this.options.props === "flat") {
-        // Its picture lying on the ground, where the map has it.
-        const m = new DOMMatrix(prop.transform);
-        const corner = (x: number, y: number) => {
-          const p = m.transformPoint(new DOMPoint(x, y));
-          return [p.x * u, p.y * u, prop.terrain * k + 0.6];
-        };
-        const [a, b, c, d] = [corner(0, 0), corner(prop.width, 0), corner(prop.width, prop.height), corner(0, prop.height)];
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array([...a, ...b, ...c, ...a, ...c, ...d]), 3));
-        geometry.setAttribute("uv", new THREE.BufferAttribute(new Float32Array([0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0]), 2));
+    const shown = this.propsMode;
+    const { propShadows, propLines, propLabels } = this.options;
+    for (const prop of shown === "none" ? [] : scene.props) {
+      const flat = shown === "flat";
+      const zFloor = prop.terrain * k;
+      const zTok = (prop.terrain + prop.own) * k;
+      const el = document.createElement("div");
+      el.className = "tok prop" + (flat ? " flat" : "") + (propShadows ? "" : " noshadow") + (prop.own < 0 ? " buried" : "");
+      el.dataset.id = prop.id;
+      const disc = document.createElement("div");
+      disc.className = "disc";
+      let img: HTMLElement;
+      let mesh: THREE.Mesh | null = null;
+      let shadow: THREE.Mesh | null = null;
+      const base: THREE.Mesh[] = [];
+      if (flat) {
+        // Its picture lying on the ground, where the map has it (and, raised, its shadow on the ground under it).
+        img = document.createElement("span");
         const material = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide, opacity: 0 });
-        loader.load(prop.url, (texture) => {
+        const dark = propShadows && prop.own > 0 ? new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, depthWrite: false, side: THREE.DoubleSide, opacity: 0 }) : null;
+        const show = (texture: THREE.Texture) => {
           material.map = texture;
           material.opacity = 1;
           material.needsUpdate = true;
-          this.render();
-        });
-        const mesh = new THREE.Mesh(geometry, material);
+          if (dark) {
+            dark.map = texture;
+            dark.opacity = 0.4;
+            dark.needsUpdate = true;
+          }
+          this.requestApply();
+        };
+        if (prop.video) {
+          // Playing on the ground, as on the map.
+          const video = mediaElement(prop.url, true) as HTMLVideoElement;
+          video.onloadeddata = () => show(new THREE.VideoTexture(video));
+        } else {
+          loader.load(prop.url, show);
+        }
+        mesh = new THREE.Mesh(this.propQuad(prop, zTok + 0.6), material);
         mesh.renderOrder = 2;
+        mesh.userData.prop = true;
         this.tokenGroup.add(mesh);
-      } else if (this.options.props === "stand") {
-        const el = document.createElement("div");
-        el.className = "tok prop";
-        const disc = document.createElement("div");
-        disc.className = "disc";
-        const img = document.createElement("img");
-        img.src = prop.url;
-        img.alt = "";
-        img.draggable = false;
+        if (dark) {
+          shadow = new THREE.Mesh(this.propQuad(prop, zFloor + 0.4), dark);
+          shadow.renderOrder = 1;
+          shadow.userData.prop = true;
+          this.tokenGroup.add(shadow);
+        }
+      } else {
+        img = mediaElement(prop.url, prop.video);
         disc.append(img);
-        el.appendChild(disc);
-        overlay.appendChild(el);
-        // Drawn like a token standing on its base, without the token's marks.
-        const token = { x: prop.x, y: prop.y, size: prop.size, terrain: prop.terrain, own: 0, rotation: prop.rotation, flipX: false, flipY: false } as Token;
-        propViews.push({ token, el, disc, img, zTok: prop.terrain * k, screen: { x: 0, y: 0 }, hidden: false, prop: true });
+        if (propShadows) {
+          // A dark base on the ground under it, as a token's.
+          const r = prop.size * u * 0.4;
+          const disc3d = new THREE.Mesh(new THREE.CircleGeometry(r, 32), fill);
+          disc3d.position.set(prop.x * u, prop.y * u, zFloor + 1);
+          disc3d.renderOrder = 3;
+          disc3d.userData.prop = true;
+          this.tokenGroup.add(disc3d);
+          base.push(disc3d);
+        }
       }
+      let stem: THREE.Line | null = null;
+      if (propLines && prop.own !== 0) {
+        stem = stemOf(prop, zTok, zFloor);
+        stem.userData.prop = true;
+        this.tokenGroup.add(stem);
+      }
+      let title: HTMLElement | undefined;
+      let detail: HTMLElement | undefined;
+      if (propLabels) {
+        const label = document.createElement("div");
+        label.className = "lbl";
+        title = document.createElement("span");
+        label.append(title);
+        if (this.options.tokenLabels === "full") {
+          detail = document.createElement("small");
+          label.append(detail);
+        }
+        disc.prepend(label);
+      }
+      el.appendChild(disc);
+      overlay.appendChild(el);
+      const view: TokenView = {
+        token: propToken(prop),
+        el,
+        disc,
+        img,
+        zTok,
+        screen: { x: 0, y: 0 },
+        hidden: false,
+        marks: { base, stem },
+        title,
+        detail,
+        prop: { data: prop, flat, mesh, shadow },
+      };
+      this.writeLabel(view);
+      propViews.push(view);
     }
 
-    const ring = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide });
-    const fill = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide });
-    const dashes = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 6, gapSize: 5, transparent: true, opacity: 0.9 });
     this.tokenViews = scene.tokens.map((token) => {
       const zFloor = token.terrain * k;
       const zTok = (token.terrain + token.own) * k;
@@ -1368,11 +1491,7 @@ export class VistazoView {
       }
       let stem: THREE.Line | null = null;
       if (token.own !== 0) {
-        stem = new THREE.Line(
-          new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(token.x * u, token.y * u, zTok), new THREE.Vector3(token.x * u, token.y * u, zFloor)]),
-          dashes
-        );
-        stem.computeLineDistances();
+        stem = stemOf(token, zTok, zFloor);
         this.tokenGroup.add(stem);
       }
       const el = document.createElement("div");
@@ -1380,10 +1499,7 @@ export class VistazoView {
       el.dataset.id = token.id;
       const disc = document.createElement("div");
       disc.className = "disc";
-      const img = document.createElement("img");
-      img.src = token.url;
-      img.alt = "";
-      img.draggable = false;
+      const img = mediaElement(token.url, token.video);
       const shown = this.options.tokenLabels;
       let title: HTMLElement | undefined;
       let detail: HTMLElement | undefined;
@@ -1407,12 +1523,66 @@ export class VistazoView {
     });
     this.tokenViews = [...propViews, ...this.tokenViews];
     this.tokenOverlay.replaceChildren(overlay);
-    this.drawnProps = scene.props;
+    this.drawnProps = propsKey(scene.props);
+  }
+
+  /** A flat prop's picture as two triangles in view units, at height z (its uv the picture's). */
+  private propQuad(prop: Prop, z: number): THREE.BufferGeometry {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(this.propCorners(prop, z), 3));
+    geometry.setAttribute("uv", new THREE.BufferAttribute(new Float32Array([0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0]), 2));
+    return geometry;
+  }
+
+  private propCorners(prop: Prop, z: number): Float32Array {
+    const u = this.u;
+    const m = new DOMMatrix(prop.transform);
+    const corner = (x: number, y: number) => {
+      const p = m.transformPoint(new DOMPoint(x, y));
+      return [p.x * u, p.y * u, z];
+    };
+    const [a, b, c, d] = [corner(0, 0), corner(prop.width, 0), corner(prop.width, prop.height), corner(0, prop.height)];
+    return new Float32Array([...a, ...b, ...c, ...a, ...c, ...d]);
+  }
+
+  /** A prop's view moved to where `prop` has it (its picture, shadow, base and line). */
+  private moveProp(view: TokenView, prop: Prop) {
+    const u = this.u;
+    const k = this.k;
+    const zFloor = prop.terrain * k;
+    view.zTok = (prop.terrain + prop.own) * k;
+    view.token = propToken(prop);
+    view.prop!.data = prop;
+    const { mesh, shadow } = view.prop!;
+    for (const [object, z] of [
+      [mesh, view.zTok + 0.6],
+      [shadow, zFloor + 0.4],
+    ] as const) {
+      if (object) {
+        const position = object.geometry.getAttribute("position") as THREE.BufferAttribute;
+        position.copyArray(this.propCorners(prop, z));
+        position.needsUpdate = true;
+        object.geometry.computeBoundingSphere();
+      }
+    }
+    for (const base of view.marks?.base ?? []) {
+      base.position.set(prop.x * u, prop.y * u, zFloor + 1);
+    }
+    const stem = view.marks?.stem;
+    if (stem) {
+      const position = stem.geometry.getAttribute("position") as THREE.BufferAttribute;
+      position.setXYZ(0, prop.x * u, prop.y * u, view.zTok);
+      position.setXYZ(1, prop.x * u, prop.y * u, zFloor);
+      position.needsUpdate = true;
+      stem.computeLineDistances();
+    }
+    this.writeLabel(view);
   }
 
   /** A token's label, as the options have it, from its height now. */
   private writeLabel(view: TokenView) {
-    const shown = this.options.tokenLabels;
+    // A prop's label is on or off by itself; with the tokens' set to none, it says the name.
+    const shown = view.prop && this.options.tokenLabels === "none" ? "name" : this.options.tokenLabels;
     if (!view.title) {
       return;
     }
@@ -1431,11 +1601,21 @@ export class VistazoView {
    */
   private moveTokens(scene: VistazoScene): boolean {
     const views = this.tokenViews.filter((view) => !view.prop);
-    if (views.length !== scene.tokens.length || this.tokenViews.length - views.length !== (this.options.props === "stand" ? scene.props.length : 0)) {
+    const propViews = this.tokenViews.filter((view) => view.prop);
+    if (views.length !== scene.tokens.length || propViews.length !== (this.propsMode === "none" ? 0 : scene.props.length)) {
       return false;
     }
-    if (this.options.props === "flat" && scene.props !== this.drawnProps) {
+    // Props moved, turned or raised are put right in place, as tokens are; any other change (which,
+    // sized, its picture, raised from the ground or back down to it) draws them again.
+    if (this.propsMode !== "none" && propsKey(scene.props) !== this.drawnProps) {
       return false;
+    }
+    const propsById = new Map(scene.props.map((prop) => [prop.id, prop]));
+    for (const view of propViews) {
+      const prop = propsById.get(view.token.id)!;
+      if (prop !== view.prop!.data) {
+        this.moveProp(view, prop);
+      }
     }
     const byId = new Map(scene.tokens.map((token) => [token.id, token]));
     if (views.some((view) => !byId.has(view.token.id) || (view.token.own === 0) !== (byId.get(view.token.id)!.own === 0) || (view.token.own < 0) !== (byId.get(view.token.id)!.own < 0))) {
@@ -1568,10 +1748,10 @@ export class VistazoView {
       material.depthWrite = !this.options.xray;
     }
     this.edgeGroup.visible = this.options.edges;
-    this.tokenGroup.visible = this.options.tokens || this.options.props === "flat";
+    this.tokenGroup.visible = this.options.tokens || this.propsMode !== "none";
     for (const child of this.tokenGroup.children) {
-      // Flat props stay with the props option; bases and lines go with the tokens.
-      child.visible = child.renderOrder === 2 || this.options.tokens;
+      // A prop's pieces stay with the props option; the tokens' bases and lines go with the tokens.
+      child.visible = child.userData.prop === true || this.options.tokens;
     }
     this.render();
 
@@ -1581,14 +1761,34 @@ export class VistazoView {
       const { token, el, disc, img, zTok } = view;
       const p = camM.transformPoint(new DOMPoint(token.x * u, token.y * u, zTok));
       const f = this.persp / Math.max(1, this.persp - p.z);
-      const d = Math.max(22, token.size * u * s * f);
+      // Lying flat, only its label is an element, on its middle.
+      const d = view.prop?.flat ? 0 : Math.max(22, token.size * u * s * f);
       view.screen = { x: this.width / 2 + p.x * f, y: this.height / 2 + p.y * f };
       el.style.transform = `translate(${view.screen.x}px,${view.screen.y}px)`;
       el.style.zIndex = String(10000 + Math.round(p.z));
       // Behind the eye: not drawn.
       el.style.visibility = this.persp - p.z > 1 ? "" : "hidden";
-      const onBase = view.prop || this.options.anchor === "base";
-      disc.style.cssText = `width:${d}px;height:${d}px;left:${-d / 2}px;top:${onBase ? -d : -d / 2}px`;
+      const onBase = (view.prop && !view.prop.flat) || this.options.anchor === "base";
+      // By what of its picture shows (not its box, which may have empty margins or the figure off to
+      // one side): what it stands on over the token's point, its bottom there on its base, or the
+      // middle of what shows there (up and down) otherwise.
+      // Set by hand (the Elevation menu's base), it's that point of its picture instead.
+      const manual = view.prop?.flat ? undefined : token.base;
+      const measured = view.prop?.flat ? undefined : visibleBox(token.url, token.video, () => this.requestApply());
+      const whole = { x0: 0, y0: 0, x1: 1, y1: 1, base: 0.5, aspect: token.item.image.width / token.item.image.height };
+      const found = measured ?? (manual ? whole : undefined);
+      const box = found && manual ? { ...found, base: manual.x, y1: manual.y } : found;
+      let left = -d / 2;
+      let top = onBase ? -d : -d / 2;
+      // And its label just over that part, not over its box's empty top.
+      let gap = 0;
+      if (box) {
+        const shown = visibleOnScreen(box, d, token);
+        left = -d / 2 - shown.base;
+        top = -d / 2 - (onBase ? shown.y1 : (shown.y0 + shown.y1) / 2);
+        gap = Math.max(0, d / 2 + shown.y0);
+      }
+      disc.style.cssText = `width:${d}px;height:${d}px;left:${left}px;top:${top}px;--gap:${gap}px`;
       // Turned as on the map (not with the camera: that reads oddly on a standing token).
       img.style.transform = `rotate(${token.rotation}deg) scale(${token.flipX ? -1 : 1},${token.flipY ? -1 : 1})`;
       const lift = onBase ? (token.size * u) / 2 : 0;
@@ -1696,15 +1896,31 @@ function seeded(seed: number) {
 
 /**
  * A grey tile (256 px, two cells across) that repeats seamlessly, to tint
- * with the map's colour: stone courses, earth strata, or planks.
+ * with the map's colour: brick courses ("stone"), irregular stones
+ * ("rubble"), earth strata, or planks. Drawn once each (the stones take a
+ * moment), a new texture on it each time.
  */
-function patternTexture(style: "stone" | "earth" | "wood"): THREE.CanvasTexture {
+function patternTexture(style: "stone" | "rubble" | "earth" | "wood"): THREE.CanvasTexture {
+  let canvas = patternCanvases.get(style);
+  if (!canvas) {
+    canvas = drawPattern(style);
+    patternCanvases.set(style, canvas);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  return texture;
+}
+
+const patternCanvases = new Map<string, HTMLCanvasElement>();
+
+function drawPattern(style: "stone" | "rubble" | "earth" | "wood"): HTMLCanvasElement {
   const size = 256;
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
   const c = canvas.getContext("2d")!;
-  const random = seeded(style === "stone" ? 7 : style === "earth" ? 11 : 13);
+  const random = seeded(style === "stone" ? 7 : style === "rubble" ? 5 : style === "earth" ? 11 : 13);
   const grey = (v: number) => `rgb(${v},${v},${v})`;
   if (style === "stone") {
     // Four courses of blocks, each row offset, with dark mortar.
@@ -1725,6 +1941,45 @@ function patternTexture(style: "stone" | "earth" | "wood"): THREE.CanvasTexture 
         x += w;
       }
     }
+  } else if (style === "rubble") {
+    // Irregular stones: each pixel belongs to its nearest of some jittered points (across the tile's
+    // edges too, so it repeats), with mortar where two are about as near and a bevel toward it.
+    const cells = 6;
+    const seeds: { x: number; y: number; shade: number }[] = [];
+    for (let gy = 0; gy < cells; gy++) {
+      for (let gx = 0; gx < cells; gx++) {
+        seeds.push({ x: ((gx + 0.1 + random() * 0.8) * size) / cells, y: ((gy + 0.1 + random() * 0.8) * size) / cells, shade: 175 + random() * 65 });
+      }
+    }
+    const image = c.createImageData(size, size);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        let d1 = Infinity;
+        let d2 = Infinity;
+        let shade = 0;
+        for (const seed of seeds) {
+          let dx = Math.abs(x - seed.x);
+          let dy = Math.abs(y - seed.y);
+          dx = Math.min(dx, size - dx);
+          dy = Math.min(dy, size - dy);
+          const d = dx * dx + dy * dy;
+          if (d < d1) {
+            d2 = d1;
+            d1 = d;
+            shade = seed.shade;
+          } else if (d < d2) {
+            d2 = d;
+          }
+        }
+        // How far from the edge with the next stone, px.
+        const edge = Math.sqrt(d2) - Math.sqrt(d1);
+        const v = edge < 2.5 ? 105 : shade * (edge < 9 ? 0.8 + ((edge - 2.5) / 6.5) * 0.2 : 1);
+        const i = (y * size + x) * 4;
+        image.data[i] = image.data[i + 1] = image.data[i + 2] = v;
+        image.data[i + 3] = 255;
+      }
+    }
+    c.putImageData(image, 0, 0);
   } else if (style === "earth") {
     // Wavy strata of different shades, with speckles.
     let y = 0;
@@ -1787,10 +2042,7 @@ function patternTexture(style: "stone" | "earth" | "wood"): THREE.CanvasTexture 
     image.data[i + 2] += n;
   }
   c.putImageData(image, 0, 0);
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  return texture;
+  return canvas;
 }
 
 /**
@@ -1829,4 +2081,70 @@ function onBase(base: [[number, number], [number, number]], mx: number, my: numb
   const length = Math.hypot(bx - ax, by - ay) || 1;
   // Its distance from the base's line.
   return Math.abs(((mx - ax) * (by - ay) - (my - ay) * (bx - ax)) / length) < near;
+}
+
+/** What the props are now, to tell when they've changed. */
+/** What of the props needs them drawn again when it changes (where they are, turned and raised, is moved in place). */
+function propsKey(props: VistazoScene["props"]): string {
+  return JSON.stringify(props.map((prop) => [prop.id, prop.size, prop.width, prop.height, prop.url, Math.sign(prop.own), prop.name]));
+}
+
+/**
+ * An image's element: an <img>, or for a video (webm), a muted looping
+ * <video> playing like Owlbear plays it. Readable by a canvas either way (CORS).
+ */
+function mediaElement(url: string, video: boolean): HTMLImageElement | HTMLVideoElement {
+  if (!video) {
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = "";
+    img.draggable = false;
+    return img;
+  }
+  const element = document.createElement("video");
+  element.crossOrigin = "anonymous";
+  element.muted = true;
+  element.loop = true;
+  element.autoplay = true;
+  element.playsInline = true;
+  element.src = url;
+  void element.play().catch(() => {});
+  return element;
+}
+
+/** A prop as the token-like parts of its view read it (place, size, label). */
+function propToken(prop: Prop): Token {
+  return { id: prop.id, name: prop.name, url: prop.url, video: prop.video, item: prop.item, base: prop.base, x: prop.x, y: prop.y, size: prop.size, terrain: prop.terrain, own: prop.own, rotation: prop.rotation, flipX: false, flipY: false, hidden: false } as Token;
+}
+
+/**
+ * Where the part of a picture that shows is, from the middle of its square
+ * of side `d` (px): fitted in it as the image is (contain), and turned and
+ * flipped as it's drawn (rotate, then scale, in CSS).
+ */
+function visibleOnScreen(box: VisibleBox, d: number, token: Token) {
+  const w = box.aspect >= 1 ? d : d * box.aspect;
+  const h = box.aspect >= 1 ? d / box.aspect : d;
+  const angle = (token.rotation * Math.PI) / 180;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const place = (bx: number, by: number) => {
+    const px = (bx - 0.5) * w * (token.flipX ? -1 : 1);
+    const py = (by - 0.5) * h * (token.flipY ? -1 : 1);
+    return { x: px * cos - py * sin, y: px * sin + py * cos };
+  };
+  const shown = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity, base: place(box.base, box.y1).x };
+  for (const [bx, by] of [
+    [box.x0, box.y0],
+    [box.x1, box.y0],
+    [box.x1, box.y1],
+    [box.x0, box.y1],
+  ]) {
+    const { x, y } = place(bx, by);
+    shown.x0 = Math.min(shown.x0, x);
+    shown.x1 = Math.max(shown.x1, x);
+    shown.y0 = Math.min(shown.y0, y);
+    shown.y1 = Math.max(shown.y1, y);
+  }
+  return shown;
 }

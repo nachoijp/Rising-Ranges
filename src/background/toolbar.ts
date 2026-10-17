@@ -1,7 +1,8 @@
 import OBR, { type GridType } from "@owlbear-rodeo/sdk";
 import { getPluginId } from "../util/getPluginId";
 import { languageFromMetadata } from "../i18n/language";
-import { globalSettingsFromMetadata, liftsTokens, terrainOn, terrainVisibility } from "../settings/globalSettings";
+import { globalSettingsFromMetadata, liftsTokens, terrainOn, terrainVisibility, vistazoAccess } from "../settings/globalSettings";
+import { createVistazoAction } from "./createVistazoAction";
 import { getGridType } from "../util/gridAxonometry";
 import { createMeasureTool } from "./createMeasureTool";
 import { createThemeAction } from "./createThemeAction";
@@ -11,7 +12,6 @@ import { createTerrainVisibilityAction } from "./createTerrainVisibilityAction";
 import { createDistancesAction } from "./createDistancesAction";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
 import { heightStepOf } from "../engine/heights";
-import { translate } from "../i18n/translate";
 
 // Everything this extension adds to Owlbear's own UI — the Medición mode,
 // the toolbar actions, the Altura context menu — registered from the
@@ -30,6 +30,7 @@ export function registerToolbar(metadata: Record<string, unknown>) {
   const settings = globalSettingsFromMetadata(metadata);
   const altitudeMenu = (settings.enableAltitude ?? true) && settings.showAltitudeMenu;
   const distancePanel = settings.distancePanel ?? "off";
+  const vistazo = vistazoAccess(settings);
   const heightStep = heightStepOf(bandSetFromMetadata(metadata));
   const altitude = settings.enableAltitude ?? true;
   const terrain = terrainOn(settings, gridType);
@@ -41,6 +42,7 @@ export function registerToolbar(metadata: Record<string, unknown>) {
     settings.hotkeyActivate,
     altitudeMenu,
     distancePanel,
+    vistazo,
     heightStep,
     altitude,
     terrain,
@@ -53,8 +55,6 @@ export function registerToolbar(metadata: Record<string, unknown>) {
   const firstTime = lastSignature === null;
   lastSignature = signature;
 
-  // The Vistazo 3D is the action at the top (manifest.json); its title follows the language.
-  OBR.action.setTitle(translate(language, "vistazo.title")).catch(() => {});
   createMeasureTool(language, settings);
   createThemeAction(language);
   createSettingsAction(language);
@@ -62,6 +62,11 @@ export function registerToolbar(metadata: Record<string, unknown>) {
     createDistancesAction(language, distancePanel);
   } else if (!firstTime) {
     OBR.tool.removeAction(getPluginId("action/distances"));
+  }
+  if (vistazo !== "off") {
+    createVistazoAction(language, vistazo);
+  } else if (!firstTime) {
+    OBR.tool.removeAction(getPluginId("action/vistazo"));
   }
   // The footprint is in the Elevation entry while heights are on, on its own otherwise.
   if (altitudeMenu) {
