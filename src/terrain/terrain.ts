@@ -16,6 +16,12 @@ import { getPluginId } from "../util/getPluginId";
 // balcony inside something bigger is the ground there. Not the one drawn on
 // top — Owlbear puts whatever was moved last on top of its layer — and not
 // the highest. Two of the same size: the higher one.
+//
+// A zone can be a ramp: rising across its box (in its own frame, so a turned
+// rectangle rises along its own side) from the ground just past its low edge
+// up to its own height at the far edge. A point on it is as high as how far
+// up the slope it is (see rampOf); everything measured goes through
+// terrainAt, so a ramp measures everywhere at once.
 
 const METADATA_KEY = getPluginId("terrain");
 
@@ -82,6 +88,53 @@ export function setTerrainStand(item: Item, stand: TerrainStandEdge | undefined)
   }
 }
 
+/** What a zone's walls show in the Vistazo 3D (see vistazo/render.ts WallStyle). */
+export type TerrainWallStyle = "flat" | "stretch" | "fold" | "stone" | "earth" | "wood";
+
+const WALL_KEY = getPluginId("terrainWall");
+const WALL_STYLES: readonly TerrainWallStyle[] = ["flat", "stretch", "fold", "stone", "earth", "wood"];
+
+/** The zone's own wall style, if it has one (otherwise the Vistazo's own choice applies). */
+export function getTerrainWall(item: Item): TerrainWallStyle | undefined {
+  const stored = item.metadata[WALL_KEY];
+  return WALL_STYLES.includes(stored as TerrainWallStyle) ? (stored as TerrainWallStyle) : undefined;
+}
+
+export function setTerrainWall(item: Item, style: TerrainWallStyle | undefined) {
+  if (style) {
+    item.metadata[WALL_KEY] = style;
+  } else {
+    delete item.metadata[WALL_KEY];
+  }
+}
+
+/** Which way a ramp zone rises, in its own frame: toward its top, bottom, left or right side. */
+export type TerrainRamp = "up" | "down" | "left" | "right";
+
+const RAMP_KEY = getPluginId("terrainRamp");
+const RAMPS: readonly TerrainRamp[] = ["up", "down", "left", "right"];
+
+export function getTerrainRamp(item: Item): TerrainRamp | undefined {
+  const stored = item.metadata[RAMP_KEY];
+  return RAMPS.includes(stored as TerrainRamp) ? (stored as TerrainRamp) : undefined;
+}
+
+export function setTerrainRamp(item: Item, ramp: TerrainRamp | undefined) {
+  if (ramp) {
+    item.metadata[RAMP_KEY] = ramp;
+  } else {
+    delete item.metadata[RAMP_KEY];
+  }
+}
+
+/**
+ * A ramp worked out: its low end (cells), and its slope in scene
+ * coordinates — `origin` the middle of its low edge, `axis` from there to
+ * the middle of its high edge — so a point's way up it is
+ * t = (p − origin)·axis / |axis|², 0 to 1.
+ */
+export type RampSlope = { low: number; origin: Vector2; axis: Vector2 };
+
 /** A zone, ready to be asked whether a point is in it. */
 export type TerrainZone = {
   id: string;
@@ -89,7 +142,17 @@ export type TerrainZone = {
   /** Its area in scene px², to tell which of two overlapping zones is smaller. */
   area: number;
   contains: (point: Vector2) => boolean;
+  /** A ramp's slope (its height then is the high end's). */
+  slope?: RampSlope;
 };
+
+/** How high a ramp is at a point: from its low end to `height`, by how far up it the point is. */
+export function slopeHeight(slope: RampSlope, height: number, point: Vector2): number {
+  const { origin, axis } = slope;
+  const length = axis.x * axis.x + axis.y * axis.y;
+  const t = length > 0 ? ((point.x - origin.x) * axis.x + (point.y - origin.y) * axis.y) / length : 1;
+  return slope.low + (height - slope.low) * Math.max(0, Math.min(1, t));
+}
 
 /** A point in the item's own coordinates: the item is drawn at position + R(rotation)·(scale·local). */
 function toLocal(item: Item, point: Vector2): Vector2 {
@@ -243,9 +306,42 @@ function containsFor(item: Item): ((local: Vector2) => boolean) | null {
   return null;
 }
 
+/**
+ * A ramp's low and high edges, in scene coordinates: the middles of the
+ * sides of its own box it rises from and to, and a point just past the low
+ * one (where the ground it starts from is read).
+ */
+function rampEnds(item: Item, ramp: TerrainRamp): { low: Vector2; high: Vector2; beyond: Vector2 } | null {
+  const points = localRings(item).flat();
+  if (points.length < 3) {
+    return null;
+  }
+  const x0 = Math.min(...points.map((p) => p.x));
+  const x1 = Math.max(...points.map((p) => p.x));
+  const y0 = Math.min(...points.map((p) => p.y));
+  const y1 = Math.max(...points.map((p) => p.y));
+  const cx = (x0 + x1) / 2;
+  const cy = (y0 + y1) / 2;
+  // A little past the low edge: 2% of the way across, at least a unit.
+  const ex = Math.max(1, (x1 - x0) * 0.02);
+  const ey = Math.max(1, (y1 - y0) * 0.02);
+  const ends: Record<TerrainRamp, [Vector2, Vector2, Vector2]> = {
+    up: [{ x: cx, y: y1 }, { x: cx, y: y0 }, { x: cx, y: y1 + ey }],
+    down: [{ x: cx, y: y0 }, { x: cx, y: y1 }, { x: cx, y: y0 - ey }],
+    left: [{ x: x1, y: cy }, { x: x0, y: cy }, { x: x1 + ex, y: cy }],
+    right: [{ x: x0, y: cy }, { x: x1, y: cy }, { x: x0 - ex, y: cy }],
+  };
+  const [low, high, beyond] = ends[ramp].map((p) => {
+    const [x, y] = toScene(item, p);
+    return { x, y };
+  });
+  return { low, high, beyond };
+}
+
 /** The scene's terrain zones, the one that wins first: smallest, then highest. */
 export function terrainZones(items: Item[]): TerrainZone[] {
   const zones: TerrainZone[] = [];
+  const ramps: { zone: TerrainZone; ends: NonNullable<ReturnType<typeof rampEnds>> }[] = [];
   for (const item of items) {
     const height = getTerrainHeight(item);
     if (height === undefined || !canBeTerrain(item)) {
@@ -255,28 +351,41 @@ export function terrainZones(items: Item[]): TerrainZone[] {
     if (!contains) {
       continue;
     }
-    zones.push({
+    const zone: TerrainZone = {
       id: item.id,
       height,
       area: localArea(item) * Math.abs(item.scale.x * item.scale.y),
       contains: (point) => contains(toLocal(item, point)),
-    });
+    };
+    zones.push(zone);
+    const ramp = getTerrainRamp(item);
+    const ends = ramp && rampEnds(item, ramp);
+    if (ends) {
+      ramps.push({ zone, ends });
+    }
   }
-  return zones.sort((a, b) => a.area - b.area || b.height - a.height);
+  zones.sort((a, b) => a.area - b.area || b.height - a.height);
+  // Each ramp's low end: the ground just past its low edge, without it (a
+  // ramp read before this one counts as the ramp it is; one after, flat at its height).
+  for (const { zone, ends } of ramps) {
+    const others = zones.filter((other) => other !== zone);
+    zone.slope = { low: terrainAt(others, ends.beyond), origin: ends.low, axis: { x: ends.high.x - ends.low.x, y: ends.high.y - ends.low.y } };
+  }
+  return zones;
 }
 
-/** How high the ground is at a point, in cells: the winning zone it's in, or 0. */
+/** How high the ground is at a point, in cells: the winning zone it's in (along its slope, if it's a ramp), or 0. */
 export function terrainAt(zones: TerrainZone[], point: Vector2): number {
   for (const zone of zones) {
     if (zone.contains(point)) {
-      return zone.height;
+      return zone.slope ? slopeHeight(zone.slope, zone.height, point) : zone.height;
     }
   }
   return 0;
 }
 
-/** A zone's outline(s) in scene coordinates, for drawing it (see terrainView.ts). */
-export type TerrainShape = { id: string; height: number; area: number; rings: [number, number][][] };
+/** A zone's outline(s) in scene coordinates, for drawing it (see terrainView.ts); a ramp's slope as terrainZones has it. */
+export type TerrainShape = { id: string; height: number; area: number; rings: [number, number][][]; slope?: RampSlope };
 
 /** How many points a circle zone's outline is drawn with. */
 const CIRCLE_POINTS = 48;
@@ -315,6 +424,7 @@ function toScene(item: Item, p: Vector2): [number, number] {
 /** The scene's terrain zones with their outlines, the one that wins first (smallest, then highest), as terrainZones. */
 export function terrainShapes(items: Item[]): TerrainShape[] {
   const shapes: TerrainShape[] = [];
+  const slopes = new Map(terrainZones(items).filter((zone) => zone.slope).map((zone) => [zone.id, zone.slope]));
   for (const item of items) {
     const height = getTerrainHeight(item);
     if (height === undefined || !canBeTerrain(item)) {
@@ -324,7 +434,7 @@ export function terrainShapes(items: Item[]): TerrainShape[] {
       .filter((ring) => ring.length >= 3)
       .map((ring) => ring.map((p) => toScene(item, p)));
     if (rings.length > 0) {
-      shapes.push({ id: item.id, height, area: localArea(item) * Math.abs(item.scale.x * item.scale.y), rings });
+      shapes.push({ id: item.id, height, area: localArea(item) * Math.abs(item.scale.x * item.scale.y), rings, slope: slopes.get(item.id) });
     }
   }
   return shapes.sort((a, b) => a.area - b.area || b.height - a.height);

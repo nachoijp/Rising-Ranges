@@ -1,3 +1,4 @@
+import type React from "react";
 import { useEffect, useState } from "react";
 import OBR from "@owlbear-rodeo/sdk";
 import type { GridScale, Image } from "@owlbear-rodeo/sdk";
@@ -214,12 +215,18 @@ export function UnitStepper({
   gridScale,
   onStep,
   onSet,
+  label,
+  end,
 }: {
   /** undefined when the selected tokens are at different heights. */
   current: number | undefined;
   gridScale: GridScale;
   onStep: (direction: 1 | -1) => void;
   onSet: (height: number) => void;
+  /** A name for the row, before it (the terrain entry's rows have one each). */
+  label?: string;
+  /** In place of the Ground button at the end. */
+  end?: React.ReactNode;
 }) {
   const t = useTranslation();
   const multiplier = gridScale.parsed.multiplier || 1;
@@ -243,6 +250,7 @@ export function UnitStepper({
 
   return (
     <div className="step-row">
+      {label && <span className="row-label">{label}</span>}
       <button className="step-button" title={t("tokenHeight.lower")} aria-label={t("tokenHeight.lower")} onClick={() => onStep(-1)}>
         −
       </button>
@@ -268,12 +276,14 @@ export function UnitStepper({
       <button className="step-button" title={t("tokenHeight.raise")} aria-label={t("tokenHeight.raise")} onClick={() => onStep(1)}>
         +
       </button>
-      <button
-        className={current === 0 ? "step-button ground active" : "step-button ground"}
-        onClick={() => onSet(0)}
-      >
-        {t("onMap.ground")}
-      </button>
+      {end ?? (
+        <button
+          className={current === 0 ? "step-button ground active" : "step-button ground"}
+          onClick={() => onSet(0)}
+        >
+          {t("onMap.ground")}
+        </button>
+      )}
     </div>
   );
 }

@@ -4,7 +4,15 @@ import { bandSetFromMetadata } from "../bandSets/bandSets";
 import { onGrid } from "../engine/hex";
 import { tokenName } from "../distances/rows";
 import { globalSettingsFromMetadata, terrainOn } from "../settings/globalSettings";
-import { getTerrainStand, terrainShapes, type TerrainStandEdge } from "../terrain/terrain";
+import {
+  getTerrainStand,
+  getTerrainWall,
+  slopeHeight,
+  terrainShapes,
+  type RampSlope,
+  type TerrainStandEdge,
+  type TerrainWallStyle,
+} from "../terrain/terrain";
 import { terrainLayers } from "../terrain/terrainLayers";
 import { isTokenHeightMarker, tokenHeightsFromMarkers } from "../tokenHeight/markers";
 import { onFloor } from "../tokenHeight/lift";
@@ -26,7 +34,29 @@ export type StandEdge = "top" | "bottom" | "left" | "right";
  * drawn upright on `stand`, from `height` — the ground beside that edge —
  * and its own footprint is floor at that height.
  */
-export type Piece = { height: number; shape: MultiPolygon; stand?: StandEdge; standBase?: number };
+export type Piece = {
+  height: number;
+  shape: MultiPolygon;
+  stand?: StandEdge;
+  standBase?: number;
+  /**
+   * A standing zone drawn as four points (a wall seen in perspective):
+   * unfolded on its own edges rather than its box — `base` the edge it
+   * stands on, `top` the one across (each from the base's own ends' side),
+   * `out` the way its front faces (scene, unit), `rise` how tall it stands
+   * (grid units: up to the zone's own height).
+   */
+  unfold?: { base: [Pair, Pair]; top: [Pair, Pair]; out: Pair; rise: number };
+  /** Its zone's own wall style, if it has one. */
+  walls?: TerrainWallStyle;
+  /** A ramp's slope: then `height` is its high end. */
+  slope?: RampSlope;
+};
+
+/** How high a piece is at a scene point: along its slope, if it's a ramp. */
+export function pieceHeight(piece: Piece, x: number, y: number): number {
+  return piece.slope ? slopeHeight(piece.slope, piece.height, { x, y }) : piece.height;
+}
 
 export type Token = {
   id: string;
@@ -63,6 +93,8 @@ type Terrain = {
   pieces: Piece[];
   /** Height at a scene point as drawn (the ground is 0; outside `world`, undefined). */
   heightAt: (x: number, y: number) => number | undefined;
+  /** The piece at a scene point, if it's on the map. */
+  pieceAt: (x: number, y: number) => Piece | undefined;
   /** Height at a scene point as measured (a standing zone at its own height). */
   measuredAt: (x: number, y: number) => number;
   /** Terrain is off for this scene (turned off, heights off, or an axonometric grid). */
@@ -74,6 +106,8 @@ export type VistazoScene = Terrain & {
   scale: GridScale;
   /** The grid is square: its cells can be drawn on the ground. */
   squareGrid: boolean;
+  /** A hex grid: its orientation and one cell's center (for drawing its cells on the ground). */
+  hexGrid: { shape: "hexHorizontal" | "hexVertical"; center: { x: number; y: number } } | null;
   tokens: Token[];
   props: Prop[];
   /** Each token's height above the ground, terrain under it included (as the Distancias panel has it). */
@@ -149,7 +183,8 @@ export function buildScene(
   dpi: number,
   scale: GridScale,
   gridType: GridType,
-  previous?: VistazoScene
+  previous?: VistazoScene,
+  hexCenter: { x: number; y: number } | null = null
 ): VistazoScene {
   const settings = globalSettingsFromMetadata(metadata);
   const terrainOff = !terrainOn(settings, gridType);
@@ -213,11 +248,16 @@ export function buildScene(
     bounds: terrain.bounds,
     pieces: terrain.pieces,
     heightAt: terrain.heightAt,
+    pieceAt: terrain.pieceAt,
     measuredAt,
     terrainOff: terrain.terrainOff,
     dpi,
     scale,
     squareGrid: gridType === "SQUARE",
+    hexGrid:
+      hexCenter && (gridType === "HEX_HORIZONTAL" || gridType === "HEX_VERTICAL")
+        ? { shape: gridType === "HEX_HORIZONTAL" ? "hexHorizontal" : "hexVertical", center: hexCenter }
+        : null,
     tokens,
     props,
     heights,
@@ -264,6 +304,16 @@ function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dp
   // left out, and if the bare ground fails, the whole map is drawn at 0
   // under everything instead (the zones above it still cover it).
   const pieces: Piece[] = [];
+  const slopes = new Map(shapes.filter((shape) => shape.slope).map((shape) => [shape.id, shape.slope as RampSlope]));
+  // A zone of exactly four points, for unfolding it standing (see Piece.unfold).
+  const quads = new Map<string, [number, number][]>();
+  for (const shape of shapes) {
+    const corners = shape.rings.length === 1 ? cornersOf(shape.rings[0]) : [];
+    if (corners.length === 4) {
+      quads.set(shape.id, corners);
+    }
+  }
+  const zoneOf = new Map<Piece, string>();
   const standing = new Map<string, TerrainStandEdge>();
   for (const item of items) {
     const edge = getTerrainStand(item);
@@ -285,11 +335,18 @@ function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dp
     try {
       const shape = polygonClipping.intersection(layer.shape, world);
       if (shape.length > 0) {
-        const piece: Piece = { height: layer.height, shape };
+        const zone = layer.zoneId ? items.find((item) => item.id === layer.zoneId) : undefined;
+        const piece: Piece = {
+          height: layer.height,
+          shape,
+          walls: zone ? getTerrainWall(zone) : undefined,
+          slope: layer.zoneId ? slopes.get(layer.zoneId) : undefined,
+        };
         const edge = layer.zoneId ? standing.get(layer.zoneId) : undefined;
         if (edge) {
           piece.stand = "bottom";
           asked.set(piece, edge);
+          zoneOf.set(piece, layer.zoneId!);
         }
         pieces.push(piece);
       }
@@ -315,22 +372,29 @@ function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dp
   const ys = world.flatMap((polygon) => polygon[0].map((p) => p[1]));
   const bounds = { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
 
+  /** The piece at a scene point, if it's on the map. */
+  const pieceAt = (x: number, y: number): Piece | undefined => {
+    if (!inShape(x, y, world)) {
+      return undefined;
+    }
+    return pieces.find((piece) => inShape(x, y, piece.shape));
+  };
   const heightAt = (x: number, y: number): number | undefined => {
     if (!inShape(x, y, world)) {
       return undefined;
     }
     for (const piece of pieces) {
       if (inShape(x, y, piece.shape)) {
-        return piece.height;
+        return pieceHeight(piece, x, y);
       }
     }
     return 0;
   };
   // The heights as measured, before standing zones become blocks (for the tokens).
-  const measured = pieces.map((piece) => piece.height);
+  const measured = pieces.map((piece) => ({ ...piece }));
   const measuredAt = (x: number, y: number): number => {
     const index = pieces.findIndex((piece) => inShape(x, y, piece.shape));
-    return index < 0 ? 0 : measured[index];
+    return index < 0 ? 0 : pieceHeight(measured[index], x, y);
   };
 
   // A standing zone turns up on the edge of its box that faces the map's middle, from the ground just past it.
@@ -338,6 +402,11 @@ function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dp
   const probe = dpi * 0.1;
   for (const piece of pieces) {
     if (!piece.stand) {
+      continue;
+    }
+    const quad = quads.get(zoneOf.get(piece) ?? "");
+    if (quad) {
+      unfoldQuad(piece, quad, asked.get(piece) ?? "auto", middle, (x, y) => heightAt(x, y) ?? 0, probe);
       continue;
     }
     const outline = piece.shape.flatMap((polygon) => polygon[0]);
@@ -354,11 +423,94 @@ function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dp
     const edge: StandEdge =
       wanted !== "auto" ? wanted : Math.abs(dy) >= Math.abs(dx) ? (dy >= 0 ? "bottom" : "top") : dx >= 0 ? "right" : "left";
     const beside: Pair = { bottom: [cx, py1 + probe], top: [cx, py0 - probe], right: [px1 + probe, cy], left: [px0 - probe, cy] }[edge] as Pair;
-    // A block as deep as the picture is tall, its front the picture standing up.
+    // A block as deep as the picture is tall, its front the picture standing up (flat on top, if it was a ramp).
     piece.stand = edge;
+    piece.slope = undefined;
     piece.standBase = heightAt(beside[0], beside[1]) ?? 0;
     piece.height = piece.standBase + (edge === "top" || edge === "bottom" ? py1 - py0 : px1 - px0) / dpi;
   }
 
-  return { terrainKey, maps, world, bounds, pieces, heightAt, measuredAt, terrainOff };
+  return { terrainKey, maps, world, bounds, pieces, heightAt, pieceAt, measuredAt, terrainOff };
+}
+
+/** Which way each named edge faces, for picking a four-point zone's edge (see unfoldQuad). */
+const FACES: Record<"top" | "bottom" | "left" | "right", Pair> = { bottom: [0, 1], top: [0, -1], right: [1, 0], left: [-1, 0] };
+
+/**
+ * A standing four-point zone, unfolded on its own edges: it stands on the
+ * edge asked for (the one whose front faces that way most) or, on auto, the
+ * one nearest the map's middle, from the ground just past it, up to its own
+ * height (as it measures). Its block behind is flat at that height.
+ */
+function unfoldQuad(piece: Piece, quad: [number, number][], wanted: TerrainStandEdge, middle: { x: number; y: number }, groundAt: (x: number, y: number) => number, probe: number) {
+  const cx = quad.reduce((sum, p) => sum + p[0], 0) / 4;
+  const cy = quad.reduce((sum, p) => sum + p[1], 0) / 4;
+  const edges = quad.map((a, i) => {
+    const b = quad[(i + 1) % 4];
+    const mx = (a[0] + b[0]) / 2;
+    const my = (a[1] + b[1]) / 2;
+    const length = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    let out: Pair = [(b[1] - a[1]) / length, -(b[0] - a[0]) / length];
+    // Pointing away from the middle of the four points.
+    if (out[0] * (mx - cx) + out[1] * (my - cy) < 0) {
+      out = [-out[0], -out[1]];
+    }
+    return { i, mx, my, out };
+  });
+  const pick =
+    wanted === "auto"
+      ? edges.reduce((best, e) => (Math.hypot(e.mx - middle.x, e.my - middle.y) < Math.hypot(best.mx - middle.x, best.my - middle.y) ? e : best))
+      : edges.reduce((best, e) => {
+          const face = FACES[wanted];
+          return e.out[0] * face[0] + e.out[1] * face[1] > best.out[0] * face[0] + best.out[1] * face[1] ? e : best;
+        });
+  const at = (k: number) => quad[(pick.i + k) % 4];
+  const base: [Pair, Pair] = [at(0), at(1)];
+  // Across from it, each end on its own side: the point after the base's end, then the one before its start.
+  const top: [Pair, Pair] = [at(3), at(2)];
+  const standBase = groundAt(pick.mx + pick.out[0] * probe, pick.my + pick.out[1] * probe);
+  piece.stand = "bottom";
+  piece.slope = undefined;
+  piece.standBase = standBase;
+  // As tall as the zone measures (at least half a cell, so it's there).
+  piece.height = Math.max(piece.height, standBase + 0.5);
+  piece.unfold = { base, top, out: pick.out, rise: piece.height - standBase };
+}
+
+/**
+ * A drawn outline's real corners: without points repeated (Owlbear's
+ * polygon can end on its first one again) or lying on the line between
+ * their neighbours (a click along a side), so four clicked corners count as four.
+ */
+function cornersOf(ring: [number, number][]): [number, number][] {
+  const size = Math.max(...ring.map((p) => Math.abs(p[0])), ...ring.map((p) => Math.abs(p[1])), 1);
+  let points = ring.filter((p, i) => {
+    const q = ring[(i + 1) % ring.length];
+    return Math.hypot(p[0] - q[0], p[1] - q[1]) > size * 1e-6;
+  });
+  // Drop the straightest point while any is nearly straight (its turn under ~8°).
+  for (;;) {
+    if (points.length <= 3) {
+      return points;
+    }
+    let straightest = -1;
+    let least = Infinity;
+    points.forEach((p, i) => {
+      const a = points[(i - 1 + points.length) % points.length];
+      const b = points[(i + 1) % points.length];
+      const ux = p[0] - a[0];
+      const uy = p[1] - a[1];
+      const vx = b[0] - p[0];
+      const vy = b[1] - p[1];
+      const turn = Math.abs(Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy));
+      if (turn < least) {
+        least = turn;
+        straightest = i;
+      }
+    });
+    if (least > 0.15) {
+      return points;
+    }
+    points = points.filter((_, i) => i !== straightest);
+  }
 }

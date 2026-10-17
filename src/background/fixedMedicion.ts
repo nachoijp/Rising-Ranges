@@ -479,8 +479,9 @@ async function reconcile() {
 
     if (toUpdate.size > 0) {
       const ids = new Set([...toUpdate.keys()].flatMap((tokenId) => drawnLecturas.get(tokenId)?.ids ?? []));
+      // By ids, not a filter: a filter fetches every local item in the scene first.
       await OBR.scene.local.updateItems(
-        (item) => ids.has(item.id),
+        [...ids],
         (drafts) => {
           for (const item of drafts) {
             const tokenId = getLecturaTokenId(item);

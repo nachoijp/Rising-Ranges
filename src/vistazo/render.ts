@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import type { MultiPolygon } from "polygon-clipping";
-import { inShape, type Piece, type StandEdge, type Token, type VistazoScene } from "./scene";
+import { inShape, pieceHeight, type Piece, type StandEdge, type Token, type VistazoScene } from "./scene";
+import { distance3D } from "../engine/distance";
+import { cellCorners, groundOffset } from "../engine/hex";
 
 // The Vistazo's 3D view. The terrain is drawn with WebGL (three.js): each
 // piece lies at its height with the map as its texture, walls go down to
@@ -56,7 +58,37 @@ export type Options = {
   relief: number;
   /** The Props layer: lying on the ground as on the map, standing up like the tokens, or left out. */
   props: "flat" | "stand" | "none";
+  /** What the walls' faces show (see buildWalls). */
+  wallStyle: WallStyle;
+  /** Each Banda's limit around the selected token, drawn on the terrain. */
+  rings: boolean;
+  /** And the ground in each Banda tinted its colour. */
+  ringFill: boolean;
 };
+
+/**
+ * The Bandas' rings around a token, as on the map: each Banda's radius plus
+ * the Tolerancia (`reach`) and the token's excess bulk, across only, by the
+ * metric (hex steps on a hex grid). `z` (its body's middle) isn't used by
+ * the rings, which leave height out.
+ */
+export type Reach = {
+  x: number;
+  y: number;
+  z: number;
+  excess: number;
+  metric: "spherical" | "cubic" | "cylindrical";
+  hex: "hexHorizontal" | "hexVertical" | null;
+  bands: { reach: number; color: string }[];
+};
+
+/**
+ * A wall's face: one colour; the map's pixels at its top edge stretched
+ * down; a strip of the map inside the edge folded down (mirrored where the
+ * wall is taller); or a pattern drawn here (stone courses, earth strata,
+ * planks) tinted with the map's colour at the edge.
+ */
+export type WallStyle = "flat" | "stretch" | "fold" | "stone" | "earth" | "wood";
 
 /** `focus`: the scene point the camera turns around (null: the map's middle), and its height in grid units. */
 export type Camera = { tilt: number; yaw: number; zoom: number; panX: number; panY: number; focus: { x: number; y: number; z: number } | null };
@@ -67,7 +99,25 @@ export type DistanceLine = { id: string; color: string; band: string; distance: 
 /** A token's label parts: its name, its height, and where it is (on the ground, flying…). */
 export type TokenText = (token: Token) => { name: string; height: string; detail: string };
 
-type Wall = { ax: number; ay: number; bx: number; by: number; top: number; bot: number; edge: boolean; mx: number; my: number; nx: number; ny: number; lit: number };
+type Wall = {
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
+  /** Its top and bottom (grid units) at its two ends, a and b: a ramp's side slants. */
+  t0: number;
+  t1: number;
+  b0: number;
+  b1: number;
+  edge: boolean;
+  mx: number;
+  my: number;
+  nx: number;
+  ny: number;
+  lit: number;
+  /** The style a zone asks for: the higher side's, or else the lower's (a pit's walls are the ground's). */
+  style?: WallStyle;
+};
 
 type TokenView = {
   token: Token;
@@ -104,6 +154,12 @@ export class VistazoView {
   private readonly terrainGroup = new THREE.Group();
   private readonly edgeGroup = new THREE.Group();
   private readonly tokenGroup = new THREE.Group();
+  private readonly ringGroup = new THREE.Group();
+  /** The ground tinted by Banda: a copy of each flat piece, its texture the Bandas' colours (see buildReach). */
+  private readonly fillGroup = new THREE.Group();
+  private reach: Reach | null = null;
+  private reachTexture: THREE.DataTexture | null = null;
+  private reachFrame = 0;
   private readonly glCamera = new THREE.Camera();
   private readonly overlay: HTMLElement;
   private readonly lines: SVGSVGElement;
@@ -156,7 +212,7 @@ export class VistazoView {
     }
     this.renderer = renderer;
     this.glCamera.matrixAutoUpdate = false;
-    this.world.add(this.terrainGroup, this.edgeGroup, this.tokenGroup);
+    this.world.add(this.terrainGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup);
     this.overlay = document.createElement("div");
     this.overlay.className = "ov";
     this.lines = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -208,6 +264,149 @@ export class VistazoView {
     this.apply();
   }
 
+  /** The Bandas' reach around the selected token (null: none); worked out once a frame at most (it follows a drag). */
+  setReach(reach: Reach | null) {
+    this.reach = reach;
+    if (!this.reachFrame) {
+      this.reachFrame = requestAnimationFrame(() => {
+        this.reachFrame = 0;
+        this.buildReach();
+        this.render();
+      });
+    }
+  }
+
+  /**
+   * Each Banda's ring as on the map — across only, its height left out —
+   * laid on the terrain like a shadow: its outline (a circle, a square with
+   * the cubic metric, a hexagon on a hex grid) walked in short steps, each
+   * at the terrain's height there. And, if asked, the ground inside each
+   * tinted its colour (a texture over copies of the flat pieces).
+   */
+  private buildReach() {
+    this.clear(this.ringGroup);
+    const r = this.reach;
+    const scene = this.scene;
+    const show = !!r && !!scene && (this.options.rings || this.options.ringFill);
+    this.fillGroup.visible = show && this.options.ringFill;
+    if (!r || !scene || !show) {
+      return;
+    }
+    const dpi = scene.dpi;
+    const u = this.u;
+    const k = this.k;
+    const bands = r.bands.filter((band) => Number.isFinite(band.reach)).map((band) => ({ ...band, across: band.reach + r.excess }));
+    // How far across a scene point is, in grid units, as the Banda's shape measures it.
+    const acrossOf = (x: number, y: number) => {
+      const offset = groundOffset((x - r.x) / dpi, (y - r.y) / dpi, r.hex ?? "circle");
+      return distance3D(offset.x, offset.y, 0, r.metric);
+    };
+    if (this.options.ringFill) {
+      const { x0, y0, step, w, h, cells } = this.grid;
+      const data = new Uint8Array(w * h * 4);
+      const colors = bands.map((band) => new THREE.Color(band.color));
+      for (let j = 0; j < h; j++) {
+        for (let i = 0; i < w; i++) {
+          const n = j * w + i;
+          if (Number.isNaN(cells[n])) {
+            continue;
+          }
+          const across = acrossOf(x0 + i * step, y0 + j * step);
+          const index = bands.findIndex((band) => across <= band.across);
+          if (index >= 0) {
+            data.set([Math.round(colors[index].r * 255), Math.round(colors[index].g * 255), Math.round(colors[index].b * 255), 70], n * 4);
+          }
+        }
+      }
+      if (!this.reachTexture || this.reachTexture.image.width !== w || this.reachTexture.image.height !== h) {
+        this.reachTexture?.dispose();
+        this.reachTexture = new THREE.DataTexture(data, w, h, THREE.RGBAFormat);
+        this.reachTexture.magFilter = THREE.LinearFilter;
+        this.reachTexture.minFilter = THREE.LinearFilter;
+        for (const child of this.fillGroup.children) {
+          ((child as THREE.Mesh).material as THREE.MeshBasicMaterial).map = this.reachTexture;
+          ((child as THREE.Mesh).material as THREE.MeshBasicMaterial).needsUpdate = true;
+        }
+      } else {
+        (this.reachTexture.image.data as Uint8Array).set(data);
+      }
+      this.reachTexture.needsUpdate = true;
+    }
+    if (!this.options.rings) {
+      return;
+    }
+    // The outline's corners, in grid units from the token, for a Banda `across` wide.
+    const outline = (across: number): [number, number][] => {
+      if (r.hex) {
+        // Six sides, their middles `across` cells away (hex steps), pointy side as the grid has it.
+        const corner = across / Math.cos(Math.PI / 6);
+        const turn = r.hex === "hexHorizontal" ? Math.PI / 6 : 0;
+        return Array.from({ length: 6 }, (_, i) => [Math.cos(turn + (i * Math.PI) / 3) * corner, Math.sin(turn + (i * Math.PI) / 3) * corner]);
+      }
+      if (r.metric === "cubic") {
+        return [[-across, -across], [across, -across], [across, across], [-across, across]];
+      }
+      return Array.from({ length: 96 }, (_, i) => [Math.cos((i * Math.PI) / 48) * across, Math.sin((i * Math.PI) / 48) * across]);
+    };
+    const stride = dpi * 0.1;
+    for (const band of bands) {
+      const corners = outline(band.across).map(([x, y]): [number, number] => [r.x + x * dpi, r.y + y * dpi]);
+      const segments: number[] = [];
+      let previous: number[] | null = null;
+      for (let c = 0; c < corners.length; c++) {
+        const [ax, ay] = corners[c];
+        const [bx, by] = corners[(c + 1) % corners.length];
+        const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / stride));
+        for (let s = c === 0 ? 0 : 1; s <= steps; s++) {
+          const x = ax + ((bx - ax) * s) / steps;
+          const y = ay + ((by - ay) * s) / steps;
+          const ground = this.gridHeight(x, y);
+          // Off the map: the line breaks there.
+          const point = Number.isNaN(ground) ? null : [x * u, y * u, ground * k + 1.5];
+          if (point && previous) {
+            segments.push(...previous, ...point);
+          }
+          previous = point;
+        }
+      }
+      if (segments.length === 0) {
+        continue;
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(segments), 3));
+      const lines = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color: new THREE.Color(band.color), transparent: true, opacity: 0.95 }));
+      lines.renderOrder = 4;
+      this.ringGroup.add(lines);
+    }
+  }
+
+  /** A copy of a flat piece, for the Banda tint (see buildReach): the same shape, its texture the heights grid's. */
+  private fillCopy(geometry: THREE.BufferGeometry, z: number) {
+    const { x0, y0, step, w, h } = this.grid;
+    const position = geometry.getAttribute("position") as THREE.BufferAttribute;
+    const uv = new Float32Array(position.count * 2);
+    for (let i = 0; i < position.count; i++) {
+      // The grid's points are its texture's pixel centers.
+      uv[i * 2] = ((position.getX(i) / this.u - x0) / step + 0.5) / w;
+      uv[i * 2 + 1] = ((position.getY(i) / this.u - y0) / step + 0.5) / h;
+    }
+    const copy = geometry.clone();
+    copy.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+    const material = new THREE.MeshBasicMaterial({
+      map: this.reachTexture,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    const mesh = new THREE.Mesh(copy, material);
+    mesh.position.z = z;
+    mesh.renderOrder = 3;
+    this.fillGroup.add(mesh);
+  }
+
   /** The token an event happened on, if it was one. */
   tokenAt(target: EventTarget | null): string | null {
     const el = target instanceof Element ? target.closest<HTMLElement>(".tok") : null;
@@ -225,6 +424,42 @@ export class VistazoView {
     return this.camera.focus ?? this.middle();
   }
 
+  /**
+   * A drag across the screen (px) as a move across the map (scene px), at
+   * the height the camera turns around: turned with the camera, and longer
+   * up and down the screen the flatter it looks.
+   */
+  screenDelta(dx: number, dy: number): { x: number; y: number } {
+    const c = this.camera;
+    const s = this.fit * c.zoom;
+    const cos = Math.cos((c.tilt * Math.PI) / 180);
+    const squash = Math.abs(cos) < 0.3 ? Math.sign(cos || 1) * 0.3 : cos;
+    const vx = dx / s;
+    const vy = dy / (s * squash);
+    const a = (-c.yaw * Math.PI) / 180;
+    return { x: (vx * Math.cos(a) - vy * Math.sin(a)) / this.u, y: (vx * Math.sin(a) + vy * Math.cos(a)) / this.u };
+  }
+
+  /** The terrain under a point of the stage (px from its corner), as a place for the camera to turn around; null off the terrain. */
+  pickTerrain(x: number, y: number): Camera["focus"] {
+    if (!this.scene || this.width === 0) {
+      return null;
+    }
+    const inverse = this.camMatrix().inverse();
+    const eye = inverse.transformPoint(new DOMPoint(0, 0, this.persp));
+    const through = inverse.transformPoint(new DOMPoint(x - this.width / 2, y - this.height / 2, 0));
+    const ray = new THREE.Raycaster(
+      new THREE.Vector3(eye.x, eye.y, eye.z),
+      new THREE.Vector3(through.x - eye.x, through.y - eye.y, through.z - eye.z).normalize()
+    );
+    const hits = ray.intersectObjects(
+      [...this.terrainGroup.children, ...(this.options.edges ? this.edgeGroup.children : [])].filter((object) => (object as THREE.Mesh).isMesh && object.renderOrder === 0),
+      false
+    );
+    const hit = hits[0]?.point;
+    return hit ? { x: hit.x / this.u, y: hit.y / this.u, z: hit.z / this.k } : null;
+  }
+
   /** A token's place, for the camera to turn around it. */
   tokenFocus(id: string): Camera["focus"] {
     const token = this.scene?.tokens.find((t) => t.id === id);
@@ -233,7 +468,7 @@ export class VistazoView {
 
   setOptions(options: Partial<Options>) {
     const changed = (keys: (keyof Options)[]) => keys.some((key) => key in options && options[key] !== this.options[key]);
-    const rebuild = changed(["heightScale", "shade", "levels", "relief", "tint"]);
+    const rebuild = changed(["heightScale", "shade", "levels", "relief", "tint", "wallStyle", "rings", "ringFill"]);
     const regrid = changed(["grid"]);
     const relabel = changed(["tokenLabels", "props"]);
     this.options = { ...this.options, ...options };
@@ -283,6 +518,7 @@ export class VistazoView {
     const scene = this.scene!;
     const probe = scene.dpi * 0.03;
     const l = Math.hypot(...LIGHT);
+    const sloped = scene.pieces.some((piece) => piece.slope);
     this.walls = [];
     for (const piece of scene.pieces) {
       for (const polygon of piece.shape) {
@@ -304,21 +540,45 @@ export class VistazoView {
               nx = -nx;
               ny = -ny;
             }
-            // A standing block's front is the picture itself.
-            if (piece.stand && nx * FACING[piece.stand][0] + ny * FACING[piece.stand][1] > 0.5) {
+            // A standing block's front is the picture itself: an unfolded one's, its base edge only (its
+            // slanting sides, wider than the picture, keep their walls); a box's, whatever faces its way.
+            if (piece.unfold ? onBase(piece.unfold.base, mx, my, nx, ny, piece.unfold.out, probe * 3) : piece.stand && nx * FACING[piece.stand][0] + ny * FACING[piece.stand][1] > 0.5) {
               continue;
             }
-            const outside = scene.heightAt(mx + nx * probe, my + ny * probe);
-            const below = outside ?? this.base;
-            // The higher side draws the wall.
-            if (below >= piece.height) {
-              continue;
+            const lower = scene.pieceAt(mx + nx * probe, my + ny * probe);
+            // With ramps about, every edge is cut in short steps: a ramp may meet it anywhere along
+            // it (not only at its middle), and the heights on either side change there.
+            const steps = sloped ? Math.max(1, Math.ceil(len / (scene.dpi * 0.25))) : 1;
+            for (let j = 0; j < steps; j++) {
+              const [px, py] = [ax + (dx * j) / steps, ay + (dy * j) / steps];
+              const [qx, qy] = [ax + (dx * (j + 1)) / steps, ay + (dy * (j + 1)) / steps];
+              const outP = scene.heightAt(px + nx * probe, py + ny * probe);
+              const outQ = scene.heightAt(qx + nx * probe, qy + ny * probe);
+              const edge = outP === undefined && outQ === undefined;
+              const t0 = pieceHeight(piece, px, py);
+              const t1 = pieceHeight(piece, qx, qy);
+              // The higher side draws the wall: where this one's lower at an end, it narrows to nothing there.
+              // Beside a ramp, down to the lowest ground along the step (its ends and middle): where a ramp
+              // ends partway along, a straight line between the ends would leave a wedge open, and what
+              // reaches below the ground is hidden under it.
+              let low0 = outP ?? this.base;
+              let low1 = outQ ?? this.base;
+              if (steps > 1) {
+                const outM = scene.heightAt((px + qx) / 2 + nx * probe, (py + qy) / 2 + ny * probe) ?? this.base;
+                low0 = low1 = Math.min(low0, low1, outM);
+              }
+              const b0 = Math.min(t0, low0);
+              const b1 = Math.min(t1, low1);
+              if (t0 - b0 < 1e-6 && t1 - b1 < 1e-6) {
+                continue;
+              }
+              this.walls.push({
+                style: piece.walls ?? lower?.walls,
+                ax: px, ay: py, bx: qx, by: qy, t0, t1, b0, b1, edge,
+                mx: (px + qx) / 2 - nx * probe * 3, my: (py + qy) / 2 - ny * probe * 3, nx, ny,
+                lit: Math.max(0, (nx * LIGHT[0] + ny * LIGHT[1]) / l),
+              });
             }
-            this.walls.push({
-              ax, ay, bx, by, top: piece.height, bot: below, edge: outside === undefined,
-              mx: mx - nx * probe * 3, my: my - ny * probe * 3, nx, ny,
-              lit: Math.max(0, (nx * LIGHT[0] + ny * LIGHT[1]) / l),
-            });
           }
         }
       }
@@ -407,7 +667,7 @@ export class VistazoView {
       return;
     }
     let source: HTMLCanvasElement = texture.canvas;
-    if (this.options.grid && scene.squareGrid) {
+    if (this.options.grid && (scene.squareGrid || scene.hexGrid)) {
       source = document.createElement("canvas");
       source.width = texture.canvas.width;
       source.height = texture.canvas.height;
@@ -417,13 +677,44 @@ export class VistazoView {
       context.strokeStyle = "rgba(0,0,0,0.35)";
       context.lineWidth = Math.max(1, px * scene.dpi * 0.02);
       context.beginPath();
-      for (let x = Math.ceil(texture.x0 / scene.dpi) * scene.dpi; x <= texture.x0 + texture.w; x += scene.dpi) {
-        context.moveTo((x - texture.x0) * px, 0);
-        context.lineTo((x - texture.x0) * px, source.height);
-      }
-      for (let y = Math.ceil(texture.y0 / scene.dpi) * scene.dpi; y <= texture.y0 + texture.h; y += scene.dpi) {
-        context.moveTo(0, (y - texture.y0) * px);
-        context.lineTo(source.width, (y - texture.y0) * px);
+      const hex = scene.hexGrid;
+      if (hex) {
+        // Every cell's outline, laid out from one cell's center as Owlbear's grid is: flat-topped
+        // cells in columns (horizontal), pointy-topped ones in rows (vertical), a cell (dpi) apart.
+        const dpi = scene.dpi;
+        const corners = cellCorners(0.5, hex.shape).map((c) => [c.x * dpi, c.y * dpi]);
+        const across = dpi * Math.cos(Math.PI / 6);
+        const flat = hex.shape === "hexHorizontal";
+        const [stepA, stepB] = flat ? [across, dpi] : [dpi, across];
+        const from = (v: number, origin: number, step: number) => origin + Math.floor((v - origin) / step - 1) * step;
+        for (let a = from(flat ? texture.x0 : texture.y0, flat ? hex.center.x : hex.center.y, flat ? stepA : stepB); a <= (flat ? texture.x0 + texture.w : texture.y0 + texture.h) + dpi; a += flat ? stepA : stepB) {
+          const line = Math.round((a - (flat ? hex.center.x : hex.center.y)) / (flat ? stepA : stepB));
+          // Every other column (row) sits half a cell along.
+          const shift = (((line % 2) + 2) % 2) * 0.5 * dpi;
+          for (let b = from(flat ? texture.y0 : texture.x0, (flat ? hex.center.y : hex.center.x) + shift, dpi); b <= (flat ? texture.y0 + texture.h : texture.x0 + texture.w) + dpi; b += dpi) {
+            const cx = flat ? a : b;
+            const cy = flat ? b : a;
+            corners.forEach(([x, y], i) => {
+              const px0 = (cx + x - texture.x0) * px;
+              const py0 = (cy + y - texture.y0) * px;
+              if (i === 0) {
+                context.moveTo(px0, py0);
+              } else {
+                context.lineTo(px0, py0);
+              }
+            });
+            context.closePath();
+          }
+        }
+      } else {
+        for (let x = Math.ceil(texture.x0 / scene.dpi) * scene.dpi; x <= texture.x0 + texture.w; x += scene.dpi) {
+          context.moveTo((x - texture.x0) * px, 0);
+          context.lineTo((x - texture.x0) * px, source.height);
+        }
+        for (let y = Math.ceil(texture.y0 / scene.dpi) * scene.dpi; y <= texture.y0 + texture.h; y += scene.dpi) {
+          context.moveTo(0, (y - texture.y0) * px);
+          context.lineTo(source.width, (y - texture.y0) * px);
+        }
       }
       context.stroke();
     }
@@ -432,7 +723,7 @@ export class VistazoView {
     map.anisotropy = this.renderer?.capabilities.getMaxAnisotropy() ?? 1;
     this.mapTexture = map;
     for (const material of this.pieceMaterials) {
-      if (material.map) {
+      if (material.userData.mapTextured) {
         material.map = map;
         material.needsUpdate = true;
       }
@@ -503,8 +794,187 @@ export class VistazoView {
       polygonOffsetUnits: 1,
     });
     material.userData.color = color.clone();
+    material.userData.mapTextured = textured;
     this.pieceMaterials.push(material);
     return material;
+  }
+
+  /**
+   * The walls: two meshes (inside, and at the map's edge, which can be
+   * hidden), shaded top to bottom and by the light, their faces as the
+   * wall style has them (their zone's, or the Vistazo's), and level lines
+   * at every whole cell of height.
+   */
+  private buildWalls() {
+    const u = this.u;
+    const k = this.k;
+    // The fold's strip: how far into the map it reaches, in view units.
+    const band = VIEW_CELL * 0.75;
+    // One mesh for each style, inside and at the map's edge (which can be hidden).
+    const styles = new Set(this.walls.map((wall) => wall.style ?? this.options.wallStyle));
+    for (const [edge, style] of [false, true].flatMap((e) => [...styles].map((st) => [e, st] as const))) {
+      const walls = this.walls.filter((wall) => wall.edge === edge && (wall.style ?? this.options.wallStyle) === style);
+      if (walls.length === 0) {
+        continue;
+      }
+      const fromMap = (style === "stretch" || style === "fold") && this.texture !== null;
+      const pattern = style === "stone" || style === "earth" || style === "wood" ? patternTexture(style) : null;
+      const positions: number[] = [];
+      const colors: number[] = [];
+      const uvs: number[] = [];
+      const levels: number[] = [];
+      for (const wall of walls) {
+        const s = 1 - this.options.shade * (1 - (0.45 + 0.55 * wall.lit));
+        // Taken from the map, its colour is in the texture: the vertices only shade it.
+        const rgb = fromMap ? [255, 255, 255] : this.colors ? this.colors(wall.mx, wall.my) : STONE;
+        const top = rgb.map((v) => (v / 255) * s * 0.92);
+        const bottom = top.map((v) => v * 0.62);
+        const [ax, ay, bx, by] = [wall.ax * u, wall.ay * u, wall.bx * u, wall.by * u];
+        const [zt0, zt1, zb0, zb1] = [wall.t0 * k, wall.t1 * k, wall.b0 * k, wall.b1 * k];
+        const zt = zt0;
+        const zb = zb0;
+        const length = Math.hypot(bx - ax, by - ay);
+        // A slanting side (beside a ramp): one quad with its own heights at each end.
+        const slanted = Math.abs(zt0 - zt1) > 1e-3 || Math.abs(zb0 - zb1) > 1e-3;
+        // Into the piece from the edge (the wall's normal points out).
+        const [ix, iy] = [-wall.nx, -wall.ny];
+        // One slice of the face, from depth t0 to t1 below the top, with its texture coordinates.
+        const slice = (t0: number, t1: number, uvTop: number[], uvBottom: number[]) => {
+          const z0 = zt - t0;
+          const z1 = zt - t1;
+          const c0 = top.map((v, i) => v + (bottom[i] - v) * (t0 / (zt - zb || 1)));
+          const c1 = top.map((v, i) => v + (bottom[i] - v) * (t1 / (zt - zb || 1)));
+          positions.push(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z0, bx, by, z1, ax, ay, z1);
+          colors.push(...c0, ...c0, ...c1, ...c0, ...c1, ...c1);
+          // uvTop / uvBottom: [aU, aV, bU, bV] at the slice's top and bottom.
+          uvs.push(uvTop[0], uvTop[1], uvTop[2], uvTop[3], uvBottom[2], uvBottom[3], uvTop[0], uvTop[1], uvBottom[2], uvBottom[3], uvBottom[0], uvBottom[1]);
+        };
+        const mapUv = (x: number, y: number) => this.uvAt(x, y);
+        const height = zt - zb;
+        if (slanted) {
+          positions.push(ax, ay, zt0, bx, by, zt1, bx, by, zb1, ax, ay, zt0, bx, by, zb1, ax, ay, zb0);
+          colors.push(...top, ...top, ...bottom, ...top, ...bottom, ...bottom);
+          let uvTop: number[];
+          let uvBottom: number[];
+          if (style === "fold" && fromMap) {
+            const deep = Math.min(band, Math.max(zt0 - zb0, zt1 - zb1));
+            uvTop = [...mapUv(ax + ix * 0.5, ay + iy * 0.5), ...mapUv(bx + ix * 0.5, by + iy * 0.5)];
+            uvBottom = [...mapUv(ax + ix * deep, ay + iy * deep), ...mapUv(bx + ix * deep, by + iy * deep)];
+          } else if (style === "stretch" && fromMap) {
+            uvTop = [...mapUv(ax + ix * 1.5, ay + iy * 1.5), ...mapUv(bx + ix * 1.5, by + iy * 1.5)];
+            uvBottom = uvTop;
+          } else {
+            const tile = VIEW_CELL * 2;
+            // Along the wall's own direction (not x + y): steps of one straight edge then run on without a jump.
+            const s0 = ((ax * (bx - ax) + ay * (by - ay)) / (length || 1)) / tile;
+            uvTop = [s0, zt0 / tile, s0 + length / tile, zt1 / tile];
+            uvBottom = [s0, zb0 / tile, s0 + length / tile, zb1 / tile];
+          }
+          uvs.push(uvTop[0], uvTop[1], uvTop[2], uvTop[3], uvBottom[2], uvBottom[3], uvTop[0], uvTop[1], uvBottom[2], uvBottom[3], uvBottom[0], uvBottom[1]);
+        } else if (style === "fold" && fromMap) {
+          // Strips of the map just inside the edge, folded down, every other one mirrored.
+          const inside = (d: number) => [...mapUv(ax + ix * d, ay + iy * d), ...mapUv(bx + ix * d, by + iy * d)];
+          for (let t = 0, j = 0; t < height; t += band, j++) {
+            const t1 = Math.min(height, t + band);
+            const d0 = j % 2 === 0 ? 0 : band;
+            const d1 = j % 2 === 0 ? t1 - t : band - (t1 - t);
+            slice(t, t1, inside(d0 + 0.5), inside(d1 + 0.5));
+          }
+        } else if (style === "stretch" && fromMap) {
+          // The map's pixels at the top edge (a hair inside), stretched down.
+          const edgeUv = [...mapUv(ax + ix * 1.5, ay + iy * 1.5), ...mapUv(bx + ix * 1.5, by + iy * 1.5)];
+          slice(0, height, edgeUv, edgeUv);
+        } else {
+          // A pattern 2 cells a tile, along the wall and down from the ground level (so courses line up).
+          const tile = VIEW_CELL * 2;
+          // Along the wall's own direction, as above.
+          const s0 = ((ax * (bx - ax) + ay * (by - ay)) / (length || 1)) / tile;
+          const v = (z: number) => z / tile;
+          slice(0, height, [s0, v(zt), s0 + length / tile, v(zt)], [s0, v(zb), s0 + length / tile, v(zb)]);
+        }
+        // Level lines at every whole cell of height, counted from the ground.
+        if (this.options.levels) {
+          const lowest = Math.min(wall.b0, wall.b1);
+          const highest = Math.max(wall.t0, wall.t1);
+          for (let n = Math.ceil(lowest + 1e-6); n < highest - 1e-6; n++) {
+            // Where along the wall that height is on its face (bottom ≤ n ≤ top), 0 to 1.
+            const span = within(wall.b0, wall.b1, wall.t0, wall.t1, n);
+            if (span) {
+              const [s0, s1] = span;
+              levels.push(ax + (bx - ax) * s0, ay + (by - ay) * s0, n * k, ax + (bx - ax) * s1, ay + (by - ay) * s1, n * k);
+            }
+          }
+        }
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
+      geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(colors), 3));
+      geometry.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uvs), 2));
+      const group = edge ? this.edgeGroup : this.terrainGroup;
+      const material = new THREE.MeshBasicMaterial({
+        vertexColors: true,
+        side: THREE.DoubleSide,
+        map: fromMap ? this.mapTexture : pattern,
+      });
+      material.userData.color = new THREE.Color(1, 1, 1);
+      material.userData.mapTextured = fromMap;
+      this.pieceMaterials.push(material);
+      group.add(new THREE.Mesh(geometry, material));
+      if (levels.length > 0) {
+        const lines = new THREE.BufferGeometry();
+        lines.setAttribute("position", new THREE.BufferAttribute(new Float32Array(levels), 3));
+        group.add(new THREE.LineSegments(lines, new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3 })));
+      }
+    }
+  }
+
+  /**
+   * A four-point standing zone's picture, unfolded: its drawn shape (base,
+   * top) stretched into an upright rectangle on the base edge, as tall as it
+   * rises — a grid of small quads, each corner where the picture's point
+   * lands, so the picture bends with it.
+   */
+  private unfoldedCard(piece: Piece): THREE.BufferGeometry {
+    const u = this.u;
+    const k = this.k;
+    const { base, top, out, rise } = piece.unfold!;
+    const zb = (piece.standBase ?? 0) * k;
+    const steps = 12;
+    const positions: number[] = [];
+    const uvs: number[] = [];
+    const lerp = (a: [number, number], b: [number, number], t: number): [number, number] => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    for (let j = 0; j <= steps; j++) {
+      for (let i = 0; i <= steps; i++) {
+        const along = i / steps;
+        const up = j / steps;
+        const foot = lerp(base[0], base[1], along);
+        const drawn = lerp(foot, lerp(top[0], top[1], along), up);
+        // Half a view px out in front, so it doesn't fight the block's own faces.
+        positions.push(foot[0] * u + out[0] * 0.5, foot[1] * u + out[1] * 0.5, zb + up * rise * k);
+        uvs.push(...(this.texture ? this.uvAt(drawn[0] * u, drawn[1] * u) : [0, 0]));
+      }
+    }
+    const index: number[] = [];
+    for (let j = 0; j < steps; j++) {
+      for (let i = 0; i < steps; i++) {
+        const a = j * (steps + 1) + i;
+        const b = a + 1;
+        const c = a + steps + 1;
+        const d = c + 1;
+        index.push(a, b, d, a, d, c);
+      }
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
+    geometry.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uvs), 2));
+    geometry.setIndex(index);
+    return geometry;
+  }
+
+  /** The map texture's coordinates at a view-unit point. */
+  private uvAt(x: number, y: number): [number, number] {
+    const t = this.texture!;
+    return [(x / this.u - t.x0) / t.w, 1 - (y / this.u - t.y0) / t.h];
   }
 
   private build() {
@@ -514,6 +984,9 @@ export class VistazoView {
     }
     this.clear(this.terrainGroup);
     this.clear(this.edgeGroup);
+    this.clear(this.fillGroup);
+    this.reachTexture?.dispose();
+    this.reachTexture = null;
     this.pieceMaterials = [];
     const u = this.u;
     this.k = VIEW_CELL * this.options.heightScale;
@@ -523,48 +996,7 @@ export class VistazoView {
       this.buildPiece(piece);
     }
 
-    // The walls: two meshes (inside and at the map's edge, which can be hidden), coloured top to bottom.
-    for (const edge of [false, true]) {
-      const walls = this.walls.filter((wall) => wall.edge === edge);
-      if (walls.length === 0) {
-        continue;
-      }
-      const positions = new Float32Array(walls.length * 18);
-      const colors = new Float32Array(walls.length * 18);
-      const levels: number[] = [];
-      walls.forEach((wall, i) => {
-        const s = 1 - this.options.shade * (1 - (0.45 + 0.55 * wall.lit));
-        const rgb = this.colors ? this.colors(wall.mx, wall.my) : STONE;
-        const top = rgb.map((v) => (v / 255) * s * 0.92);
-        const bottom = top.map((v) => v * 0.62);
-        const [ax, ay, bx, by] = [wall.ax * u, wall.ay * u, wall.bx * u, wall.by * u];
-        const zt = wall.top * k;
-        const zb = wall.bot * k;
-        const quad = [ax, ay, zt, bx, by, zt, bx, by, zb, ax, ay, zt, bx, by, zb, ax, ay, zb];
-        positions.set(quad, i * 18);
-        const shades = [top, top, bottom, top, bottom, bottom];
-        shades.forEach((c, j) => colors.set(c, i * 18 + j * 3));
-        // Level lines at every whole cell of height, counted from the ground.
-        if (this.options.levels) {
-          for (let n = Math.ceil(wall.bot + 1e-6); n < wall.top - 1e-6; n++) {
-            levels.push(ax, ay, n * k, bx, by, n * k);
-          }
-        }
-      });
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-      geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-      const group = edge ? this.edgeGroup : this.terrainGroup;
-      const material = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
-      material.userData.color = new THREE.Color(1, 1, 1);
-      this.pieceMaterials.push(material);
-      group.add(new THREE.Mesh(geometry, material));
-      if (levels.length > 0) {
-        const lines = new THREE.BufferGeometry();
-        lines.setAttribute("position", new THREE.BufferAttribute(new Float32Array(levels), 3));
-        group.add(new THREE.LineSegments(lines, new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3 })));
-      }
-    }
+    this.buildWalls();
 
     // A soft shadow on the ground at the foot of each wall, fading out from it.
     if (this.options.relief > 0) {
@@ -576,8 +1008,9 @@ export class VistazoView {
       inside.forEach((wall, i) => {
         const [ax, ay, bx, by] = [wall.ax * u, wall.ay * u, wall.bx * u, wall.by * u];
         const [cx, cy, dx, dy] = [ax + wall.nx * reach, ay + wall.ny * reach, bx + wall.nx * reach, by + wall.ny * reach];
-        const z = wall.bot * k + 0.4;
-        positions.set([ax, ay, z, bx, by, z, dx, dy, z, ax, ay, z, dx, dy, z, cx, cy, z], i * 18);
+        const za = wall.b0 * k + 0.4;
+        const zb = wall.b1 * k + 0.4;
+        positions.set([ax, ay, za, bx, by, zb, dx, dy, zb, ax, ay, za, dx, dy, zb, cx, cy, za], i * 18);
         const alphas = [dark, dark, 0, dark, 0, 0];
         alphas.forEach((a, j) => colors.set([0, 0, 0, a], i * 24 + j * 4));
       });
@@ -595,6 +1028,7 @@ export class VistazoView {
     }
 
     this.buildTokens();
+    this.buildReach();
     this.measure();
   }
 
@@ -607,8 +1041,17 @@ export class VistazoView {
     if (!piece.stand) {
       geometry.setAttribute("uv", new THREE.BufferAttribute(this.uvs(position.array, position.count), 2));
       const mesh = new THREE.Mesh(geometry, this.pieceMaterial(piece.height, true));
-      mesh.position.z = z;
+      if (piece.slope) {
+        // A ramp: each corner at its own height (a plane: the triangles stay flat).
+        for (let i = 0; i < position.count; i++) {
+          position.setZ(i, pieceHeight(piece, position.getX(i) / u, position.getY(i) / u) * k);
+        }
+        position.needsUpdate = true;
+      } else {
+        mesh.position.z = z;
+      }
       this.terrainGroup.add(mesh);
+      this.fillCopy(geometry, piece.slope ? 0 : z);
       return;
     }
     // Standing: a block (its top plain stone, its sides walls) with the
@@ -627,10 +1070,28 @@ export class VistazoView {
       }
     }
     const rgb = this.colors ? this.colors((x0 + x1) / 2, (y0 + y1) / 2) : STONE;
-    const top = new THREE.Mesh(geometry, this.pieceMaterial(piece.height, false, rgb.map((v) => v * 0.7) as [number, number, number]));
+    // Its top: the walls' pattern (stone, earth or wood; stone when they take theirs from the map),
+    // tinted with the map's colour there, laid out flat a tile every two cells.
+    const style = piece.walls ?? this.options.wallStyle;
+    const roof = style === "earth" || style === "wood" ? style : "stone";
+    const tile = VIEW_CELL * 2;
+    const roofUv = new Float32Array(position.count * 2);
+    for (let i = 0; i < position.count; i++) {
+      roofUv[i * 2] = position.getX(i) / tile;
+      roofUv[i * 2 + 1] = position.getY(i) / tile;
+    }
+    const roofGeometry = geometry.clone();
+    roofGeometry.setAttribute("uv", new THREE.BufferAttribute(roofUv, 2));
+    const roofMaterial = this.pieceMaterial(piece.height, false, rgb.map((v) => v * 0.85) as [number, number, number]);
+    roofMaterial.map = patternTexture(roof);
+    const top = new THREE.Mesh(roofGeometry, roofMaterial);
     top.position.z = z;
     this.terrainGroup.add(top);
 
+    if (piece.unfold) {
+      this.terrainGroup.add(new THREE.Mesh(this.unfoldedCard(piece), this.pieceMaterial(piece.height, true)));
+      return;
+    }
     const card = geometry.clone();
     const flat = (card.getAttribute("position") as THREE.BufferAttribute).array as Float32Array;
     card.setAttribute("uv", new THREE.BufferAttribute(this.uvs(flat, flat.length / 3), 2));
@@ -956,4 +1417,153 @@ export class VistazoView {
     }
     return false;
   }
+}
+
+/** A small deterministic random, so a pattern is the same every time. */
+function seeded(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * A grey tile (256 px, two cells across) that repeats seamlessly, to tint
+ * with the map's colour: stone courses, earth strata, or planks.
+ */
+function patternTexture(style: "stone" | "earth" | "wood"): THREE.CanvasTexture {
+  const size = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const c = canvas.getContext("2d")!;
+  const random = seeded(style === "stone" ? 7 : style === "earth" ? 11 : 13);
+  const grey = (v: number) => `rgb(${v},${v},${v})`;
+  if (style === "stone") {
+    // Four courses of blocks, each row offset, with dark mortar.
+    c.fillStyle = grey(120);
+    c.fillRect(0, 0, size, size);
+    const row = size / 4;
+    for (let r = 0; r < 4; r++) {
+      let x = -random() * 60;
+      while (x < size) {
+        const w = 70 + random() * 60;
+        const shade = 205 + random() * 40;
+        for (const dx of [0, size]) {
+          // Drawn twice, a tile apart, so blocks wrap around the edge.
+          c.fillStyle = grey(shade);
+          c.fillRect(x + dx - size + 3, r * row + 3, w - 6, row - 6);
+          c.fillRect(x + dx + 3, r * row + 3, w - 6, row - 6);
+        }
+        x += w;
+      }
+    }
+  } else if (style === "earth") {
+    // Wavy strata of different shades, with speckles.
+    let y = 0;
+    while (y < size) {
+      const h = 14 + random() * 30;
+      const shade = 170 + random() * 70;
+      const phase = random() * Math.PI * 2;
+      const amp = 2 + random() * 4;
+      c.fillStyle = grey(shade);
+      c.beginPath();
+      c.moveTo(0, size);
+      for (let x = 0; x <= size; x += 8) {
+        c.lineTo(x, y + Math.sin((x / size) * Math.PI * 4 + phase) * amp);
+      }
+      c.lineTo(size, size);
+      c.closePath();
+      c.fill();
+      y += h;
+    }
+    for (let i = 0; i < 900; i++) {
+      c.fillStyle = grey(random() < 0.5 ? 120 + random() * 40 : 235);
+      c.fillRect(random() * size, random() * size, 1 + random() * 2, 1 + random() * 2);
+    }
+  } else {
+    // Upright planks with grain and dark gaps.
+    c.fillStyle = grey(90);
+    c.fillRect(0, 0, size, size);
+    const widths: number[] = [];
+    let total = 0;
+    while (total < size - 40) {
+      const w = 28 + Math.round(random() * 16);
+      widths.push(w);
+      total += w;
+    }
+    widths.push(size - total);
+    let x = 0;
+    for (const w of widths) {
+      c.fillStyle = grey(200 + random() * 40);
+      c.fillRect(x + 2, 0, w - 4, size);
+      c.strokeStyle = "rgba(0,0,0,0.12)";
+      c.lineWidth = 1;
+      for (let g = 0; g < 4; g++) {
+        const gx = x + 6 + random() * (w - 12);
+        const phase = random() * Math.PI * 2;
+        c.beginPath();
+        for (let y = 0; y <= size; y += 8) {
+          c.lineTo(gx + Math.sin((y / size) * Math.PI * 2 + phase) * 2, y);
+        }
+        c.stroke();
+      }
+      x += w;
+    }
+  }
+  // A little noise over all of it.
+  const image = c.getImageData(0, 0, size, size);
+  for (let i = 0; i < image.data.length; i += 4) {
+    const n = (random() - 0.5) * 18;
+    image.data[i] += n;
+    image.data[i + 1] += n;
+    image.data[i + 2] += n;
+  }
+  c.putImageData(image, 0, 0);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  return texture;
+}
+
+/**
+ * Where along a wall (0 to 1) the height n is on its face: its bottom runs
+ * b0 to b1 and its top t0 to t1, both straight, so it's where b ≤ n ≤ t.
+ */
+function within(b0: number, b1: number, t0: number, t1: number, n: number): [number, number] | null {
+  let lo = 0;
+  let hi = 1;
+  // f(s) = f0 + (f1 − f0)·s ≥ 0, narrowing [lo, hi].
+  const atLeast = (f0: number, f1: number) => {
+    if (Math.abs(f1 - f0) < 1e-9) {
+      if (f0 < 0) {
+        hi = -1;
+      }
+      return;
+    }
+    const s = -f0 / (f1 - f0);
+    if (f1 > f0) {
+      lo = Math.max(lo, s);
+    } else {
+      hi = Math.min(hi, s);
+    }
+  };
+  atLeast(n - b0, n - b1);
+  atLeast(t0 - n, t1 - n);
+  return hi - lo > 1e-6 ? [lo, hi] : null;
+}
+
+/** Whether an edge (its middle, its outward normal) is on an unfolded zone's base edge: facing its way, on its line. */
+function onBase(base: [[number, number], [number, number]], mx: number, my: number, nx: number, ny: number, out: [number, number], near: number): boolean {
+  if (nx * out[0] + ny * out[1] < 0.98) {
+    return false;
+  }
+  const [[ax, ay], [bx, by]] = base;
+  const length = Math.hypot(bx - ax, by - ay) || 1;
+  // Its distance from the base's line.
+  return Math.abs(((mx - ax) * (by - ay) - (my - ay) * (bx - ax)) / length) < near;
 }

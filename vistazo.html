@@ -22,6 +22,9 @@
           <span id="status"></span>
         </div>
         <div class="hint" data-t="vistazo.hint"></div>
+        <button class="panel-toggle full-toggle" id="fullToggle" type="button" data-title="vistazo.full">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path id="fullIcon" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        </button>
         <button class="panel-toggle" id="panelToggle" type="button" data-title="vistazo.panel" aria-pressed="true">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM15 5v14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" /></svg>
         </button>
@@ -53,6 +56,19 @@
           <label class="check" for="levels"><input id="levels" type="checkbox" /><span data-t="vistazo.levels"></span></label>
           <label class="check" for="grid"><input id="grid" type="checkbox" /><span data-t="vistazo.grid"></span></label>
           <label class="check" for="distances"><input id="distances" type="checkbox" /><span data-t="vistazo.distances"></span></label>
+          <label class="check" for="rings"><input id="rings" type="checkbox" /><span data-t="vistazo.rings"></span></label>
+          <label class="check" for="ringFill"><input id="ringFill" type="checkbox" /><span data-t="vistazo.ringFill"></span></label>
+          <label class="row" for="wallStyle"
+            ><span data-t="vistazo.wallStyle"></span>
+            <select id="wallStyle">
+              <option value="flat" data-t="vistazo.wallFlat"></option>
+              <option value="stretch" data-t="vistazo.wallStretch"></option>
+              <option value="fold" data-t="vistazo.wallFold"></option>
+              <option value="stone" data-t="vistazo.wallStone"></option>
+              <option value="earth" data-t="vistazo.wallEarth"></option>
+              <option value="wood" data-t="vistazo.wallWood"></option>
+            </select>
+          </label>
           <label class="row" for="props"
             ><span data-t="vistazo.props"></span>
             <select id="props">

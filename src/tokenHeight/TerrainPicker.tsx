@@ -3,20 +3,54 @@ import OBR, { type Item } from "@owlbear-rodeo/sdk";
 
 import { useOBRContext } from "../settings/OBRContext";
 import { clampHeight } from "../engine/heights";
-import { canBeTerrain, getTerrainHeight, getTerrainStand, setTerrainHeight, setTerrainStand, type TerrainStandEdge } from "../terrain/terrain";
+import {
+  canBeTerrain,
+  getTerrainHeight,
+  getTerrainRamp,
+  getTerrainStand,
+  getTerrainWall,
+  setTerrainHeight,
+  setTerrainRamp,
+  setTerrainStand,
+  setTerrainWall,
+  type TerrainRamp,
+  type TerrainStandEdge,
+  type TerrainWallStyle,
+} from "../terrain/terrain";
 import { UnitStepper } from "./TokenHeightPicker";
 import { watchTheme } from "./theme";
 import { useTranslation } from "../i18n/useTranslation";
 
 import "./tokenHeight.css";
 
-/** The edges a standing zone can stand on, as the menu shows them: the arrow points down to its base. */
+/** Flat, or a ramp rising toward one of its sides: its short name, and what it does (the tooltip). */
+const RAMP_CHOICES = [
+  ["", "terrain.rampNameNone", "terrain.rampNone"],
+  ["up", "terrain.rampNameUp", "terrain.rampUp"],
+  ["down", "terrain.rampNameDown", "terrain.rampDown"],
+  ["left", "terrain.rampNameLeft", "terrain.rampLeft"],
+  ["right", "terrain.rampNameRight", "terrain.rampRight"],
+] as const;
+
+/** Lying flat, or standing on an edge: its short name, and what it does (the tooltip). */
 const STAND_CHOICES = [
-  ["auto", "Auto", "terrain.standAuto"],
-  ["bottom", "↓", "terrain.standBottom"],
-  ["top", "↑", "terrain.standTop"],
-  ["left", "←", "terrain.standLeft"],
-  ["right", "→", "terrain.standRight"],
+  ["", "terrain.standNameNone", "terrain.standNone"],
+  ["auto", "terrain.standNameAuto", "terrain.standAuto"],
+  ["bottom", "terrain.standNameBottom", "terrain.standBottom"],
+  ["top", "terrain.standNameTop", "terrain.standTop"],
+  ["left", "terrain.standNameLeft", "terrain.standLeft"],
+  ["right", "terrain.standNameRight", "terrain.standRight"],
+] as const;
+
+/** A zone's wall styles in the Vistazo 3D ("": the Vistazo's own), by short names. */
+const WALL_CHOICES = [
+  ["", "terrain.wallsAuto"],
+  ["flat", "terrain.wallFlat"],
+  ["stretch", "terrain.wallStretch"],
+  ["fold", "terrain.wallFold"],
+  ["stone", "terrain.wallStone"],
+  ["earth", "terrain.wallEarth"],
+  ["wood", "terrain.wallWood"],
 ] as const;
 
 /** The selected shapes' ground height: a number, or undefined when they differ or none is terrain. */
@@ -60,10 +94,40 @@ export function TerrainPicker() {
         setTerrainHeight(draft, next && clampHeight(next(getTerrainHeight(draft) ?? 0)));
         if (!next) {
           setTerrainStand(draft, undefined);
+          setTerrainWall(draft, undefined);
+          setTerrainRamp(draft, undefined);
         }
       }
     });
     setShapes(await OBR.scene.items.getItems(ids));
+  }
+
+  /** Makes the selected zones ramps rising toward `ramp`, or flat again (undefined). */
+  async function setRamps(ramp: TerrainRamp | undefined) {
+    const ids = shapes.filter((shape) => getTerrainHeight(shape) !== undefined).map((shape) => shape.id);
+    if (ids.length === 0) {
+      return;
+    }
+    await OBR.scene.items.updateItems(ids, (drafts) => {
+      for (const draft of drafts) {
+        setTerrainRamp(draft, ramp);
+      }
+    });
+    setShapes(await OBR.scene.items.getItems(selection));
+  }
+
+  /** The selected zones' walls in the Vistazo 3D: a style of their own, or the Vistazo's (undefined). */
+  async function setWalls(style: TerrainWallStyle | undefined) {
+    const ids = shapes.filter((shape) => getTerrainHeight(shape) !== undefined).map((shape) => shape.id);
+    if (ids.length === 0) {
+      return;
+    }
+    await OBR.scene.items.updateItems(ids, (drafts) => {
+      for (const draft of drafts) {
+        setTerrainWall(draft, style);
+      }
+    });
+    setShapes(await OBR.scene.items.getItems(selection));
   }
 
   /** Stands the selected zones up in the Vistazo 3D on `stand`'s edge, or lays them flat again (all alike). */
@@ -90,44 +154,130 @@ export function TerrainPicker() {
   // The edge they all stand on, if it's the same.
   const edges = new Set(terrainShapes.map((shape) => getTerrainStand(shape)));
   const edge = standing && edges.size === 1 ? [...edges][0] : undefined;
+  // Their wall style, if they share one ("" for the Vistazo's own, "mixed" when they differ: none lit).
+  const wallStyles = new Set(terrainShapes.map((shape) => getTerrainWall(shape) ?? ""));
+  const wall = wallStyles.size === 1 ? [...wallStyles][0] : "mixed";
+  // How they stand, if alike: flat ("") or the edge; -1 when they differ.
+  const standValue = standing ? edge : edges.size === 1 ? "" : undefined;
+  const standIndex = STAND_CHOICES.findIndex(([value]) => value === standValue);
+  /** The next way along (or the one before), from flat when they differ. */
+  const cycleStand = (step: 1 | -1) => {
+    const from = standIndex < 0 ? (step > 0 ? -1 : 0) : standIndex;
+    const next = STAND_CHOICES[(from + step + STAND_CHOICES.length) % STAND_CHOICES.length][0];
+    toggleStand(next === "" ? undefined : next);
+  };
+  // Their ramp, if alike ("" flat); -1 when they differ.
+  const ramps = new Set(terrainShapes.map((shape) => getTerrainRamp(shape) ?? ""));
+  const rampIndex = ramps.size === 1 ? RAMP_CHOICES.findIndex(([value]) => value === [...ramps][0]) : -1;
+  const cycleRamp = (step: 1 | -1) => {
+    const from = rampIndex < 0 ? (step > 0 ? -1 : 0) : rampIndex;
+    const next = RAMP_CHOICES[(from + step + RAMP_CHOICES.length) % RAMP_CHOICES.length][0];
+    setRamps((next || undefined) as TerrainRamp | undefined);
+  };
+  const wallIndex = WALL_CHOICES.findIndex(([value]) => value === wall);
+  /** The next style along (or the one before), from Auto when they differ. */
+  const cycleWalls = (step: 1 | -1) => {
+    const from = wallIndex < 0 ? (step > 0 ? -1 : 0) : wallIndex;
+    const next = WALL_CHOICES[(from + step + WALL_CHOICES.length) % WALL_CHOICES.length][0];
+    setWalls((next || undefined) as TerrainWallStyle | undefined);
+  };
+  const disabled = terrainShapes.length === 0;
   return (
-    <div className="picker-stack" role="group" aria-label={t("terrain.label")}>
+    <div className="picker-stack terrain-picker" role="group" aria-label={t("terrain.label")}>
       <UnitStepper
+        label={t("terrain.height")}
         current={sharedHeight(shapes)}
         gridScale={gridScale}
         onStep={(direction) => apply((height) => height + direction)}
         onSet={(height) => apply(() => height)}
+        end={
+          <button
+            className="step-button icon-button"
+            disabled={!anyTerrain}
+            title={t("terrain.remove")}
+            aria-label={t("terrain.remove")}
+            onClick={() => apply(undefined)}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12ZM8 9h8v10H8V9Zm7.5-5-1-1h-5l-1 1H5v2h14V4h-3.5Z" fill="currentColor" />
+            </svg>
+          </button>
+        }
       />
-      <div style={{ display: "flex", gap: 8 }}>
+      <div className="step-row" role="group" aria-label={t("terrain.ramp")} title={t("terrain.rampHint")}>
+        <span className="row-label">{t("terrain.ramp")}</span>
         <button
-          className={"step-button ground" + (standing ? " active" : "")}
-          style={{ marginLeft: 0 }}
-          disabled={!anyTerrain}
-          aria-pressed={standing}
-          title={t("terrain.standHint")}
-          onClick={() => toggleStand(standing ? undefined : "auto")}
+          className="step-button"
+          disabled={disabled}
+          title={t("terrain.standPrevious")}
+          aria-label={t("terrain.standPrevious")}
+          onClick={() => cycleRamp(-1)}
         >
-          {t("terrain.stand")}
+          ‹
         </button>
-        <button className="step-button ground" disabled={!anyTerrain} onClick={() => apply(undefined)}>
-          {t("terrain.remove")}
+        <span className="step-field wall-value" aria-live="polite" title={rampIndex < 0 ? undefined : t(RAMP_CHOICES[rampIndex][2])}>
+          {rampIndex < 0 ? "—" : t(RAMP_CHOICES[rampIndex][1])}
+        </span>
+        <button
+          className="step-button"
+          disabled={disabled}
+          title={t("terrain.standNext")}
+          aria-label={t("terrain.standNext")}
+          onClick={() => cycleRamp(1)}
+        >
+          ›
         </button>
       </div>
-      <div style={{ display: "flex", gap: 4, alignItems: "center" }} role="group" aria-label={t("terrain.standEdge")} title={t("terrain.standEdge")}>
-        {STAND_CHOICES.map(([value, symbol, label]) => (
-          <button
-            key={value}
-            className={"step-button ground" + (edge === value ? " active" : "")}
-            style={{ marginLeft: 0, minWidth: 30, padding: "0 6px" }}
-            disabled={!standing}
-            aria-pressed={edge === value}
-            aria-label={t(label)}
-            title={t(label)}
-            onClick={() => toggleStand(value)}
-          >
-            {symbol}
-          </button>
-        ))}
+      <div className="section-title" title={t("terrain.vistazoHint")}>
+        {t("terrain.vistazo")}
+      </div>
+      <div className="step-row" role="group" aria-label={t("terrain.stand")} title={t("terrain.standHint")}>
+        <span className="row-label">{t("terrain.stand")}</span>
+        <button
+          className="step-button"
+          disabled={disabled}
+          title={t("terrain.standPrevious")}
+          aria-label={t("terrain.standPrevious")}
+          onClick={() => cycleStand(-1)}
+        >
+          ‹
+        </button>
+        <span className="step-field wall-value" aria-live="polite" title={standIndex < 0 ? undefined : t(STAND_CHOICES[standIndex][2])}>
+          {standIndex < 0 ? "—" : t(STAND_CHOICES[standIndex][1])}
+        </span>
+        <button
+          className="step-button"
+          disabled={disabled}
+          title={t("terrain.standNext")}
+          aria-label={t("terrain.standNext")}
+          onClick={() => cycleStand(1)}
+        >
+          ›
+        </button>
+      </div>
+      <div className="step-row" role="group" aria-label={t("terrain.walls")} title={t("terrain.wallsHint")}>
+        <span className="row-label">{t("terrain.walls")}</span>
+        <button
+          className="step-button"
+          disabled={disabled}
+          title={t("terrain.wallsPrevious")}
+          aria-label={t("terrain.wallsPrevious")}
+          onClick={() => cycleWalls(-1)}
+        >
+          ‹
+        </button>
+        <span className="step-field wall-value" aria-live="polite">
+          {wallIndex < 0 ? "—" : t(WALL_CHOICES[wallIndex][1])}
+        </span>
+        <button
+          className="step-button"
+          disabled={disabled}
+          title={t("terrain.wallsNext")}
+          aria-label={t("terrain.wallsNext")}
+          onClick={() => cycleWalls(1)}
+        >
+          ›
+        </button>
       </div>
     </div>
   );

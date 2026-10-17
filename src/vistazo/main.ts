@@ -1,4 +1,4 @@
-import OBR, { type GridType, type Theme } from "@owlbear-rodeo/sdk";
+import OBR, { type GridType, type Image, type InteractionManager, type Theme, type Vector2 } from "@owlbear-rodeo/sdk";
 import { languageFromMetadata, type Language } from "../i18n/language";
 import { translate, type TranslationKey } from "../i18n/translate";
 import { formatDistance } from "../util/flattenGridScale";
@@ -13,7 +13,23 @@ import { getColorString } from "../util/color";
 import { buildScene, type Token, type VistazoScene } from "./scene";
 import { VistazoView, type Camera, type DistanceLine, type Options } from "./render";
 import { LIVE_DRAG_CHANNEL, type LiveDrag } from "./live";
+import { stepHeight } from "../engine/heights";
+import { globalSettingsFromMetadata, groundHotkey, letterToCode } from "../settings/globalSettings";
+import { setTokenHeightMarker } from "../tokenHeight/markers";
+import { bodyCenterHeight, DEFAULT_TOLERANCE, excessRadius } from "../engine/distance";
+import { isHexShape } from "../engine/hex";
+import { getTokenRadius } from "../render/iconAnchor";
+import { getPluginId } from "../util/getPluginId";
 import "./vistazo.css";
+
+/**
+ * The same page opened full screen (an Owlbear modal, `?full`): the
+ * action's own popover can't grow past what Owlbear leaves it under its top
+ * bar. Going there and back keeps the camera (CAMERA_KEY, read once).
+ */
+const FULL = new URLSearchParams(location.search).has("full");
+const FULL_MODAL_ID = getPluginId("vistazo/full");
+const CAMERA_KEY = "rising-ranges/vistazo-camera";
 
 // The Vistazo 3D: the action's own popover, opened from its icon at the
 // top, sized to most of the window. A quick look at where everything is in
@@ -26,7 +42,7 @@ const POSE = { tilt: 55, yaw: -25 };
 const OPTIONS_KEY = "rising-ranges/vistazo-options";
 
 function readOptions(): Options {
-  const defaults: Options = { heightScale: 1, shade: 0.6, perspective: 45, tint: false, tokens: true, xray: false, edges: true, anchor: "center", levels: true, grid: false, distances: true, tokenLabels: "full", distanceLabels: "full", labelSize: 1, relief: 0.5, props: "flat" };
+  const defaults: Options = { heightScale: 1, shade: 0.6, perspective: 45, tint: false, tokens: true, xray: false, edges: true, anchor: "center", levels: true, grid: false, distances: true, tokenLabels: "full", distanceLabels: "full", labelSize: 1, relief: 0.5, props: "flat", wallStyle: "fold", rings: true, ringFill: false };
   try {
     return { ...defaults, ...JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? "{}") };
   } catch {
@@ -144,12 +160,24 @@ async function start() {
   const [role, metadata, theme] = await Promise.all([OBR.player.getRole(), OBR.scene.getMetadata().catch(() => null), OBR.theme.getTheme()]);
   applyTheme(theme);
   OBR.theme.onChange(applyTheme);
-  void fitToWindow();
+  if (FULL) {
+    document.documentElement.classList.add("full");
+  } else {
+    void fitToWindow();
+  }
   let language: Language = languageFromMetadata(metadata ?? {});
   const t = (key: TranslationKey, vars?: Record<string, string | number>) => translate(language, key, vars);
+  /** Set while a token is being moved here: Esc cancels that instead of closing. */
+  let cancelMove: (() => void) | null = null;
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
-      void OBR.action.close();
+      if (cancelMove) {
+        cancelMove();
+      } else if (FULL) {
+        leaveFull();
+      } else {
+        void OBR.action.close();
+      }
     }
   });
 
@@ -175,6 +203,39 @@ async function start() {
   }
 
   setUpResizing();
+
+  /** The camera handed over to the other view, for a few seconds. */
+  function handCamera() {
+    try {
+      localStorage.setItem(CAMERA_KEY, JSON.stringify({ at: Date.now(), camera }));
+    } catch {
+      // It just opens as usual.
+    }
+  }
+  function takeCamera(): Partial<Camera> | null {
+    try {
+      const stored = JSON.parse(localStorage.getItem(CAMERA_KEY) ?? "null");
+      localStorage.removeItem(CAMERA_KEY);
+      return stored && Date.now() - stored.at < 5000 ? stored.camera : null;
+    } catch {
+      return null;
+    }
+  }
+  /** To full screen: this popover closes, the modal opens with its camera. */
+  function enterFull() {
+    handCamera();
+    void OBR.modal.open({ id: FULL_MODAL_ID, url: "/vistazo.html?full", fullScreen: true });
+    void OBR.action.close();
+  }
+  /** Back from full screen: the popover opens again with its camera, and the modal closes. */
+  function leaveFull() {
+    handCamera();
+    void OBR.action.open();
+    void OBR.modal.close(FULL_MODAL_ID);
+  }
+  $("fullToggle").onclick = () => (FULL ? leaveFull() : enterFull());
+  $("fullToggle").dataset.title = FULL ? "vistazo.exitFull" : "vistazo.full";
+  $("fullIcon").setAttribute("d", FULL ? "M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" : "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5");
 
   // ---------- Texts ----------
   const fill = () => {
@@ -283,12 +344,49 @@ async function start() {
 
   // Pointer: drag orbits; the wheel held down (or Shift) pans, as in Owlbear; two fingers zoom and pan.
   const pointers = new Map<number, [number, number]>();
-  let mode: "orbit" | "pan" | "pinch" | null = null;
+  let mode: "orbit" | "pan" | "pinch" | "token" | null = null;
   let last: [number, number] | null = null;
-  let pinch: { d: number; zoom: number; mid: [number, number]; pan: [number, number] } | null = null;
+  let pinch: { d: number; zoom: number; mid: [number, number] } | null = null;
+  /** Panning moves the point the camera turns around (not the picture), so it always turns around the screen's middle. */
+  const panBy = (dx: number, dy: number) => {
+    const from = view.focusPoint();
+    const by = view.screenDelta(dx, dy);
+    camera.focus = { x: from.x - by.x, y: from.y - by.y, z: from.z };
+  };
   // A click on a token (no drag) selects it in Owlbear; a second one soon after turns the camera around it.
+  // A double click on the terrain turns it around that point.
   let press: { token: string | null; x: number; y: number } | null = null;
-  let lastClick = { token: "", at: 0 };
+  /**
+   * A token being moved here (the GM's left drag on it): it follows the
+   * terrain under the cursor, snapped to the grid, through Owlbear's own
+   * drag (others see it move, its marker rides along); Z/X (the scene's
+   * keys) change its own height meanwhile. Written on release; Esc undoes it.
+   */
+  let moving: {
+    id: string;
+    item: Image;
+    /** From the terrain under the cursor to the token's position, scene px. */
+    grab: Vector2;
+    own: number;
+    startOwn: number;
+    started: boolean;
+    interaction: Promise<InteractionManager<Image>> | null;
+    position: Vector2;
+  } | null = null;
+  const stagePoint = (event: { clientX: number; clientY: number }) => {
+    const rect = stage.getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  };
+  const endMove = () => {
+    moving = null;
+    cancelMove = null;
+    // The rings follow it again (once the scene has it where it landed).
+    if (draggingId) {
+      draggingId = null;
+      setTimeout(showDistances, 300);
+    }
+  };
+  let lastClick = { token: "", at: 0, x: 0, y: 0 };
   stage.addEventListener("contextmenu", (event) => event.preventDefault());
   stage.addEventListener("mousedown", (event) => {
     if (event.button === 1) {
@@ -305,15 +403,33 @@ async function start() {
     stage.focus({ preventScroll: true });
     cancelAnimationFrame(frame);
     press = pointers.size === 0 && event.button === 0 ? { token: view.tokenAt(event.target), x: event.clientX, y: event.clientY } : null;
+    // A left press on an unlocked token, without Shift: ready to move it (from the first few px of drag).
+    const pressed = press?.token && !event.shiftKey ? scene?.tokens.find((t) => t.id === press!.token) : undefined;
+    if (pressed && !pressed.item.locked) {
+      const at = stagePoint(event);
+      const ground = view.pickTerrain(at.x, at.y);
+      if (ground) {
+        moving = {
+          id: pressed.id,
+          item: pressed.item,
+          grab: { x: pressed.item.position.x - ground.x, y: pressed.item.position.y - ground.y },
+          own: pressed.own,
+          startOwn: pressed.own,
+          started: false,
+          interaction: null,
+          position: pressed.item.position,
+        };
+      }
+    }
     stage.setPointerCapture(event.pointerId);
     pointers.set(event.pointerId, [event.clientX, event.clientY]);
     stage.classList.add("dragging");
     if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
-      pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), zoom: camera.zoom, mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], pan: [camera.panX, camera.panY] };
+      pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), zoom: camera.zoom, mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] };
       mode = "pinch";
     } else {
-      mode = event.button === 1 || event.shiftKey ? "pan" : "orbit";
+      mode = moving ? "token" : event.button === 1 || event.shiftKey ? "pan" : "orbit";
       last = [event.clientX, event.clientY];
     }
   });
@@ -325,15 +441,47 @@ async function start() {
     if (mode === "pinch" && pinch && pointers.size === 2) {
       const [a, b] = [...pointers.values()];
       camera.zoom = Math.max(0.35, Math.min(8, (pinch.zoom * Math.hypot(a[0] - b[0], a[1] - b[1])) / pinch.d));
-      camera.panX = pinch.pan[0] + (a[0] + b[0]) / 2 - pinch.mid[0];
-      camera.panY = pinch.pan[1] + (a[1] + b[1]) / 2 - pinch.mid[1];
+      const mid: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      panBy(mid[0] - pinch.mid[0], mid[1] - pinch.mid[1]);
+      pinch.mid = mid;
     } else if (last) {
       const dx = event.clientX - last[0];
       const dy = event.clientY - last[1];
       last = [event.clientX, event.clientY];
+      if (mode === "token" && moving) {
+        const move = moving;
+        if (!move.started && press && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 5) {
+          return;
+        }
+        if (!move.started) {
+          move.started = true;
+          move.interaction = OBR.interaction.startItemInteraction(move.item);
+          cancelMove = () => {
+            void move.interaction?.then(([, stop]) => stop());
+            endMove();
+            mode = null;
+            refresh();
+          };
+        }
+        const at = stagePoint(event);
+        const ground = view.pickTerrain(at.x, at.y);
+        if (ground) {
+          void OBR.scene.grid.snapPosition({ x: ground.x + move.grab.x, y: ground.y + move.grab.y }).then(async (position) => {
+            if (moving !== move) {
+              return;
+            }
+            move.position = position;
+            const [update] = (await move.interaction) ?? [];
+            update?.((token) => {
+              token.position = position;
+            });
+            showTokenAt(move.id, position, move.own);
+          });
+        }
+        return;
+      }
       if (mode === "pan") {
-        camera.panX += dx;
-        camera.panY += dy;
+        panBy(dx, dy);
       } else {
         camera.yaw = wrapYaw(camera.yaw - dx * 0.3);
         camera.tilt = clampTilt(camera.tilt - dy * 0.25);
@@ -342,15 +490,35 @@ async function start() {
     view.apply();
   });
   const up = (event: PointerEvent) => {
-    if (press?.token && event.type === "pointerup" && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 5) {
-      const id = press.token;
+    const move = moving;
+    if (move && (move.started || move.own !== move.startOwn) && event.type === "pointerup") {
+      endMove();
+      press = null;
+      void finishMove(move);
+    } else if (move) {
+      // Cancelled (or never really moved): Owlbear's drag, if it began, ends where it started.
+      if (move.started) {
+        void move.interaction?.then(([, stop]) => stop());
+        refresh();
+      }
+      endMove();
+    }
+    if (press && event.type === "pointerup" && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 5) {
+      const id = press.token ?? "";
       const now = performance.now();
-      if (lastClick.token === id && now - lastClick.at < 400) {
-        animateTo({ focus: view.tokenFocus(id), panX: 0, panY: 0, zoom: Math.max(camera.zoom, 2.5) });
-        lastClick = { token: "", at: 0 };
+      const again = lastClick.token === id && now - lastClick.at < 400 && Math.hypot(event.clientX - lastClick.x, event.clientY - lastClick.y) < 10;
+      if (again) {
+        const rect = stage.getBoundingClientRect();
+        const focus = id ? view.tokenFocus(id) : view.pickTerrain(event.clientX - rect.left, event.clientY - rect.top);
+        if (focus) {
+          animateTo({ focus, panX: 0, panY: 0, zoom: id ? Math.max(camera.zoom, 2.5) : camera.zoom });
+        }
+        lastClick = { token: "", at: 0, x: 0, y: 0 };
       } else {
-        void OBR.player.select([id]);
-        lastClick = { token: id, at: now };
+        if (id) {
+          void OBR.player.select([id]);
+        }
+        lastClick = { token: id, at: now, x: event.clientX, y: event.clientY };
       }
     }
     press = null;
@@ -377,6 +545,26 @@ async function start() {
     { passive: false }
   );
   stage.addEventListener("keydown", (event) => {
+    // While a token's being moved: its own height, by the scene's keys (as in the Medición).
+    if (moving && !event.repeat) {
+      const settings = globalSettingsFromMetadata(sceneMetadata);
+      if (settings.enableAltitude ?? true) {
+        const bandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
+        const before = moving.own;
+        if (event.code === letterToCode(settings.hotkeyRaise)) {
+          moving.own = stepHeight(moving.own, 1, bandSet);
+        } else if (event.code === letterToCode(settings.hotkeyLower)) {
+          moving.own = stepHeight(moving.own, -1, bandSet);
+        } else if (event.code === letterToCode(groundHotkey(settings))) {
+          moving.own = 0;
+        }
+        if (moving.own !== before) {
+          event.preventDefault();
+          showTokenAt(moving.id, moving.position, moving.own);
+          return;
+        }
+      }
+    }
     const keys: Record<string, () => void> = {
       ArrowLeft: () => (camera.yaw = wrapYaw(camera.yaw + 5)),
       ArrowRight: () => (camera.yaw = wrapYaw(camera.yaw - 5)),
@@ -430,8 +618,11 @@ async function start() {
     check("levels").checked = options.levels;
     check("grid").checked = options.grid;
     check("distances").checked = options.distances;
+    check("rings").checked = options.rings;
+    check("ringFill").checked = options.ringFill;
     $<HTMLSelectElement>("tokenLabels").value = options.tokenLabels;
     $<HTMLSelectElement>("props").value = options.props;
+    $<HTMLSelectElement>("wallStyle").value = options.wallStyle;
     $<HTMLSelectElement>("distanceLabels").value = options.distanceLabels;
     $<HTMLInputElement>("labelSize").value = String(options.labelSize);
     $("labelSizeOut").textContent = `${Math.round(options.labelSize * 100)}%`;
@@ -449,6 +640,10 @@ async function start() {
   check("levels").onchange = () => set({ levels: check("levels").checked });
   check("grid").onchange = () => set({ grid: check("grid").checked });
   check("distances").onchange = () => set({ distances: check("distances").checked });
+  check("rings").onchange = () => set({ rings: check("rings").checked });
+  check("ringFill").onchange = () => set({ ringFill: check("ringFill").checked });
+  const wallStyle = $<HTMLSelectElement>("wallStyle");
+  wallStyle.onchange = () => set({ wallStyle: wallStyle.value as Options["wallStyle"] });
   const props = $<HTMLSelectElement>("props");
   props.onchange = () => set({ props: props.value as Options["props"] });
   const tokenLabels = $<HTMLSelectElement>("tokenLabels");
@@ -466,7 +661,13 @@ async function start() {
   let items = await OBR.scene.items.getItems();
   let sceneMetadata = metadata;
   let [dpi, scale] = await Promise.all([OBR.scene.grid.getDpi(), OBR.scene.grid.getScale()]);
+  // On a hex grid, one cell's center: where its cells are drawn from (see useTexture).
+  const findHexCenter = async () =>
+    gridType === "HEX_HORIZONTAL" || gridType === "HEX_VERTICAL" ? await OBR.scene.grid.snapPosition({ x: 0, y: 0 }, 1, false, true) : null;
+  let hexCenter = await findHexCenter().catch(() => null);
   let selection: string[] = (await OBR.player.getSelection()) ?? [];
+  /** The token being dragged (here, or with the Medición tool): its rings stay where the drag began, as on the map. */
+  let draggingId: string | null = null;
   /**
    * With one token selected, lines to every other token within a Banda —
    * the same readings as the Distancias panel (heights with the terrain).
@@ -475,6 +676,34 @@ async function start() {
     const origin = selection.length === 1 ? scene?.tokens.find((token) => token.id === selection[0]) : undefined;
     if (!scene || !origin) {
       view.setDistances(null, []);
+      view.setReach(null);
+      return;
+    }
+    const bandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
+    const theme = getStoredTheme();
+    // The Bandas' reach around it, measured as a Lectura would (against a standard-sized token);
+    // left where it was while it's dragged.
+    const radius = getTokenRadius(origin.item, dpi, 0);
+    if (origin.id === draggingId) {
+      showLines();
+      return;
+    }
+    const tolerance = (bandSet.tolerance ?? DEFAULT_TOLERANCE) / 100;
+    view.setReach({
+      x: origin.x,
+      y: origin.y,
+      z: bodyCenterHeight(origin.terrain + origin.own, radius),
+      excess: excessRadius(radius),
+      metric: bandSet.metric,
+      hex: isHexShape(bandSet.shape) ? bandSet.shape : null,
+      bands: bandSet.bands.map((band, index) => ({ reach: band.radius + tolerance, color: getColorString(theme.colors[index % theme.colors.length]) })),
+    });
+    showLines();
+  };
+  /** The distance lines from the selected token, where it is now. */
+  const showLines = () => {
+    const origin = selection.length === 1 ? scene?.tokens.find((token) => token.id === selection[0]) : undefined;
+    if (!scene || !origin) {
       return;
     }
     const bandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
@@ -509,9 +738,49 @@ async function start() {
     showDistances();
   });
 
+  /** A token shown here at `position` (and `own` height, if given) before the scene says so. */
+  function showTokenAt(tokenId: string, position: Vector2, own?: number) {
+    const token = scene?.tokens.find((t) => t.id === tokenId);
+    if (!scene || !token) {
+      return;
+    }
+    draggingId = tokenId;
+    const x = token.x + position.x - token.item.position.x;
+    const y = token.y + position.y - token.item.position.y;
+    const moved = { ...token, x, y, own: own ?? token.own, terrain: scene.measuredAt(x, y), item: { ...token.item, position } };
+    scene = { ...scene, tokens: scene.tokens.map((t) => (t.id === tokenId ? moved : t)), heights: new Map(scene.heights).set(tokenId, moved.terrain + moved.own) };
+    view.setScene(scene);
+    showDistances();
+  }
+
+  /** A move here released: its position saved (ending Owlbear's drag), then its height marker if it changed. */
+  async function finishMove(move: NonNullable<typeof moving>) {
+    try {
+      if (move.started && move.interaction) {
+        const [update, stop] = await move.interaction;
+        const final = update(() => {});
+        try {
+          await OBR.scene.items.updateItems([final.id], (items) => {
+            for (const item of items) {
+              item.position = final.position;
+            }
+          });
+        } finally {
+          stop();
+        }
+      }
+      if (move.own !== move.startOwn) {
+        await setTokenHeightMarker([{ ...move.item, position: move.position }], move.own);
+      }
+    } catch (error) {
+      console.error("Rising Ranges: Vistazo couldn't save the moved token", error);
+      refresh();
+    }
+  }
+
   const refresh = () => {
     try {
-      scene = buildScene(sceneMetadata, items, dpi, scale, gridType, scene ?? undefined);
+      scene = buildScene(sceneMetadata, items, dpi, scale, gridType, scene ?? undefined, hexCenter);
       $("terrainOff").hidden = !scene.terrainOff;
       view.setScene(scene);
       showDistances();
@@ -543,31 +812,37 @@ async function start() {
   OBR.scene.grid.onChange(async (grid) => {
     gridType = grid.type;
     [dpi, scale] = await Promise.all([OBR.scene.grid.getDpi(), OBR.scene.grid.getScale()]);
+    hexCenter = await findHexCenter().catch(() => null);
     later();
   });
   // A token dragged with the Medición tool, moved here as it goes; the scene catches up once it's dropped.
   OBR.broadcast.onMessage(LIVE_DRAG_CHANNEL, (event) => {
     const { tokenId, position } = event.data as LiveDrag;
-    const token = scene?.tokens.find((t) => t.id === tokenId);
-    if (!scene || !token || !position) {
-      return;
+    if (position) {
+      showTokenAt(tokenId, position);
+    } else if (draggingId === tokenId) {
+      // Dropped: its rings move to where it is.
+      draggingId = null;
+      showDistances();
     }
-    const x = token.x + position.x - token.item.position.x;
-    const y = token.y + position.y - token.item.position.y;
-    const moved = { ...token, x, y, terrain: scene.measuredAt(x, y), item: { ...token.item, position } };
-    scene = { ...scene, tokens: scene.tokens.map((t) => (t.id === tokenId ? moved : t)), heights: new Map(scene.heights).set(tokenId, moved.terrain + moved.own) };
-    view.setScene(scene);
-    showDistances();
   });
   OBR.scene.onReadyChange((ready) => {
     if (!ready) {
-      void OBR.action.close();
+      void (FULL ? OBR.modal.close(FULL_MODAL_ID) : OBR.action.close());
     }
   });
 
   refresh();
   // It opens from straight above and tilts up into 3D.
-  setTimeout(() => animateTo(POSE, 1200), 250);
+  // Coming from the other view (full screen or back): its camera, as it was. Otherwise it opens from
+  // straight above and tilts up into 3D.
+  const handed = takeCamera();
+  if (handed) {
+    Object.assign(camera, handed);
+    view.apply();
+  } else {
+    setTimeout(() => animateTo(POSE, 1200), 250);
+  }
 }
 
 OBR.onReady(() => {

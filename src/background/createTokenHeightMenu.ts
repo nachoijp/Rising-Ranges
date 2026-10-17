@@ -59,8 +59,8 @@ export function createTerrainMenu(language: Language) {
         },
       },
     ],
-    // The stepper's row, the stand and remove buttons, and the stand's edge, plus padding.
-    embed: { url: "/token-height.html?view=terrain", height: 140 },
+    // The height's and the ramp's rows, the Vistazo 3D's title and its two rows, plus padding.
+    embed: { url: "/token-height.html?view=terrain", height: 200 },
   });
 }
 

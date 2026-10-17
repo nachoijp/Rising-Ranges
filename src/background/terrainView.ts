@@ -16,7 +16,7 @@ import {
   terrainVisibility,
   type TerrainLook,
 } from "../settings/globalSettings";
-import { terrainShapes, type TerrainShape } from "../terrain/terrain";
+import { terrainShapes, type RampSlope, type TerrainShape } from "../terrain/terrain";
 import { terrainLayers } from "../terrain/terrainLayers";
 import { markerBaseColor, markerLookFromMetadata } from "../tokenHeight/markers";
 import { followMap, LABEL_FONT_SIZE } from "../render/lecturaItems";
@@ -81,6 +81,38 @@ function commandsOf(shape: MultiPolygon): PathCommand[] {
   return commands;
 }
 
+/** How many bands a ramp is painted in: one more than the cells it climbs, 3 to 8. */
+function rampBands(slope: RampSlope, height: number): number {
+  return Math.max(3, Math.min(8, Math.round(Math.abs(height - slope.low)) + 1));
+}
+
+/** The part of a ramp from a to b of the way up it (0 to 1), cut from `shape`. */
+function band(shape: MultiPolygon, slope: RampSlope, a: number, b: number): MultiPolygon {
+  const { origin, axis } = slope;
+  const length = Math.hypot(axis.x, axis.y) || 1;
+  // Far enough across to take the whole ramp in.
+  const reach = 1e6;
+  const px = (-axis.y / length) * reach;
+  const py = (axis.x / length) * reach;
+  const at = (t: number, side: number): [number, number] => [origin.x + axis.x * t + px * side, origin.y + axis.y * t + py * side];
+  const strip: MultiPolygon = [[[at(a, -1), at(b, -1), at(b, 1), at(a, 1), at(a, -1)]]];
+  return polygonClipping.intersection(shape, strip);
+}
+
+/** An arrow up a ramp, in its middle. */
+function rampArrow(slope: RampSlope, cell: number): PathCommand[] {
+  const { origin, axis } = slope;
+  const length = Math.hypot(axis.x, axis.y) || 1;
+  const dx = axis.x / length;
+  const dy = axis.y / length;
+  const size = Math.min(length * 0.4, cell * 0.8);
+  const cx = origin.x + axis.x / 2;
+  const cy = origin.y + axis.y / 2;
+  const point = (along: number, across: number): [number, number] => [cx + dx * along - dy * across, cy + dy * along + dx * across];
+  const outline = [point(size / 2, 0), point(0, size * 0.45), point(0, size * 0.18), point(-size / 2, size * 0.18), point(-size / 2, -size * 0.18), point(0, -size * 0.18), point(0, -size * 0.45)];
+  return commandsOf([[[...outline, outline[0]]]]);
+}
+
 /** A layer's color: lighter the higher (grey), or a height marker's color for its height. */
 function layerColor(height: number, look: TerrainLook, range: [number, number], theme: Theme): Color {
   if (look.color === "height" && height !== 0) {
@@ -140,7 +172,8 @@ function wanted(): { items: Item[]; signature: string } {
     return { items: [], signature: "" };
   }
   const theme = getStoredTheme();
-  const heights = shapes.map((shape) => shape.height);
+  const heights = shapes.flatMap((shape) => [shape.height, shape.slope?.low ?? shape.height]);
+  const slopes = new Map(shapes.filter((shape) => shape.slope).map((shape) => [shape.id, shape.slope as RampSlope]));
   const range: [number, number] = [Math.min(0, ...heights), Math.max(0, ...heights)];
   const offset = dpi * SHADOW_CELLS;
   const shadowOpacity = (look.shadow / 100) * SHADOW_OPACITY;
@@ -172,9 +205,24 @@ function wanted(): { items: Item[]; signature: string } {
         out.push(attach(path(commandsOf(shadow), "#000000", shadowOpacity, z++), layer.zoneId));
       }
     }
-    out.push(
-      attach(path(commandsOf(layer.shape), getColorString(layerColor(layer.height, look, range, theme)), fillOpacity, z++), layer.zoneId)
-    );
+    const slope = layer.zoneId ? slopes.get(layer.zoneId) : undefined;
+    if (!slope) {
+      out.push(
+        attach(path(commandsOf(layer.shape), getColorString(layerColor(layer.height, look, range, theme)), fillOpacity, z++), layer.zoneId)
+      );
+      continue;
+    }
+    // A ramp: bands from its low end's colour to its high end's, and an arrow up it.
+    const count = rampBands(slope, layer.height);
+    for (let i = 0; i < count; i++) {
+      // The first and last reach past the ends, so nothing at the edges is left out.
+      const piece = band(layer.shape, slope, i === 0 ? -1 : i / count, i === count - 1 ? 2 : (i + 1) / count);
+      if (piece.length > 0) {
+        const height = slope.low + ((layer.height - slope.low) * (i + 0.5)) / count;
+        out.push(attach(path(commandsOf(piece), getColorString(layerColor(height, look, range, theme)), fillOpacity, z++), layer.zoneId));
+      }
+    }
+    out.push(attach(path(rampArrow(slope, dpi), "#000000", 0.35, z++), layer.zoneId));
   }
   if (look.outline) {
     for (const shape of shapes) {
@@ -210,7 +258,10 @@ function wanted(): { items: Item[]; signature: string } {
 function label(shape: TerrainShape, scale: GridScale, color: Color, size: number, zIndex: number): Item {
   const points = shape.rings.flat();
   const top = points.reduce((best, p) => (p[1] < best[1] ? p : best), points[0]);
-  const text = `${shape.height > 0 ? "▲" : shape.height < 0 ? "▼" : ""} ${formatDistance(scale, Math.abs(shape.height))}`.trim();
+  // A ramp says where it goes from and to.
+  const text = shape.slope
+    ? `${formatDistance(scale, shape.slope.low)} → ${formatDistance(scale, shape.height)}`
+    : `${shape.height > 0 ? "▲" : shape.height < 0 ? "▼" : ""} ${formatDistance(scale, Math.abs(shape.height))}`.trim();
   const item = buildLabel()
     .plainText(text)
     .position({ x: top[0], y: top[1] })

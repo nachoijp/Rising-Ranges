@@ -184,8 +184,11 @@ export class LocalMeasureView {
       if (this.ended || ids.size === 0) {
         return;
       }
+      // By ids, not a filter: a filter makes the SDK fetch every local item in
+      // the scene (the terrain's drawn layers among them) and pick here, slow
+      // enough to stall the drag that's waiting behind it.
       await OBR.scene.local.updateItems(
-        (item) => ids.has(item.id),
+        [...ids],
         (items) => {
           for (const item of items) {
             const tokenId = getLecturaTokenId(item);
@@ -252,27 +255,23 @@ export class LocalMeasureView {
         return;
       }
       if (!this.shown) {
-        const ids = new Set(this.allIds());
-        await OBR.scene.local.updateItems(
-          (item) => ids.has(item.id) && item.visible,
-          (items) => {
-            for (const item of items) {
+        // By ids (see applyStates); only the ones still shown are hidden here.
+        await OBR.scene.local.updateItems(this.allIds(), (items) => {
+          for (const item of items) {
+            if (item.visible) {
               item.visible = false;
               this.hiddenIds.add(item.id);
             }
           }
-        );
+        });
       } else if (this.hiddenIds.size > 0) {
         const ids = this.hiddenIds;
         this.hiddenIds = new Set();
-        await OBR.scene.local.updateItems(
-          (item) => ids.has(item.id),
-          (items) => {
-            for (const item of items) {
-              item.visible = true;
-            }
+        await OBR.scene.local.updateItems([...ids], (items) => {
+          for (const item of items) {
+            item.visible = true;
           }
-        );
+        });
       }
     });
   }
