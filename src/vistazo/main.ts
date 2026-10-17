@@ -940,6 +940,9 @@ async function start() {
     $("shadeOut").textContent = `${Math.round(options.shade * 100)}%`;
     check("tint").checked = options.tint;
     check("showTok").checked = options.tokens;
+    // A token's point and its distance lines only mean something with the tokens shown.
+    $("tokensMore").hidden = !options.tokens;
+    document.querySelector<HTMLElement>('fieldset[data-section="labels"]')!.hidden = !options.tokens;
     check("xray").checked = options.xray;
     check("edges").checked = options.edges;
     check("levels").checked = options.levels;

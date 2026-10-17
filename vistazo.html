@@ -10,7 +10,7 @@
     <p class="message" id="message" hidden></p>
     <div class="bar" id="bar">
       <div class="bar-grip" id="barGrip" role="button" data-title="vistazo.drag"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="currentColor"><circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" /><circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" /><circle cx="9" cy="18" r="1.6" /><circle cx="15" cy="18" r="1.6" /></g></svg></div>
-      <svg class="bar-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"><path d="M2.5 15.5 12 20.5l9.5-5L12 10.5Z" /><path d="M8 13.3V9l4-2.1 4 2.1v4.3" /><path d="M8 9l4 2.1L16 9M12 11.1v4.2" /></svg>
+      <svg class="bar-icon" viewBox="-2.07 -15.67 86.5 86.5" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="6.6" stroke-linejoin="round" stroke-linecap="round"><path transform="translate(311.98113 5.3345015)" d="m -310.65822,25.487482 22.92096,-13.233417 m 33.86531,-8.2e-5 22.9211,13.233506 -39.85368,23.009532 -39.85369,-23.009539 m 39.85362,-9.833026 v 19.666059 m -16.93266,-29.4990908 16.93266,9.8330318 m 16.93265,-9.8330318 -16.93265,9.8330318 m 16.93265,9.833031 -16.93266,9.833031 -16.93265,-9.833032 V 5.8214242 l 16.93266,-9.8330314 16.93265,9.8330314 z" /></svg>
       <span class="bar-title" data-t="vistazo.title"></span>
       <button class="bar-restore" id="restore" type="button" data-title="vistazo.restore">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14v12H5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" /></svg>
@@ -58,6 +58,32 @@
           <button class="ghost sync" id="sync" type="button" aria-pressed="false" data-title="vistazo.syncHint" data-t="vistazo.sync"></button>
         </div>
 
+        <fieldset data-section="interface">
+          <legend data-t="vistazo.interface"></legend>
+          <label class="check" for="playerView" data-title="vistazo.playerViewHint"><input id="playerView" type="checkbox" /><span data-t="vistazo.playerView"></span></label>
+          <label class="check" for="showTok"><input id="showTok" type="checkbox" /><span data-t="vistazo.showTokens"></span></label>
+          <div class="sub" id="tokensMore">
+            <label class="row" for="anchor"
+              ><span data-t="vistazo.anchor"></span>
+              <select id="anchor">
+                <option value="center" data-t="vistazo.anchorCenter"></option>
+                <option value="base" data-t="vistazo.anchorBase"></option>
+              </select>
+            </label>
+            <label class="check" for="distances"><input id="distances" type="checkbox" /><span data-t="vistazo.distances"></span></label>
+          </div>
+          <label class="check" for="rings"><input id="rings" type="checkbox" /><span data-t="vistazo.rings"></span></label>
+          <label class="check" for="ringFill"><input id="ringFill" type="checkbox" /><span data-t="vistazo.ringFill"></span></label>
+          <label class="check" for="weather" data-title="vistazo.weatherHint"><input id="weather" type="checkbox" /><span data-t="vistazo.weather"></span></label>
+          <label class="row" for="clouds" id="cloudsRow" hidden
+            ><span data-t="vistazo.clouds"></span>
+            <select id="clouds">
+              <option value="mist" data-t="vistazo.cloudsMist"></option>
+              <option value="shadows" data-t="vistazo.cloudsShadows"></option>
+            </select>
+          </label>
+        </fieldset>
+
         <fieldset data-section="labels">
           <legend data-t="vistazo.labels"></legend>
           <label class="row" for="tokenLabels"
@@ -79,31 +105,6 @@
           </label>
           <label class="row" for="labelSize"><span data-t="vistazo.labelSize"></span><output id="labelSizeOut"></output><input id="labelSize" type="range" min="0.6" max="1.6" step="0.1" /></label>
         </fieldset>
-
-        <fieldset data-section="interface">
-          <legend data-t="vistazo.interface"></legend>
-          <label class="check" for="playerView" data-title="vistazo.playerViewHint"><input id="playerView" type="checkbox" /><span data-t="vistazo.playerView"></span></label>
-          <label class="check" for="showTok"><input id="showTok" type="checkbox" /><span data-t="vistazo.showTokens"></span></label>
-          <label class="check" for="distances"><input id="distances" type="checkbox" /><span data-t="vistazo.distances"></span></label>
-          <label class="check" for="rings"><input id="rings" type="checkbox" /><span data-t="vistazo.rings"></span></label>
-          <label class="check" for="ringFill"><input id="ringFill" type="checkbox" /><span data-t="vistazo.ringFill"></span></label>
-          <label class="check" for="weather" data-title="vistazo.weatherHint"><input id="weather" type="checkbox" /><span data-t="vistazo.weather"></span></label>
-          <label class="row" for="clouds" id="cloudsRow" hidden
-            ><span data-t="vistazo.clouds"></span>
-            <select id="clouds">
-              <option value="mist" data-t="vistazo.cloudsMist"></option>
-              <option value="shadows" data-t="vistazo.cloudsShadows"></option>
-            </select>
-          </label>
-          <label class="row" for="anchor"
-            ><span data-t="vistazo.anchor"></span>
-            <select id="anchor">
-              <option value="center" data-t="vistazo.anchorCenter"></option>
-              <option value="base" data-t="vistazo.anchorBase"></option>
-            </select>
-          </label>
-        </fieldset>
-
         <fieldset data-section="camera">
           <legend data-t="vistazo.camera"></legend>
           <label class="row" for="tilt"><span data-t="vistazo.tilt"></span><output id="tiltOut"></output><input id="tilt" type="range" min="0" max="150" step="1" /></label>

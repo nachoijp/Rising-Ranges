@@ -336,7 +336,7 @@ const es = {
   "vistazo.resize": "Arrastrá para cambiar el tamaño",
   "vistazo.levels": "Líneas de nivel en las paredes",
   "vistazo.grid": "Cuadrícula en el suelo",
-  "vistazo.distances": "Distancias desde el token seleccionado",
+  "vistazo.distances": "Dibujar líneas de distancia",
   "vistazo.reliefHeight": "Sombreado por altura",
   "vistazo.labels": "Etiquetas",
   "vistazo.tokenLabels": "Tokens",

@@ -339,7 +339,7 @@ const en: Record<TranslationKey, string> = {
   "vistazo.resize": "Drag to resize",
   "vistazo.levels": "Level lines on the walls",
   "vistazo.grid": "Grid on the ground",
-  "vistazo.distances": "Distances from the selected token",
+  "vistazo.distances": "Draw distance lines",
   "vistazo.reliefHeight": "Shading by height",
   "vistazo.labels": "Labels",
   "vistazo.tokenLabels": "Tokens",
