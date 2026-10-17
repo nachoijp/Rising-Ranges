@@ -357,6 +357,8 @@ const es = {
   "vistazo.ringFill": "Colorear el suelo por banda",
   "vistazo.full": "Pantalla completa",
   "vistazo.exitFull": "Volver al panel",
+  "vistazo.playerView": "Ver como jugador",
+  "vistazo.playerViewHint": "Muestra la escena como la ve un jugador: con la niebla (la de Owlbear o la de Smoke & Spectre) y sin los tokens ocultos ni lo que está bajo la niebla.",
   "vistazo.hidden": "oculto",
 } as const;
 

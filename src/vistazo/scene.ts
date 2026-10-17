@@ -101,6 +101,13 @@ type Terrain = {
   terrainOff: boolean;
 };
 
+/**
+ * The player view's sight: what of the map the fog leaves clear (worked out
+ * from the map's outline), and a key that changes with it. Under the fog the
+ * terrain is flat ground: its heights would give away what's there.
+ */
+export type Sight = { key: string; clear: (world: MultiPolygon) => MultiPolygon | null };
+
 export type VistazoScene = Terrain & {
   dpi: number;
   scale: GridScale;
@@ -166,11 +173,37 @@ function closed(ring: Pair[]): Pair[] {
 }
 
 /** What the terrain is built from: the Map layer's items (bar their edit stamps), and the tokens when there's no map to size it. */
-function terrainKeyOf(items: Item[], tokenItems: Image[], dpi: number, terrainOff: boolean): string {
+/** This extension's own metadata keys (terrain, ramps, standing zones, walls). */
+const OWN_PREFIX = "com.ignaciopedraza.risingranges/";
+
+function terrainKeyOf(items: Item[], tokenItems: Image[], dpi: number, terrainOff: boolean, sight: Sight | null): string {
   const onMap = items.filter((item) => item.layer === "MAP");
   const sized = onMap.some((item) => isImage(item) && item.visible) ? [] : tokenItems.map((token) => token.position);
-  const mapItems = onMap.map(({ lastModified: _l, lastModifiedUserId: _u, ...item }) => item);
-  return JSON.stringify([dpi, terrainOff, mapItems, sized]);
+  // Only what draws the terrain: other extensions keep their own data on map items (Smoke & Spectre's
+  // fog background, for one) and change it as they go, which mustn't rebuild it all.
+  const ours = (metadata: Record<string, unknown>) => Object.fromEntries(Object.entries(metadata).filter(([key]) => key.startsWith(OWN_PREFIX)));
+  const mapItems = onMap.map((item) => {
+    const any = item as Item & Record<string, unknown>;
+    return [
+      item.id,
+      item.type,
+      item.position,
+      item.rotation,
+      item.scale,
+      item.visible,
+      item.zIndex,
+      any.image,
+      any.grid,
+      any.width,
+      any.height,
+      any.shapeType,
+      any.points,
+      any.commands,
+      (any.style as { tension?: number } | undefined)?.tension,
+      ours(item.metadata),
+    ];
+  });
+  return JSON.stringify([dpi, terrainOff, mapItems, sized, sight?.key ?? null]);
 }
 
 /**
@@ -184,14 +217,18 @@ export function buildScene(
   scale: GridScale,
   gridType: GridType,
   previous?: VistazoScene,
-  hexCenter: { x: number; y: number } | null = null
+  hexCenter: { x: number; y: number } | null = null,
+  playerView = false,
+  sight: Sight | null = null
 ): VistazoScene {
   const settings = globalSettingsFromMetadata(metadata);
+  // The player view shows the heights too: whether the terrain's drawn on the map for them is another matter.
+  void playerView;
   const terrainOff = !terrainOn(settings, gridType);
   const altitude = settings.enableAltitude ?? true;
   const tokenItems = items.filter((item): item is Image => isImage(item) && item.layer === "CHARACTER");
-  const key = terrainKeyOf(items, tokenItems, dpi, terrainOff);
-  const terrain = previous && previous.terrainKey === key ? previous : buildTerrain(key, items, tokenItems, dpi, terrainOff);
+  const key = terrainKeyOf(items, tokenItems, dpi, terrainOff, sight);
+  const terrain = previous && previous.terrainKey === key ? previous : buildTerrain(key, items, tokenItems, dpi, terrainOff, sight);
   const { measuredAt } = terrain;
 
   const bandSet = onGrid(bandSetFromMetadata(metadata), gridType);
@@ -264,7 +301,7 @@ export function buildScene(
   };
 }
 
-function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dpi: number, terrainOff: boolean): Terrain {
+function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dpi: number, terrainOff: boolean, sight: Sight | null): Terrain {
   const maps = items
     .filter((item): item is Image => isImage(item) && item.layer === "MAP" && item.visible)
     .sort((a, b) => a.zIndex - b.zIndex)
@@ -354,6 +391,33 @@ function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dp
       console.error("Rising Ranges: Vistazo left out a terrain zone", layer.zoneId, error);
     }
   }
+  // Under the player view's fog, no terrain: each piece cut to what's clear (a standing one
+  // whole or not at all, by its middle); what's cut off is ground with the rest.
+  const clear = sight ? sight.clear(world) : null;
+  if (clear) {
+    for (let i = pieces.length - 1; i >= 0; i--) {
+      const piece = pieces[i];
+      try {
+        if (piece.stand !== undefined && standing.size > 0 && asked.has(piece)) {
+          const outline = piece.shape.flatMap((polygon) => polygon[0]);
+          const mx = outline.reduce((sum, p) => sum + p[0], 0) / outline.length;
+          const my = outline.reduce((sum, p) => sum + p[1], 0) / outline.length;
+          if (!inShape(mx, my, clear)) {
+            pieces.splice(i, 1);
+          }
+          continue;
+        }
+        const kept = polygonClipping.intersection(piece.shape, clear);
+        if (kept.length > 0) {
+          piece.shape = kept;
+        } else {
+          pieces.splice(i, 1);
+        }
+      } catch (error) {
+        console.error("Rising Ranges: Vistazo couldn't cut a piece to the fog", error);
+      }
+    }
+  }
   // The ground is what no zone's piece took: a path's inner outline is a
   // hole in it (as terrainLayers has it), so what's inside is still ground.
   let ground: MultiPolygon = world;
@@ -364,37 +428,50 @@ function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dp
   } catch (error) {
     console.error("Rising Ranges: Vistazo couldn't cut the ground, drawing the whole map", error);
   }
-  if (ground.length > 0) {
-    pieces.unshift({ height: 0, shape: ground });
+  const groundPiece: Piece | null = ground.length > 0 ? { height: 0, shape: ground } : null;
+  if (groundPiece) {
+    pieces.unshift(groundPiece);
   }
+  // For asking points fast: the zones' pieces (the ground is what none of them has), each with its box first.
+  const boxed = pieces
+    .filter((piece) => piece !== groundPiece)
+    .map((piece) => {
+      const outline = piece.shape.flatMap((polygon) => polygon[0]);
+      return {
+        piece,
+        x0: Math.min(...outline.map((p) => p[0])),
+        y0: Math.min(...outline.map((p) => p[1])),
+        x1: Math.max(...outline.map((p) => p[0])),
+        y1: Math.max(...outline.map((p) => p[1])),
+      };
+    });
+  const zoneAt = (x: number, y: number): Piece | undefined =>
+    boxed.find((b) => x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1 && inShape(x, y, b.piece.shape))?.piece;
 
   const xs = world.flatMap((polygon) => polygon[0].map((p) => p[0]));
   const ys = world.flatMap((polygon) => polygon[0].map((p) => p[1]));
   const bounds = { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
 
   /** The piece at a scene point, if it's on the map. */
+  const inWorld = (x: number, y: number) => x >= bounds.x0 && x <= bounds.x1 && y >= bounds.y0 && y <= bounds.y1 && inShape(x, y, world);
   const pieceAt = (x: number, y: number): Piece | undefined => {
-    if (!inShape(x, y, world)) {
+    if (!inWorld(x, y)) {
       return undefined;
     }
-    return pieces.find((piece) => inShape(x, y, piece.shape));
+    return zoneAt(x, y) ?? groundPiece ?? undefined;
   };
   const heightAt = (x: number, y: number): number | undefined => {
-    if (!inShape(x, y, world)) {
+    if (!inWorld(x, y)) {
       return undefined;
     }
-    for (const piece of pieces) {
-      if (inShape(x, y, piece.shape)) {
-        return pieceHeight(piece, x, y);
-      }
-    }
-    return 0;
+    const zone = zoneAt(x, y);
+    return zone ? pieceHeight(zone, x, y) : 0;
   };
   // The heights as measured, before standing zones become blocks (for the tokens).
   const measured = pieces.map((piece) => ({ ...piece }));
   const measuredAt = (x: number, y: number): number => {
-    const index = pieces.findIndex((piece) => inShape(x, y, piece.shape));
-    return index < 0 ? 0 : pieceHeight(measured[index], x, y);
+    const zone = zoneAt(x, y);
+    return zone ? pieceHeight(measured[pieces.indexOf(zone)], x, y) : 0;
   };
 
   // A standing zone turns up on the edge of its box that faces the map's middle, from the ground just past it.

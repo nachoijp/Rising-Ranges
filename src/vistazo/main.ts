@@ -20,6 +20,8 @@ import { bodyCenterHeight, DEFAULT_TOLERANCE, excessRadius } from "../engine/dis
 import { isHexShape } from "../engine/hex";
 import { getTokenRadius } from "../render/iconAnchor";
 import { getPluginId } from "../util/getPluginId";
+import { clearOf, fogOver } from "./fog";
+import { DragPath } from "../util/dragPath";
 import "./vistazo.css";
 
 /**
@@ -42,7 +44,7 @@ const POSE = { tilt: 55, yaw: -25 };
 const OPTIONS_KEY = "rising-ranges/vistazo-options";
 
 function readOptions(): Options {
-  const defaults: Options = { heightScale: 1, shade: 0.6, perspective: 45, tint: false, tokens: true, xray: false, edges: true, anchor: "center", levels: true, grid: false, distances: true, tokenLabels: "full", distanceLabels: "full", labelSize: 1, relief: 0.5, props: "flat", wallStyle: "fold", rings: true, ringFill: false };
+  const defaults: Options = { heightScale: 1, shade: 0.6, perspective: 45, tint: false, tokens: true, xray: false, edges: true, anchor: "center", levels: true, grid: false, distances: true, tokenLabels: "full", distanceLabels: "full", labelSize: 1, relief: 0.5, props: "flat", wallStyle: "fold", rings: true, ringFill: false, playerView: false };
   try {
     return { ...defaults, ...JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? "{}") };
   } catch {
@@ -372,6 +374,7 @@ async function start() {
     started: boolean;
     interaction: Promise<InteractionManager<Image>> | null;
     position: Vector2;
+    path: DragPath;
   } | null = null;
   const stagePoint = (event: { clientX: number; clientY: number }) => {
     const rect = stage.getBoundingClientRect();
@@ -382,8 +385,14 @@ async function start() {
     cancelMove = null;
     // The rings follow it again (once the scene has it where it landed).
     if (draggingId) {
+      const id = draggingId;
       draggingId = null;
-      setTimeout(showDistances, 300);
+      setTimeout(() => {
+        live.delete(id);
+        showDistances();
+        // Now the relief can follow the fog (see refresh).
+        later();
+      }, 300);
     }
   };
   let lastClick = { token: "", at: 0, x: 0, y: 0 };
@@ -418,6 +427,7 @@ async function start() {
           started: false,
           interaction: null,
           position: pressed.item.position,
+          path: new DragPath(pressed.item.position),
         };
       }
     }
@@ -460,23 +470,27 @@ async function start() {
             void move.interaction?.then(([, stop]) => stop());
             endMove();
             mode = null;
+            live.delete(move.id);
             refresh();
           };
         }
         const at = stagePoint(event);
         const ground = view.pickTerrain(at.x, at.y);
         if (ground) {
-          void OBR.scene.grid.snapPosition({ x: ground.x + move.grab.x, y: ground.y + move.grab.y }).then(async (position) => {
-            if (moving !== move) {
-              return;
+          // Following the cursor as it goes, unsnapped: Owlbear stops a drag at the walls of the
+          // dynamic fog (its own, or Smoke & Spectre's), and a jump from cell to cell across a
+          // corner would cut through one. Snapped to the grid on release (finishMove).
+          const position = { x: ground.x + move.grab.x, y: ground.y + move.grab.y };
+          move.position = position;
+          move.path.add(position, dpi * 0.1);
+          void move.interaction?.then(([update]) => {
+            if (moving === move) {
+              update((token) => {
+                token.position = position;
+              });
             }
-            move.position = position;
-            const [update] = (await move.interaction) ?? [];
-            update?.((token) => {
-              token.position = position;
-            });
-            showTokenAt(move.id, position, move.own);
           });
+          showTokenAt(move.id, position, move.own);
         }
         return;
       }
@@ -499,6 +513,7 @@ async function start() {
       // Cancelled (or never really moved): Owlbear's drag, if it began, ends where it started.
       if (move.started) {
         void move.interaction?.then(([, stop]) => stop());
+        live.delete(move.id);
         refresh();
       }
       endMove();
@@ -598,6 +613,9 @@ async function start() {
     saveOptions(options);
     view.setOptions(change);
     showOptions();
+    if ("playerView" in change) {
+      refresh();
+    }
   };
   const persp = $<HTMLInputElement>("persp");
   const hscale = $<HTMLInputElement>("hscale");
@@ -619,6 +637,7 @@ async function start() {
     check("grid").checked = options.grid;
     check("distances").checked = options.distances;
     check("rings").checked = options.rings;
+    check("playerView").checked = options.playerView;
     check("ringFill").checked = options.ringFill;
     $<HTMLSelectElement>("tokenLabels").value = options.tokenLabels;
     $<HTMLSelectElement>("props").value = options.props;
@@ -641,6 +660,7 @@ async function start() {
   check("grid").onchange = () => set({ grid: check("grid").checked });
   check("distances").onchange = () => set({ distances: check("distances").checked });
   check("rings").onchange = () => set({ rings: check("rings").checked });
+  check("playerView").onchange = () => set({ playerView: check("playerView").checked });
   check("ringFill").onchange = () => set({ ringFill: check("ringFill").checked });
   const wallStyle = $<HTMLSelectElement>("wallStyle");
   wallStyle.onchange = () => set({ wallStyle: wallStyle.value as Options["wallStyle"] });
@@ -738,33 +758,64 @@ async function start() {
     showDistances();
   });
 
+  /**
+   * Tokens being dragged (here or with the Medición tool), where they are now: kept
+   * through any rebuild of the scene meanwhile (their light moving redoes the fog, from
+   * the scene, which still has them where the drag began), and never hidden by the fog.
+   */
+  const live = new Map<string, { position: Vector2; own?: number }>();
+  /** `from` with a token moved to `position` (and `own` height). */
+  function placed(from: VistazoScene, tokenId: string, position: Vector2, own?: number): VistazoScene {
+    const token = from.tokens.find((t) => t.id === tokenId);
+    if (!token) {
+      return from;
+    }
+    const x = token.x + position.x - token.item.position.x;
+    const y = token.y + position.y - token.item.position.y;
+    const moved = { ...token, x, y, own: own ?? token.own, terrain: from.measuredAt(x, y), item: { ...token.item, position } };
+    return { ...from, tokens: from.tokens.map((t) => (t.id === tokenId ? moved : t)), heights: new Map(from.heights).set(tokenId, moved.terrain + moved.own) };
+  }
   /** A token shown here at `position` (and `own` height, if given) before the scene says so. */
   function showTokenAt(tokenId: string, position: Vector2, own?: number) {
-    const token = scene?.tokens.find((t) => t.id === tokenId);
-    if (!scene || !token) {
+    if (!scene?.tokens.some((t) => t.id === tokenId)) {
       return;
     }
     draggingId = tokenId;
-    const x = token.x + position.x - token.item.position.x;
-    const y = token.y + position.y - token.item.position.y;
-    const moved = { ...token, x, y, own: own ?? token.own, terrain: scene.measuredAt(x, y), item: { ...token.item, position } };
-    scene = { ...scene, tokens: scene.tokens.map((t) => (t.id === tokenId ? moved : t)), heights: new Map(scene.heights).set(tokenId, moved.terrain + moved.own) };
-    view.setScene(scene);
-    showDistances();
+    live.set(tokenId, { position, own });
+    scene = placed(scene, tokenId, position, own);
+    // Drawn once a frame at most: a drag sends far more moves than the screen shows.
+    if (!showFrame) {
+      showFrame = requestAnimationFrame(() => {
+        showFrame = 0;
+        if (scene) {
+          view.setScene(scene);
+          showDistances();
+        }
+      });
+    }
   }
+  let showFrame = 0;
 
   /** A move here released: its position saved (ending Owlbear's drag), then its height marker if it changed. */
   async function finishMove(move: NonNullable<typeof moving>) {
     try {
       if (move.started && move.interaction) {
         const [update, stop] = await move.interaction;
-        const final = update(() => {});
+        // Snapped to the grid where it's let go, as Owlbear's own move does.
+        const snapped = await OBR.scene.grid.snapPosition(move.position);
+        move.position = snapped;
+        const final = update((token) => {
+          token.position = snapped;
+        });
         try {
-          await OBR.scene.items.updateItems([final.id], (items) => {
-            for (const item of items) {
-              item.position = final.position;
-            }
-          });
+          // Along the way it was dragged, so the fog's walls don't stop it where it went around them (see dragPath.ts).
+          for (const step of move.path.steps(final.position, dpi * 0.3)) {
+            await OBR.scene.items.updateItems([final.id], (items) => {
+              for (const item of items) {
+                item.position = step;
+              }
+            });
+          }
         } finally {
           stop();
         }
@@ -778,9 +829,100 @@ async function start() {
     }
   }
 
+  // The fog, for the player view: Owlbear's setting, and this client's local items (Smoke & Spectre's lights and walls).
+  let fogFilled = await OBR.scene.fog.getFilled().catch(() => false);
+  let fogColor = await OBR.scene.fog.getColor().catch(() => "#222222");
+  let localItems = await OBR.scene.local.getItems().catch(() => []);
+  /** What of the local items the fog depends on (lights and walls), so other local changes don't redo it. */
+  const sightKey = (list: typeof localItems) =>
+    JSON.stringify(list.filter((item) => item.type === "LIGHT" || item.type === "WALL").map((item) => [item.id, item.position, item.rotation, item.visible, (item as { points?: unknown }).points, (item as { attenuationRadius?: unknown }).attenuationRadius]));
+  let localSight = sightKey(localItems);
+  let fogKey = "";
+  let lastFog: ReturnType<typeof fogOver> | null = null;
+  /** The fog the relief was last cut to (see refresh), its key, and the wait for the fog to settle. */
+  let sightFog: ReturnType<typeof fogOver> | null = null;
+  let sightFogKey = "";
+  let sightTimer: ReturnType<typeof setTimeout> | null = null;
+  OBR.scene.fog.onChange((fog) => {
+    fogFilled = fog.filled;
+    fogColor = fog.style.color;
+    fogKey = "";
+    later();
+  });
+  OBR.scene.local.onChange((next) => {
+    localItems = next;
+    const key = sightKey(next);
+    if (key !== localSight) {
+      localSight = key;
+      if (options.playerView) {
+        later();
+      }
+    }
+  });
+
   const refresh = () => {
     try {
-      scene = buildScene(sceneMetadata, items, dpi, scale, gridType, scene ?? undefined, hexCenter);
+      // The player view's fog, worked out again only when what it depends on changed (not on every token move).
+      if (options.playerView) {
+        const key = JSON.stringify([fogFilled, sightKey(items), localSight, items.filter((item) => item.layer === "FOG").map((item) => [item.id, item.visible, item.position, item.rotation, item.scale, item.lastModified])]);
+        if (key !== fogKey || !lastFog) {
+          fogKey = key;
+          lastFog = fogOver(fogFilled, items, localItems, fogColor);
+          view.setFog(lastFog);
+        }
+      }
+      // The relief follows the fog once it settles: cutting the terrain to it costs more than drawing it,
+      // and the fog's own picture (live) already covers what's moving meanwhile.
+      // Not while a token's being dragged (its light comes and goes in bursts, Smoke & Spectre's every
+      // half second or so): once it's dropped and the fog has settled.
+      if (options.playerView && lastFog && sightFogKey !== fogKey && (live.size === 0 || !sightFog)) {
+        if (!sightFog) {
+          sightFog = lastFog;
+          sightFogKey = fogKey;
+        } else {
+          // Once it's settled: every change (a light moving with a dragged token) puts it off again.
+          if (sightTimer) {
+            clearTimeout(sightTimer);
+          }
+          sightTimer = setTimeout(() => {
+            sightTimer = null;
+            if (live.size > 0) {
+              return;
+            }
+            sightFog = lastFog;
+            sightFogKey = fogKey;
+            refresh();
+          }, 600);
+        }
+      }
+      if (!options.playerView) {
+        sightFog = null;
+        sightFogKey = "";
+      }
+      const fogNow = options.playerView ? sightFog : null;
+      scene = buildScene(
+        sceneMetadata,
+        items,
+        dpi,
+        scale,
+        gridType,
+        scene ?? undefined,
+        hexCenter,
+        options.playerView,
+        fogNow ? { key: sightFogKey, clear: (world) => clearOf(fogNow, world) } : null
+      );
+      for (const [id, at] of live) {
+        scene = placed(scene, id, at.position, at.own);
+      }
+      if (options.playerView) {
+        // As a player sees it: what's under the fog, and what the GM hides, left out.
+        const fog = lastFog!.at;
+        scene = { ...scene, tokens: scene.tokens.filter((t) => live.has(t.id) || (!t.hidden && !fog(t.x, t.y))), props: scene.props.filter((p) => !fog(p.x, p.y)) };
+      } else if (lastFog) {
+        lastFog = null;
+        fogKey = "";
+        view.setFog(null);
+      }
       $("terrainOff").hidden = !scene.terrainOff;
       view.setScene(scene);
       showDistances();
@@ -820,10 +962,12 @@ async function start() {
     const { tokenId, position } = event.data as LiveDrag;
     if (position) {
       showTokenAt(tokenId, position);
-    } else if (draggingId === tokenId) {
-      // Dropped: its rings move to where it is.
+    } else if (draggingId === tokenId || live.has(tokenId)) {
+      // Dropped: its rings move to where it is (the scene has it there now, or soon).
       draggingId = null;
+      live.delete(tokenId);
       showDistances();
+      later();
     }
   });
   OBR.scene.onReadyChange((ready) => {

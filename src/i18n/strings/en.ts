@@ -360,6 +360,8 @@ const en: Record<TranslationKey, string> = {
   "vistazo.ringFill": "Tint the ground by Range",
   "vistazo.full": "Full screen",
   "vistazo.exitFull": "Back to the panel",
+  "vistazo.playerView": "View as a player",
+  "vistazo.playerViewHint": "Shows the scene as a player sees it: with the fog (Owlbear's or Smoke & Spectre's) and without hidden tokens or what's under the fog.",
   "vistazo.hidden": "hidden",
 };
 

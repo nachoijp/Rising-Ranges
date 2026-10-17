@@ -3,6 +3,7 @@ import type { MultiPolygon } from "polygon-clipping";
 import { inShape, pieceHeight, type Piece, type StandEdge, type Token, type VistazoScene } from "./scene";
 import { distance3D } from "../engine/distance";
 import { cellCorners, groundOffset } from "../engine/hex";
+import type { Fog } from "./fog";
 
 // The Vistazo's 3D view. The terrain is drawn with WebGL (three.js): each
 // piece lies at its height with the map as its texture, walls go down to
@@ -64,6 +65,8 @@ export type Options = {
   rings: boolean;
   /** And the ground in each Banda tinted its colour. */
   ringFill: boolean;
+  /** As a player sees it: the fog over the scene, hidden tokens and what the fog covers left out. */
+  playerView: boolean;
 };
 
 /**
@@ -125,6 +128,10 @@ type TokenView = {
   disc: HTMLElement;
   img: HTMLElement;
   zTok: number;
+  /** Its marks in 3D (base and line), and its label's lines: moved and rewritten in place (see setScene). */
+  marks?: { base: THREE.Mesh[]; stem: THREE.Line | null };
+  title?: HTMLElement;
+  detail?: HTMLElement;
   screen: { x: number; y: number };
   hidden: boolean;
   /** A standing prop: always on its base, never selected. */
@@ -160,6 +167,16 @@ export class VistazoView {
   private reach: Reach | null = null;
   private reachTexture: THREE.DataTexture | null = null;
   private reachFrame = 0;
+  private applyFrame = 0;
+  private canvasSize = { w: 0, h: 0 };
+  /** The props as last drawn (flat ones are meshes: rebuilt when they change). */
+  private drawnProps: VistazoScene["props"] | null = null;
+  /** The player view's fog: where it is, and its shade over copies of the flat pieces (as the Banda tint). */
+  private readonly fogGroup = new THREE.Group();
+  private fogTexture: THREE.CanvasTexture | null = null;
+  private fogCanvas: HTMLCanvasElement | null = null;
+  private fog: Fog | null = null;
+  private fogFrame = 0;
   private readonly glCamera = new THREE.Camera();
   private readonly overlay: HTMLElement;
   private readonly lines: SVGSVGElement;
@@ -212,7 +229,7 @@ export class VistazoView {
     }
     this.renderer = renderer;
     this.glCamera.matrixAutoUpdate = false;
-    this.world.add(this.terrainGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup);
+    this.world.add(this.terrainGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup, this.fogGroup);
     this.overlay = document.createElement("div");
     this.overlay.className = "ov";
     this.lines = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -237,8 +254,11 @@ export class VistazoView {
     // The block reaches below the deepest token, so a buried one is inside it.
     const base = Math.min(this.minH, ...scene.tokens.map((t) => t.terrain + t.own - 1));
     if (scene.terrainKey === this.terrainKey && base === this.base) {
-      this.buildTokens();
-      this.measure();
+      // Only tokens moved (a drag): put them where they are now, without building them again.
+      if (!this.moveTokens(scene)) {
+        this.buildTokens();
+      }
+      this.requestApply();
       return;
     }
     this.terrainKey = scene.terrainKey;
@@ -261,7 +281,7 @@ export class VistazoView {
   setDistances(origin: string | null, lines: DistanceLine[]) {
     this.distanceOrigin = origin;
     this.distanceLines = lines;
-    this.apply();
+    this.requestApply();
   }
 
   /** The Bandas' reach around the selected token (null: none); worked out once a frame at most (it follows a drag). */
@@ -271,7 +291,7 @@ export class VistazoView {
       this.reachFrame = requestAnimationFrame(() => {
         this.reachFrame = 0;
         this.buildReach();
-        this.render();
+        this.requestApply();
       });
     }
   }
@@ -381,7 +401,7 @@ export class VistazoView {
   }
 
   /** A copy of a flat piece, for the Banda tint (see buildReach): the same shape, its texture the heights grid's. */
-  private fillCopy(geometry: THREE.BufferGeometry, z: number) {
+  private fillCopy(geometry: THREE.BufferGeometry, z: number, group = this.fillGroup, texture = this.reachTexture, order = 3) {
     const { x0, y0, step, w, h } = this.grid;
     const position = geometry.getAttribute("position") as THREE.BufferAttribute;
     const uv = new Float32Array(position.count * 2);
@@ -393,7 +413,7 @@ export class VistazoView {
     const copy = geometry.clone();
     copy.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
     const material = new THREE.MeshBasicMaterial({
-      map: this.reachTexture,
+      map: texture,
       transparent: true,
       depthWrite: false,
       side: THREE.DoubleSide,
@@ -403,8 +423,127 @@ export class VistazoView {
     });
     const mesh = new THREE.Mesh(copy, material);
     mesh.position.z = z;
-    mesh.renderOrder = 3;
-    this.fillGroup.add(mesh);
+    mesh.renderOrder = order;
+    group.add(mesh);
+  }
+
+  /**
+   * The player view's fog (null: none): a picture over everything on the
+   * ground (copies of the pieces, walls and standing pictures, see fogCopy),
+   * redrawn on its own once a frame at most — moving a light doesn't
+   * rebuild the terrain.
+   */
+  setFog(fog: Fog | null) {
+    this.fog = fog;
+    if (!this.fogFrame) {
+      this.fogFrame = requestAnimationFrame(() => {
+        this.fogFrame = 0;
+        this.drawFog();
+        this.requestApply();
+      });
+    }
+  }
+
+  /** Whether a scene point is under the player view's fog. */
+  fogged(x: number, y: number): boolean {
+    return this.fog ? this.fog.at(x, y) : false;
+  }
+
+  /**
+   * The fog as a picture of the whole map: its colour over the scene (or its
+   * shapes), the lit areas cut out of it, sharp — up to 1024 px across.
+   */
+  private drawFog() {
+    const fog = this.fog;
+    const scene = this.scene;
+    this.fogGroup.visible = !!fog && !!scene;
+    for (const child of this.edgeGroup.children) {
+      if (child.userData.fog) {
+        child.visible = this.fogGroup.visible;
+      }
+    }
+    if (!fog || !scene) {
+      return;
+    }
+    const { x0, y0, x1, y1 } = scene.bounds;
+    const w = x1 - x0 || 1;
+    const h = y1 - y0 || 1;
+    const px = Math.min(1024 / Math.max(w, h), (16 / scene.dpi));
+    const canvas = this.fogCanvas ?? document.createElement("canvas");
+    const cw = Math.max(1, Math.ceil(w * px));
+    const ch = Math.max(1, Math.ceil(h * px));
+    if (canvas.width !== cw || canvas.height !== ch) {
+      canvas.width = cw;
+      canvas.height = ch;
+      this.fogTexture?.dispose();
+      this.fogTexture = null;
+    }
+    this.fogCanvas = canvas;
+    const context = canvas.getContext("2d")!;
+    context.globalCompositeOperation = "source-over";
+    context.clearRect(0, 0, cw, ch);
+    context.fillStyle = fog.color;
+    const trace = (ring: [number, number][]) => {
+      ring.forEach(([x, y], i) => (i === 0 ? context.moveTo((x - x0) * px, (y - y0) * px) : context.lineTo((x - x0) * px, (y - y0) * px)));
+      context.closePath();
+    };
+    if (fog.filled) {
+      context.fillRect(0, 0, cw, ch);
+    } else {
+      context.beginPath();
+      fog.shapes.forEach(trace);
+      context.fill("evenodd");
+    }
+    // What the lights reveal, cut out.
+    context.globalCompositeOperation = "destination-out";
+    context.beginPath();
+    fog.lit.forEach(trace);
+    context.fill("nonzero");
+    if (!this.fogTexture) {
+      this.fogTexture = new THREE.CanvasTexture(canvas);
+      for (const child of [...this.fogGroup.children, ...this.edgeGroup.children.filter((c) => c.userData.fog)]) {
+        const material = (child as THREE.Mesh).material as THREE.MeshBasicMaterial;
+        material.map = this.fogTexture;
+        material.needsUpdate = true;
+      }
+    }
+    this.fogTexture.needsUpdate = true;
+  }
+
+  /**
+   * A copy of something on the map (a piece, a wall, a standing picture),
+   * for the fog to cover: the same shape and place, its texture the fog's
+   * picture laid from above (so a wall takes the fog at its foot).
+   */
+  private fogCopy(geometry: THREE.BufferGeometry, z = 0, group: THREE.Group = this.fogGroup) {
+    const scene = this.scene!;
+    const { x0, y0, x1, y1 } = scene.bounds;
+    const position = geometry.getAttribute("position") as THREE.BufferAttribute;
+    const uv = new Float32Array(position.count * 2);
+    for (let i = 0; i < position.count; i++) {
+      uv[i * 2] = (position.getX(i) / this.u - x0) / (x1 - x0 || 1);
+      uv[i * 2 + 1] = 1 - (position.getY(i) / this.u - y0) / (y1 - y0 || 1);
+    }
+    const copy = geometry.clone();
+    copy.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+    const mesh = new THREE.Mesh(
+      copy,
+      new THREE.MeshBasicMaterial({
+        map: this.fogTexture,
+        transparent: true,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: -3,
+        polygonOffsetUnits: -3,
+      })
+    );
+    // A little above, so what lies on the ground there (the Banda rings) is under it too.
+    mesh.position.z = z + 2;
+    mesh.renderOrder = 5;
+    mesh.visible = group === this.fogGroup || this.fogGroup.visible;
+    mesh.userData.fog = true;
+    group.add(mesh);
   }
 
   /** The token an event happened on, if it was one. */
@@ -448,16 +587,51 @@ export class VistazoView {
     const inverse = this.camMatrix().inverse();
     const eye = inverse.transformPoint(new DOMPoint(0, 0, this.persp));
     const through = inverse.transformPoint(new DOMPoint(x - this.width / 2, y - this.height / 2, 0));
-    const ray = new THREE.Raycaster(
-      new THREE.Vector3(eye.x, eye.y, eye.z),
-      new THREE.Vector3(through.x - eye.x, through.y - eye.y, through.z - eye.z).normalize()
-    );
-    const hits = ray.intersectObjects(
-      [...this.terrainGroup.children, ...(this.options.edges ? this.edgeGroup.children : [])].filter((object) => (object as THREE.Mesh).isMesh && object.renderOrder === 0),
-      false
-    );
-    const hit = hits[0]?.point;
-    return hit ? { x: hit.x / this.u, y: hit.y / this.u, z: hit.z / this.k } : null;
+    // Along the ray over the heights grid (not against every triangle: that's thousands, every move
+    // of a drag): from where it comes down into the terrain's heights to where it leaves them, in
+    // steps of the grid, the first point under the ground there, then narrowed down.
+    const u = this.u;
+    const k = this.k;
+    const dx = through.x - eye.x;
+    const dy = through.y - eye.y;
+    const dz = through.z - eye.z;
+    if (dz >= 0) {
+      return null;
+    }
+    const top = (this.maxH + 0.5) * k;
+    const bottom = (this.base - 0.5) * k;
+    const t0 = Math.max(0, (top - eye.z) / dz);
+    const t1 = (bottom - eye.z) / dz;
+    const length = Math.hypot(dx, dy, dz) * (t1 - t0);
+    const step = (this.grid.step * u) / 2;
+    const count = Math.min(20000, Math.ceil(length / step));
+    const at = (t: number) => ({ x: eye.x + dx * t, y: eye.y + dy * t, z: eye.z + dz * t });
+    const under = (p: { x: number; y: number; z: number }) => {
+      const h = this.gridHeight(p.x / u, p.y / u);
+      return !Number.isNaN(h) && p.z <= h * k;
+    };
+    let before = t0;
+    for (let i = 1; i <= count; i++) {
+      const t = t0 + ((t1 - t0) * i) / count;
+      if (under(at(t))) {
+        // Narrowed down between the last point above and this one.
+        let lo = before;
+        let hi = t;
+        for (let j = 0; j < 12; j++) {
+          const mid = (lo + hi) / 2;
+          if (under(at(mid))) {
+            hi = mid;
+          } else {
+            lo = mid;
+          }
+        }
+        const p = at(hi);
+        const h = this.gridHeight(p.x / u, p.y / u);
+        return { x: p.x / u, y: p.y / u, z: h };
+      }
+      before = t;
+    }
+    return null;
   }
 
   /** A token's place, for the camera to turn around it. */
@@ -920,6 +1094,8 @@ export class VistazoView {
       material.userData.mapTextured = fromMap;
       this.pieceMaterials.push(material);
       group.add(new THREE.Mesh(geometry, material));
+      // The fog covers walls too (a wall would give the hidden terrain away); the map edge's, with them (shown or not).
+      this.fogCopy(geometry, 0, edge ? this.edgeGroup : this.fogGroup);
       if (levels.length > 0) {
         const lines = new THREE.BufferGeometry();
         lines.setAttribute("position", new THREE.BufferAttribute(new Float32Array(levels), 3));
@@ -987,6 +1163,7 @@ export class VistazoView {
     this.clear(this.fillGroup);
     this.reachTexture?.dispose();
     this.reachTexture = null;
+    this.clear(this.fogGroup);
     this.pieceMaterials = [];
     const u = this.u;
     this.k = VIEW_CELL * this.options.heightScale;
@@ -1027,6 +1204,9 @@ export class VistazoView {
       }
     }
 
+    this.fogTexture?.dispose();
+    this.fogTexture = null;
+    this.drawFog();
     this.buildTokens();
     this.buildReach();
     this.measure();
@@ -1052,6 +1232,7 @@ export class VistazoView {
       }
       this.terrainGroup.add(mesh);
       this.fillCopy(geometry, piece.slope ? 0 : z);
+      this.fogCopy(geometry, piece.slope ? 0 : z);
       return;
     }
     // Standing: a block (its top plain stone, its sides walls) with the
@@ -1087,9 +1268,12 @@ export class VistazoView {
     const top = new THREE.Mesh(roofGeometry, roofMaterial);
     top.position.z = z;
     this.terrainGroup.add(top);
+    this.fogCopy(geometry, z);
 
     if (piece.unfold) {
-      this.terrainGroup.add(new THREE.Mesh(this.unfoldedCard(piece), this.pieceMaterial(piece.height, true)));
+      const unfolded = this.unfoldedCard(piece);
+      this.terrainGroup.add(new THREE.Mesh(unfolded, this.pieceMaterial(piece.height, true)));
+      this.fogCopy(unfolded);
       return;
     }
     const card = geometry.clone();
@@ -1111,6 +1295,7 @@ export class VistazoView {
     }
     card.getAttribute("position").needsUpdate = true;
     this.terrainGroup.add(new THREE.Mesh(card, this.pieceMaterial(piece.height, true)));
+    this.fogCopy(card);
   }
 
   private buildTokens() {
@@ -1181,8 +1366,9 @@ export class VistazoView {
         mesh.renderOrder = 3;
         this.tokenGroup.add(mesh);
       }
+      let stem: THREE.Line | null = null;
       if (token.own !== 0) {
-        const stem = new THREE.Line(
+        stem = new THREE.Line(
           new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(token.x * u, token.y * u, zTok), new THREE.Vector3(token.x * u, token.y * u, zFloor)]),
           dashes
         );
@@ -1199,16 +1385,15 @@ export class VistazoView {
       img.alt = "";
       img.draggable = false;
       const shown = this.options.tokenLabels;
+      let title: HTMLElement | undefined;
+      let detail: HTMLElement | undefined;
       if (shown !== "none") {
         const label = document.createElement("div");
         label.className = "lbl";
-        const text = this.tokenText(token);
-        const title = document.createElement("span");
-        title.textContent = shown === "full" ? `${text.name} · ${text.height}` : shown === "height" ? text.height : text.name;
+        title = document.createElement("span");
         label.append(title);
         if (shown === "full") {
-          const detail = document.createElement("small");
-          detail.textContent = text.detail;
+          detail = document.createElement("small");
           label.append(detail);
         }
         disc.append(label);
@@ -1216,10 +1401,72 @@ export class VistazoView {
       disc.append(img);
       el.appendChild(disc);
       overlay.appendChild(el);
-      return { token, el, disc, img, zTok, screen: { x: 0, y: 0 }, hidden: false };
+      const view: TokenView = { token, el, disc, img, zTok, screen: { x: 0, y: 0 }, hidden: false, marks: { base: [disc3d, ring3d], stem }, title, detail };
+      this.writeLabel(view);
+      return view;
     });
     this.tokenViews = [...propViews, ...this.tokenViews];
     this.tokenOverlay.replaceChildren(overlay);
+    this.drawnProps = scene.props;
+  }
+
+  /** A token's label, as the options have it, from its height now. */
+  private writeLabel(view: TokenView) {
+    const shown = this.options.tokenLabels;
+    if (!view.title) {
+      return;
+    }
+    const text = this.tokenText(view.token);
+    view.title.textContent = shown === "full" ? `${text.name} · ${text.height}` : shown === "height" ? text.height : text.name;
+    if (view.detail) {
+      view.detail.textContent = text.detail;
+    }
+  }
+
+  /**
+   * The same tokens as drawn, some moved (or raised): each one's marks and
+   * label put right in place. False when that won't do (tokens came or went,
+   * one went from flying to standing or back, a prop changed): then they're
+   * built again.
+   */
+  private moveTokens(scene: VistazoScene): boolean {
+    const views = this.tokenViews.filter((view) => !view.prop);
+    if (views.length !== scene.tokens.length || this.tokenViews.length - views.length !== (this.options.props === "stand" ? scene.props.length : 0)) {
+      return false;
+    }
+    if (this.options.props === "flat" && scene.props !== this.drawnProps) {
+      return false;
+    }
+    const byId = new Map(scene.tokens.map((token) => [token.id, token]));
+    if (views.some((view) => !byId.has(view.token.id) || (view.token.own === 0) !== (byId.get(view.token.id)!.own === 0) || (view.token.own < 0) !== (byId.get(view.token.id)!.own < 0))) {
+      return false;
+    }
+    const u = this.u;
+    const k = this.k;
+    for (const view of views) {
+      const token = byId.get(view.token.id)!;
+      const moved = token.x !== view.token.x || token.y !== view.token.y || token.own !== view.token.own || token.terrain !== view.token.terrain;
+      view.token = token;
+      view.el.classList.toggle("gmhidden", token.hidden);
+      if (!moved) {
+        continue;
+      }
+      const zFloor = token.terrain * k;
+      view.zTok = (token.terrain + token.own) * k;
+      for (const mesh of view.marks?.base ?? []) {
+        mesh.position.set(token.x * u, token.y * u, zFloor + 1);
+      }
+      const stem = view.marks?.stem;
+      if (stem) {
+        const position = stem.geometry.getAttribute("position") as THREE.BufferAttribute;
+        position.setXYZ(0, token.x * u, token.y * u, view.zTok);
+        position.setXYZ(1, token.x * u, token.y * u, zFloor);
+        position.needsUpdate = true;
+        stem.computeLineDistances();
+      }
+      this.writeLabel(view);
+    }
+    return true;
   }
 
   // ---------- Camera ----------
@@ -1234,8 +1481,24 @@ export class VistazoView {
       this.fit = Math.min(rect.width / ((x1 - x0) * this.u || 1), rect.height / ((y1 - y0) * this.u || 1)) * 0.9;
     }
     this.persp = Math.max(rect.width, rect.height) * (4.2 - (this.options.perspective / 100) * 3.4);
-    this.renderer?.setSize(Math.max(1, rect.width), Math.max(1, rect.height), false);
+    // Only when it really changed: setting the size reallocates the canvas's whole drawing buffer.
+    const w = Math.max(1, Math.round(rect.width));
+    const h = Math.max(1, Math.round(rect.height));
+    if (w !== this.canvasSize.w || h !== this.canvasSize.h) {
+      this.canvasSize = { w, h };
+      this.renderer?.setSize(w, h, false);
+    }
     this.apply();
+  }
+
+  /** Everything that wants the picture redrawn in a frame, drawn once in it. */
+  requestApply() {
+    if (!this.applyFrame) {
+      this.applyFrame = requestAnimationFrame(() => {
+        this.applyFrame = 0;
+        this.apply();
+      });
+    }
   }
 
   /**

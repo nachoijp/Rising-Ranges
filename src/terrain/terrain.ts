@@ -421,6 +421,13 @@ function toScene(item: Item, p: Vector2): [number, number] {
   return [item.position.x + x * Math.cos(angle) - y * Math.sin(angle), item.position.y + x * Math.sin(angle) + y * Math.cos(angle)];
 }
 
+/** Any shape, curve or path's outline(s) in scene coordinates (a fog shape's too: see vistazo/fog.ts). */
+export function itemOutline(item: Item): [number, number][][] {
+  return localRings(item)
+    .filter((ring) => ring.length >= 3)
+    .map((ring) => ring.map((p) => toScene(item, p)));
+}
+
 /** The scene's terrain zones with their outlines, the one that wins first (smallest, then highest), as terrainZones. */
 export function terrainShapes(items: Item[]): TerrainShape[] {
   const shapes: TerrainShape[] = [];

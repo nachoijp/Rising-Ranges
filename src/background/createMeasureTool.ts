@@ -33,6 +33,7 @@ import {
 } from "./originMarkerSync";
 import { clearFixedMedicion, hasFixedMedicion, pinFixedMedicion, setFixedLive } from "./fixedMedicion";
 import { setDraggedToken } from "./heightOverlays";
+import { DragPath } from "../util/dragPath";
 import { sameLecturaState, type LecturaContext, type LecturaState } from "../render/lecturaItems";
 import { buildBandRingItems, buildGradientShaders, buildOriginAnchor, originShapeKey, reshapeOrigin } from "../render/bandRings";
 import { getGridType, knownHexCenter, prefetchGridAxonometry } from "../util/gridAxonometry";
@@ -99,6 +100,8 @@ let downTarget: Item | null = null;
 let originHeightBeforeEdit = 0;
 /** Where the dragged token is now; downTarget keeps its starting position. */
 let liveTokenPosition: Vector2 | null = null;
+/** The dragged token's way so far, to save its move along (see dragPath.ts). */
+let dragPath = new DragPath();
 
 /** Where the rings are drawn. While a token is dragged they stay at its starting point. */
 let activeCenter: Vector2 = { x: 0, y: 0 };
@@ -403,6 +406,7 @@ function cleanup() {
   originHeightBeforeEdit = 0;
   forgetCache();
   liveTokenPosition = null;
+  dragPath = new DragPath();
   pendingMove = null;
   fixedDrag = false;
   lastDragPointer = null;
@@ -418,9 +422,19 @@ const SAVE_RETRY_DELAYS_MS = [50, 100, 200];
  * every attempt fails the token goes back where it started. Returns where
  * it landed, or null if it went back.
  */
-async function saveTokenPosition(interaction: InteractionManager<Item>): Promise<Vector2 | null> {
+async function saveTokenPosition(interaction: InteractionManager<Item>, path: DragPath): Promise<Vector2 | null> {
   const final = interaction[0](() => {});
   try {
+    // Along the way it was dragged (see dragPath.ts), then where it ends up with its attachments.
+    const dpi = await OBR.scene.grid.getDpi();
+    const steps = path.steps(final.position, dpi * 0.3);
+    for (const step of steps.slice(0, -1)) {
+      await OBR.scene.items.updateItems([final.id], (items) => {
+        for (const item of items) {
+          item.position = step;
+        }
+      });
+    }
     for (let attempt = 0; ; attempt++) {
       try {
         const withAttachments = await OBR.scene.items.getItemAttachments([final.id]);
@@ -458,6 +472,7 @@ async function saveTokenPosition(interaction: InteractionManager<Item>): Promise
  */
 async function releaseMedicion(pin: boolean) {
   const interaction = tokenInteraction;
+  const path = dragPath;
   tokenInteraction = null;
   if (pin && !fixedDrag) {
     const before = toolDownGeneration;
@@ -469,7 +484,7 @@ async function releaseMedicion(pin: boolean) {
     // read from here on would be its: only the dragged token, and its
     // marker, are ours to finish.
     if (toolDownGeneration !== before) {
-      const landed = interaction ? await saveTokenPosition(interaction) : null;
+      const landed = interaction ? await saveTokenPosition(interaction, path) : null;
       const position = landed ?? startBefore;
       await enqueueOriginMarkerWrite(
         markerBefore && position
@@ -537,7 +552,7 @@ async function releaseMedicion(pin: boolean) {
   if (generation === toolDownGeneration) {
     cleanup();
   }
-  const landed = interaction ? await saveTokenPosition(interaction) : null;
+  const landed = interaction ? await saveTokenPosition(interaction, path) : null;
   // The marker goes where the token really ended up: where it was dropped
   // if that was saved, back at the start otherwise.
   const position = landed ?? startPosition;
@@ -577,6 +592,8 @@ async function moveDraggedToken(pointer: Vector2) {
     return;
   }
   const update = tokenInteraction[0];
+  // The way it goes, unsnapped (saved along it: see dragPath.ts).
+  dragPath.add(Math2.subtract(pointer, grabOffset), activeDpi * 0.1);
   const move = OBR.scene.grid.snapPosition(Math2.subtract(pointer, grabOffset)).then((position) => {
     update((token) => {
       token.position = position;
@@ -905,6 +922,7 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
           return;
         }
         tokenInteraction = interaction;
+        dragPath = new DragPath(downTarget.position);
         // Moves that came in while the drag was starting were dropped: catch up.
         if (lastDragPointer) {
           await moveDraggedToken(lastDragPointer);
