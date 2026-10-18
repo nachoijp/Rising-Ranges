@@ -16,7 +16,7 @@ import {
   terrainVisibility,
   type TerrainLook,
 } from "../settings/globalSettings";
-import { terrainShapes, type RampSlope, type TerrainShape } from "../terrain/terrain";
+import { terrainItemsKey, terrainShapes, type RampSlope, type TerrainShape } from "../terrain/terrain";
 import { terrainLayers } from "../terrain/terrainLayers";
 import { markerBaseColor, markerLookFromMetadata } from "../tokenHeight/markers";
 import { followMap, LABEL_FONT_SIZE } from "../render/lecturaItems";
@@ -56,6 +56,8 @@ let role: "GM" | "PLAYER" = "PLAYER";
 let sceneReady = false;
 let drawn: string[] = [];
 let drawnSignature = "";
+/** What the last drawing was worked out from (see redraw): the same, nothing to work out again. */
+let wantedKey = "";
 let timer: ReturnType<typeof setTimeout> | null = null;
 let running = false;
 let dirty = false;
@@ -282,6 +284,26 @@ function label(shape: TerrainShape, scale: GridScale, color: Color, size: number
 }
 
 async function redraw() {
+  // Everything the drawing depends on, cheaply: a token moving (most changes of the items) changes none
+  // of it, and the layers' unions and differences aren't done again. With what's drawn in it, so a reset
+  // (a new scene) draws again.
+  const key = JSON.stringify([
+    drawnSignature,
+    sceneReady,
+    role,
+    dpi,
+    gridType,
+    gridScale?.raw,
+    terrainItemsKey(items),
+    JSON.stringify(globalSettingsFromMetadata(metadata)),
+    JSON.stringify(markerLookFromMetadata(metadata)),
+    JSON.stringify(bandSetFromMetadata(metadata)),
+    JSON.stringify(getStoredTheme()),
+  ]);
+  if (key === wantedKey) {
+    return;
+  }
+  wantedKey = key;
   const next = wanted();
   if (next.signature === drawnSignature) {
     return;

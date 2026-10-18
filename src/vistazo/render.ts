@@ -10,6 +10,7 @@ import type { Fog } from "./fog";
 import { visibleBox, type VisibleBox } from "./visibleBox";
 import { buildWeather, cloudShadowMaterial, setWeatherTime, type CloudStyle } from "./weather";
 import { buildTemplate, templateTip, type Template } from "./templates";
+import { NOISE_2D } from "./glsl";
 
 // The Vistazo's 3D view. The terrain is drawn with WebGL (three.js): each
 // piece lies at its height with the map as its texture, walls go down to
@@ -71,6 +72,13 @@ export type Options = {
   clouds: CloudStyle;
   /** Zones' water moving (ripples, glints); still otherwise. */
   waterMotion: boolean;
+  /**
+   * How much the view asks of the device: high as designed; medium a little
+   * less sharp on dense screens and lighter weather; low sharp only to the
+   * screen's pixels, a third of the weather at fewer frames, water and
+   * templates still and videos paused.
+   */
+  quality: Quality;
   /** Whether the props show at all ("none" above is how it was stored before this option). */
   showProps: boolean;
   /** The selected token's distance lines go to the props too (main.ts works them out). */
@@ -112,6 +120,15 @@ export type Reach = {
  * planks) tinted with the map's colour at the edge.
  */
 // "stone" is brick courses (its name from before "rubble", irregular stones, was added; kept for what's saved).
+export type Quality = "low" | "medium" | "high";
+
+/** Each quality's sharpness (most device pixels to a screen pixel), weather (share, ms a frame) and motion. */
+const QUALITY: Record<Quality, { pixels: number; amount: number; frameMs: number; motion: boolean }> = {
+  high: { pixels: 2, amount: 1, frameMs: 33, motion: true },
+  medium: { pixels: 1.5, amount: 0.65, frameMs: 40, motion: true },
+  low: { pixels: 1, amount: 0.35, frameMs: 66, motion: false },
+};
+
 export type WallStyle = "flat" | "stretch" | "fold" | "stone" | "rubble" | "earth" | "wood";
 
 /** `focus`: the scene point the camera turns around (null: the map's middle), and its height in grid units. */
@@ -274,7 +291,7 @@ export class VistazoView {
     let renderer: THREE.WebGLRenderer | null = null;
     try {
       renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: true });
-      renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+      renderer.setPixelRatio(Math.min((QUALITY[options.quality] ?? QUALITY.high).pixels, window.devicePixelRatio || 1));
       renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
     } catch (error) {
       console.error("Rising Ranges: Vistazo couldn't start WebGL", error);
@@ -821,8 +838,12 @@ export class VistazoView {
     const rebuild = changed(["heightScale", "shade", "levels", "relief", "tint", "wallStyle", "rings", "ringFill"]);
     const regrid = changed(["grid"]);
     const relabel = changed(["tokenLabels", "props", "showProps", "propShadows", "propLines", "propLabels"]);
-    const reweather = changed(["weather", "clouds", "waterMotion"]);
+    const reweather = changed(["weather", "clouds", "waterMotion", "quality"]);
+    const resharpen = changed(["quality"]);
     this.options = { ...this.options, ...options };
+    if (resharpen) {
+      this.sharpen();
+    }
     this.stage.style.setProperty("--label-scale", String(this.options.labelSize));
     this.stage.classList.toggle("notok", !this.options.tokens);
     this.stage.classList.toggle("xray", this.options.xray);
@@ -1901,7 +1922,7 @@ export class VistazoView {
   private updateWeather() {
     const scene = this.scene;
     const weathers = scene && this.options.weather ? scene.weather : [];
-    const key = JSON.stringify([weathers, this.u, this.k, this.minH, this.maxH, this.options.clouds]);
+    const key = JSON.stringify([weathers, this.u, this.k, this.minH, this.maxH, this.options.clouds, this.options.quality]);
     if (key === this.weatherKey) {
       return;
     }
@@ -1913,7 +1934,7 @@ export class VistazoView {
       ((child as THREE.Mesh).material as THREE.Material).dispose();
     }
     if (scene && weathers.length > 0) {
-      const frame = { u: this.u, cell: VIEW_CELL, k: this.k, lowest: this.minH, highest: this.maxH };
+      const frame = { u: this.u, cell: VIEW_CELL, k: this.k, lowest: this.minH, highest: this.maxH, amount: this.look.amount };
       for (const object of buildWeather(weathers, frame, scene.dpi, this.options.clouds)) {
         this.weatherGroup.add(object);
       }
@@ -1939,8 +1960,8 @@ export class VistazoView {
     return (
       this.weatherGroup.children.length > 0 ||
       this.cloudShadowGroup.children.length > 0 ||
-      this.templateGroup.children.length > 0 ||
-      (this.options.waterMotion && this.waterGroup.children.length > 0)
+      (this.moving && this.templateGroup.children.length > 0) ||
+      (this.moving && this.options.waterMotion && this.waterGroup.children.length > 0)
     );
   }
 
@@ -2155,7 +2176,7 @@ export class VistazoView {
         this.weatherFrame = 0;
         return;
       }
-      if (time - last >= 33) {
+      if (time - last >= this.look.frameMs) {
         last = time;
         this.weatherUniforms();
         this.render();
@@ -2172,20 +2193,40 @@ export class VistazoView {
     setWeatherTime([...this.weatherGroup.children, ...this.cloudShadowGroup.children], performance.now() / 1000, pointScale, this.persp, this.fit * this.camera.zoom);
     for (const mesh of this.templateGroup.children) {
       const { uniforms } = (mesh as THREE.Mesh).material as THREE.ShaderMaterial;
-      uniforms.uTime.value = performance.now() / 1000;
+      // Still at low quality (their look, not moving).
+      if (this.moving) {
+        uniforms.uTime.value = performance.now() / 1000;
+      }
       uniforms.uEyeZ.value = this.persp;
     }
-    if (this.options.waterMotion) {
+    if (this.moving && this.options.waterMotion) {
       for (const surface of this.waterGroup.children) {
         ((surface as THREE.Mesh).material as THREE.ShaderMaterial).uniforms.uTime.value = performance.now() / 1000;
       }
     }
   }
 
+  /** The quality now (see QUALITY), and whether things move at it. */
+  private get look() {
+    return QUALITY[this.options.quality] ?? QUALITY.high;
+  }
+
+  private get moving() {
+    return this.look.motion;
+  }
+
+  /** The canvas's sharpness for the quality now (redrawn at it). */
+  private sharpen() {
+    this.renderer?.setPixelRatio(Math.min(this.look.pixels, window.devicePixelRatio || 1));
+    this.canvasSize = { w: 0, h: 0 };
+    this.pauseVideos();
+  }
+
   private pauseVideos() {
     const videos = [...this.stage.querySelectorAll("video"), ...[...this.videoTextures].map((texture) => texture.image as HTMLVideoElement)];
     for (const video of videos) {
-      if (this.paused) {
+      // Minimized, or at low quality: still.
+      if (this.paused || !this.moving) {
         video.pause();
       } else {
         void video.play().catch(() => {});
@@ -2247,6 +2288,13 @@ export class VistazoView {
   }
 
   /** A token's label, as the options have it, from its height now. */
+  /** Every label written again (the language changed: see main.ts). */
+  relabel() {
+    for (const view of this.tokenViews) {
+      this.writeLabel(view);
+    }
+  }
+
   private writeLabel(view: TokenView) {
     // A prop's label is on or off by itself; with the tokens' set to none, it says the name.
     const shown = view.prop && this.options.tokenLabels === "none" ? "name" : this.options.tokenLabels;
@@ -2976,17 +3024,7 @@ const WATER_FRAGMENT = /* glsl */ `
   uniform vec4 uGrid;
   uniform vec2 uGridSize;
   varying vec2 vAt;
-  float hash(vec2 p) {
-    p = fract(p * vec2(123.34, 456.21));
-    p += dot(p, p + 45.32);
-    return fract(p.x * p.y);
-  }
-  float noise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    vec2 u = f * f * (3.0 - 2.0 * f);
-    return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
-  }
+  ${NOISE_2D}
   void main() {
     // Only where the water reaches (see buildWater): its zone, and what's connected to it below its level.
     vec2 scene = vAt / uU;

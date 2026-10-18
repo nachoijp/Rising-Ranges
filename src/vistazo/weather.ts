@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { Item } from "@owlbear-rodeo/sdk";
+import { NOISE_2D } from "./glsl";
 
 // The Weather extension's weather (github.com/owlbear-rodeo/weather), drawn
 // in 3D: it keeps its settings on a Map- or Fog-layer item, under its own
@@ -149,17 +150,7 @@ const WISP_FRAGMENT = /* glsl */ `
   varying vec2 vCell;
   varying vec2 vUv;
   varying float vFacing;
-  float hash(vec2 p) {
-    p = fract(p * vec2(123.34, 456.21));
-    p += dot(p, p + 45.32);
-    return fract(p.x * p.y);
-  }
-  float noise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    vec2 u = f * f * (3.0 - 2.0 * f);
-    return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
-  }
+  ${NOISE_2D}
   float fbm(vec2 p) {
     float v = 0.0;
     float a = 0.5;
@@ -280,17 +271,7 @@ const PUFF_FRAGMENT = /* glsl */ `
   varying float vPhase;
   varying float vFade;
   varying float vHeight;
-  float hash(vec2 p) {
-    p = fract(p * vec2(123.34, 456.21));
-    p += dot(p, p + 45.32);
-    return fract(p.x * p.y);
-  }
-  float noise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    vec2 u = f * f * (3.0 - 2.0 * f);
-    return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
-  }
+  ${NOISE_2D}
   float fbm(vec2 p) {
     float v = 0.0;
     float a = 0.5;
@@ -331,7 +312,7 @@ function buildPuffs(weather: Weather, frame: WeatherFrame, dpi: number, look = P
   const dir = length > 0 ? { x: weather.direction.x / length, y: weather.direction.y / length } : { x: 1, y: 0 };
   const { x0, y0, x1, y1 } = weather.box;
   const cells = ((x1 - x0) / dpi) * ((y1 - y0) / dpi);
-  const count = Math.round(Math.min(1500, Math.max(30, cells * look.perCell * (weather.density / 3))));
+  const count = Math.round(Math.min(1500, Math.max(30, cells * look.perCell * (weather.density / 3))) * (frame.amount ?? 1));
   const bottom = 0;
   const top = (frame.highest + look.ceiling) * frame.k;
   const geometry = new THREE.InstancedBufferGeometry();
@@ -480,7 +461,8 @@ const FRAGMENT = /* glsl */ `
 `;
 
 /** Where the weather's drawn: the view's scale (view units a scene px, and a cell of height) and the ground's lowest and highest. */
-export type WeatherFrame = { u: number; cell: number; k: number; lowest: number; highest: number };
+/** `amount`: how many particles and puffs, of all (the quality setting's: 1 at high). */
+export type WeatherFrame = { u: number; cell: number; k: number; lowest: number; highest: number; amount?: number };
 
 /**
  * The particles and haze for each weather (clouds as a mist or their
@@ -515,7 +497,7 @@ export function buildWeather(weathers: Weather[], frame: WeatherFrame, dpi: numb
     const size = new THREE.Vector3(Math.max(1, (x1 - x0) * frame.u), Math.max(1, (y1 - y0) * frame.u), Math.max(1, top - bottom));
     const cells = ((x1 - x0) / dpi) * ((y1 - y0) / dpi);
     const streak = weather.type === "RAIN";
-    const count = Math.round(Math.min(streak ? MOST_STREAKS : MOST_POINTS, Math.max(50, cells * look.perCell * (weather.density / 3))));
+    const count = Math.round(Math.min(streak ? MOST_STREAKS : MOST_POINTS, Math.max(50, cells * look.perCell * (weather.density / 3))) * (frame.amount ?? 1));
 
     const geometry = new THREE.BufferGeometry();
     const seeds = new Float32Array(count * 3 * (streak ? 2 : 1));
@@ -593,17 +575,7 @@ const SHADOW_FRAGMENT = /* glsl */ `
   uniform vec3 uColor;
   varying vec2 vCell;
   varying vec2 vAt;
-  float hash(vec2 p) {
-    p = fract(p * vec2(123.34, 456.21));
-    p += dot(p, p + 45.32);
-    return fract(p.x * p.y);
-  }
-  float noise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    vec2 u = f * f * (3.0 - 2.0 * f);
-    return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
-  }
+  ${NOISE_2D}
   // Few octaves, the high ones faint: rounded blobs, not filaments.
   float fbm(vec2 p) {
     float v = 0.0;

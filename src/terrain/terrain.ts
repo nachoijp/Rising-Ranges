@@ -393,8 +393,47 @@ function rampEnds(item: Item, ramp: TerrainRamp): { low: Vector2; high: Vector2;
   return { low, high, beyond };
 }
 
-/** The scene's terrain zones, the one that wins first: smallest, then highest. */
+/** This extension's own metadata keys' start (terrain heights, ramps, cloths, bridges...). */
+const OWN = getPluginId("");
+
+/**
+ * What the terrain is built from, as a key: the shapes that are terrain (or
+ * a cloth), their outline and their own metadata. The same key, the same
+ * terrain: a token moving changes nothing of it.
+ */
+export function terrainItemsKey(items: Item[]): string {
+  const parts: unknown[] = [];
+  for (const item of items) {
+    if (!canBeTerrain(item) || !Object.keys(item.metadata).some((key) => key.startsWith(OWN))) {
+      continue;
+    }
+    const own = Object.entries(item.metadata).filter(([key]) => key.startsWith(OWN));
+    const shape = item as Item & { width?: number; height?: number; points?: unknown; commands?: unknown; shapeType?: unknown; style?: { tension?: unknown; closed?: unknown } };
+    parts.push([item.id, item.type, shape.shapeType, shape.width, shape.height, item.position, item.rotation, item.scale, shape.points, shape.commands, shape.style?.tension, shape.style?.closed, own]);
+  }
+  return JSON.stringify(parts);
+}
+
+/** The last terrain worked out, by its key (see terrainZones). */
+let lastZones: { key: string; zones: TerrainZone[] } | null = null;
+
+/**
+ * The scene's terrain zones, the one that wins first: smallest, then
+ * highest. Worked out again only when the terrain changed (see
+ * terrainItemsKey): every module asks on every change of the items, and a
+ * cloth takes a while.
+ */
 export function terrainZones(items: Item[]): TerrainZone[] {
+  const key = terrainItemsKey(items);
+  if (lastZones?.key === key) {
+    return lastZones.zones;
+  }
+  const zones = buildTerrainZones(items);
+  lastZones = { key, zones };
+  return zones;
+}
+
+function buildTerrainZones(items: Item[]): TerrainZone[] {
   const zones: TerrainZone[] = [];
   const ramps: { zone: TerrainZone; ends: NonNullable<ReturnType<typeof rampEnds>> }[] = [];
   for (const item of items) {

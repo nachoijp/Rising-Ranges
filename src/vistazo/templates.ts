@@ -242,3 +242,45 @@ export function buildTemplate(template: Template, u: number, cell: number, k: nu
   mesh.frustumCulled = false;
   return mesh;
 }
+
+/**
+ * Whether a template reaches a point (cells; a body's middle) within
+ * `reach` (its radius and the tolerance): a sphere round its point, a
+ * cylinder standing on it (as tall as wide), a cube on it, a line a cell
+ * wide and tall from it toward its tip, a cone from it (as wide at its end
+ * as it's long) toward its tip; their tip may be higher or lower (see templateTip).
+ */
+export function templateReaches(template: Template, c: { x: number; y: number; z: number }, reach: number, dpi: number): boolean {
+  const o = { x: template.x / dpi, y: template.y / dpi, z: template.z };
+  const s = template.size;
+  const [dx, dy] = [template.dir.x, template.dir.y];
+  switch (template.shape) {
+    case "sphere":
+      return Math.hypot(c.x - o.x, c.y - o.y, c.z - o.z) <= s + reach;
+    case "cylinder":
+      return Math.hypot(c.x - o.x, c.y - o.y) <= s + reach && c.z >= o.z - reach && c.z <= o.z + s * 2 + reach;
+    case "cube": {
+      const ax = Math.max(0, Math.abs(c.x - o.x) - s / 2);
+      const ay = Math.max(0, Math.abs(c.y - o.y) - s / 2);
+      const az = Math.max(0, o.z - c.z, c.z - (o.z + s));
+      return Math.hypot(ax, ay, az) <= reach;
+    }
+    case "line":
+    default: {
+      // Along its axis (from its point toward its tip: it may tilt), and how far from it.
+      const tip = templateTip(template);
+      const a = { x: (dx * tip.across) / s, y: (dy * tip.across) / s, z: tip.rise / s };
+      const v = { x: c.x - o.x, y: c.y - o.y, z: c.z - o.z };
+      const along = v.x * a.x + v.y * a.y + v.z * a.z;
+      const off = Math.hypot(v.x - a.x * along, v.y - a.y * along, v.z - a.z * along);
+      if (along < -reach || along > s + reach) {
+        return false;
+      }
+      // A line: half a cell round its axis; a cone: its half-width there is half that far.
+      if (template.shape === "line") {
+        return off <= 0.5 + reach;
+      }
+      return off <= Math.max(0, along) / 2 + reach;
+    }
+  }
+}

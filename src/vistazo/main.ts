@@ -12,7 +12,7 @@ import { getStoredTheme } from "../theme/themes";
 import { getColorString } from "../util/color";
 import { buildScene, propOf, type Token, type VistazoScene } from "./scene";
 import { FREE_POINT, TEMPLATE_HANDLE, VistazoView, type Camera, type DistanceLine, type Options } from "./render";
-import { templateTip, type Template, type TemplateLook, type TemplateShape } from "./templates";
+import { templateReaches, type Template, type TemplateLook, type TemplateShape } from "./templates";
 import { LIVE_DRAG_CHANNEL, type LiveDrag } from "./live";
 import { SYNC_CHANNEL, SYNC_HEARTBEAT_MS, SYNC_INTERVAL_MS, SYNC_TIMEOUT_MS, type SyncMessage } from "./sync";
 import { stepHeight } from "../engine/heights";
@@ -66,7 +66,17 @@ const POSE = { tilt: 55, yaw: -25 };
 const OPTIONS_KEY = "rising-ranges/vistazo-options";
 
 function readOptions(): Options {
-  const defaults: Options = { heightScale: 1, shade: 0.6, perspective: 45, tint: false, tokens: true, xray: false, edges: true, anchor: "center", levels: true, grid: false, distances: true, tokenLabels: "full", distanceLabels: "full", labelSize: 1, relief: 0.5, weather: true, clouds: "mist", waterMotion: true, props: "flat", showProps: true, propDistances: false, propShadows: true, propLines: true, propLabels: false, wallStyle: "fold", rings: true, ringFill: false, playerView: false };
+  const defaults: Options = { heightScale: 1, shade: 0.6, perspective: 45, tint: false, tokens: true, xray: false, edges: true, anchor: "center", levels: true, grid: false, distances: true, tokenLabels: "full", distanceLabels: "full", labelSize: 1, relief: 0.5, weather: true, clouds: "mist", waterMotion: true, quality: "high", props: "flat", showProps: true, propDistances: false, propShadows: true, propLines: true, propLabels: false, wallStyle: "fold", rings: true, ringFill: false, playerView: false };
+  // A system asking for less motion: the first time (nothing saved yet), low quality and still water.
+  // Changed here, it's as chosen from then on.
+  try {
+    if (!localStorage.getItem(OPTIONS_KEY) && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      defaults.quality = "low";
+      defaults.waterMotion = false;
+    }
+  } catch {
+    // The defaults as they are.
+  }
   try {
     const stored: Options = { ...defaults, ...JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? "{}") };
     // "Hidden" was a position of the props once; now it's their own checkbox.
@@ -576,6 +586,10 @@ async function start() {
     if (syncing) {
       sendCamera();
     }
+    showCameraTexts();
+  };
+  /** The camera's readings and the view's button, in the language now (also after a change of it). */
+  const showCameraTexts = () => {
     tilt.value = String(camera.tilt);
     yaw.value = String(camera.yaw);
     $("tiltOut").textContent = `${Math.round(camera.tilt)}°`;
@@ -1227,6 +1241,7 @@ async function start() {
     check("xray").checked = options.xray;
     check("edges").checked = options.edges;
     check("waterMotion").checked = options.waterMotion;
+    $<HTMLSelectElement>("quality").value = options.quality;
     check("levels").checked = options.levels;
     check("grid").checked = options.grid;
     check("distances").checked = options.distances;
@@ -1260,6 +1275,8 @@ async function start() {
   check("xray").onchange = () => set({ xray: check("xray").checked });
   check("edges").onchange = () => set({ edges: check("edges").checked });
   check("waterMotion").onchange = () => set({ waterMotion: check("waterMotion").checked });
+  const quality = $<HTMLSelectElement>("quality");
+  quality.onchange = () => set({ quality: quality.value === "low" ? "low" : quality.value === "medium" ? "medium" : "high" });
   check("levels").onchange = () => set({ levels: check("levels").checked });
   check("grid").onchange = () => set({ grid: check("grid").checked });
   check("distances").onchange = () => set({ distances: check("distances").checked });
@@ -1647,6 +1664,10 @@ async function start() {
       language = nextLanguage;
       fill();
       showOptions();
+      // What isn't filled in by key: the camera's readings, the templates' list, the tokens' labels.
+      showCameraTexts();
+      showTemplates();
+      view.relabel();
     }
     later();
   });
@@ -1696,45 +1717,3 @@ async function start() {
 OBR.onReady(() => {
   start().catch((error) => console.error("Rising Ranges: failed to open the Vistazo 3D", error));
 });
-
-/**
- * Whether a template reaches a point (cells; a body's middle) within
- * `reach` (its radius and the tolerance): a sphere round its point, a
- * cylinder standing on it (as tall as wide), a cube on it, a line a cell
- * wide and tall from it toward its tip, a cone from it (as wide at its end
- * as it's long) toward its tip; their tip may be higher or lower (see templateTip).
- */
-function templateReaches(template: Template, c: { x: number; y: number; z: number }, reach: number, dpi: number): boolean {
-  const o = { x: template.x / dpi, y: template.y / dpi, z: template.z };
-  const s = template.size;
-  const [dx, dy] = [template.dir.x, template.dir.y];
-  switch (template.shape) {
-    case "sphere":
-      return Math.hypot(c.x - o.x, c.y - o.y, c.z - o.z) <= s + reach;
-    case "cylinder":
-      return Math.hypot(c.x - o.x, c.y - o.y) <= s + reach && c.z >= o.z - reach && c.z <= o.z + s * 2 + reach;
-    case "cube": {
-      const ax = Math.max(0, Math.abs(c.x - o.x) - s / 2);
-      const ay = Math.max(0, Math.abs(c.y - o.y) - s / 2);
-      const az = Math.max(0, o.z - c.z, c.z - (o.z + s));
-      return Math.hypot(ax, ay, az) <= reach;
-    }
-    case "line":
-    default: {
-      // Along its axis (from its point toward its tip: it may tilt), and how far from it.
-      const tip = templateTip(template);
-      const a = { x: (dx * tip.across) / s, y: (dy * tip.across) / s, z: tip.rise / s };
-      const v = { x: c.x - o.x, y: c.y - o.y, z: c.z - o.z };
-      const along = v.x * a.x + v.y * a.y + v.z * a.z;
-      const off = Math.hypot(v.x - a.x * along, v.y - a.y * along, v.z - a.z * along);
-      if (along < -reach || along > s + reach) {
-        return false;
-      }
-      // A line: half a cell round its axis; a cone: its half-width there is half that far.
-      if (template.shape === "line") {
-        return off <= 0.5 + reach;
-      }
-      return off <= Math.max(0, along) / 2 + reach;
-    }
-  }
-}
