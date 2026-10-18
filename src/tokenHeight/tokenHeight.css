@@ -272,6 +272,10 @@ body {
   touch-action: none;
   background-color: var(--obr-overlay, rgba(255, 255, 255, 0.06));
 }
+.base-thumb:focus-visible {
+  outline: 2px solid var(--obr-primary-main, #3b82f6);
+  outline-offset: 2px;
+}
 .base-thumb img,
 .base-thumb video {
   width: 100%;

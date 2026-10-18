@@ -7,7 +7,7 @@ import { getGridType } from "../util/gridAxonometry";
 import { createMeasureTool } from "./createMeasureTool";
 import { createThemeAction } from "./createThemeAction";
 import { createSettingsAction } from "./createSettingsAction";
-import { createTerrainMenu, createTokenFootprintMenu, createTokenHeightMenu } from "./createTokenHeightMenu";
+import { createTerrainMenu, createTokenFootprintMenu, createTokenHeightMenu, removeTokenMenu, type BaseShown } from "./createTokenHeightMenu";
 import { createTerrainVisibilityAction } from "./createTerrainVisibilityAction";
 import { createDistancesAction } from "./createDistancesAction";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
@@ -68,21 +68,23 @@ export function registerToolbar(metadata: Record<string, unknown>) {
   } else if (!firstTime) {
     OBR.tool.removeAction(getPluginId("action/vistazo"));
   }
-  // The footprint is in the Elevation entry while heights are on, on its own otherwise.
+  // The footprint is in the Elevation entry while heights are on, on its own otherwise; the Vistazo's
+  // base in either, for whoever can open the Vistazo.
+  const base: BaseShown = vistazo === "everyone" ? "all" : vistazo === "gm" ? "gm" : "none";
   if (altitudeMenu) {
-    createTokenHeightMenu(language, heightStep, tall);
+    createTokenHeightMenu(language, heightStep, tall, base);
     if (!firstTime) {
-      OBR.contextMenu.remove(getPluginId("menu/tokenFootprint"));
+      removeTokenMenu(getPluginId("menu/tokenFootprint"));
     }
   } else {
-    createTokenFootprintMenu(language, tall);
+    createTokenFootprintMenu(language, tall, base);
     if (!firstTime) {
-      OBR.contextMenu.remove(getPluginId("menu/tokenHeight"));
+      removeTokenMenu(getPluginId("menu/tokenHeight"));
     }
   }
   // Terrain is part of heights: off with them, or turned off, or on an axonometric grid.
   if (terrain) {
-    createTerrainMenu(language);
+    createTerrainMenu(language, vistazo !== "off");
     createTerrainVisibilityAction(language, terrainMode);
   } else if (!firstTime) {
     OBR.contextMenu.remove(getPluginId("menu/terrain"));

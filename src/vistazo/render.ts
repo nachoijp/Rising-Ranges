@@ -870,8 +870,10 @@ export class VistazoView {
   /** Heights on a grid of a fifth of a cell, for the rays (NaN outside the map). */
   private computeGrid() {
     const scene = this.scene!;
-    const step = scene.dpi / 5;
     const { x0, y0, x1, y1 } = scene.bounds;
+    // A fifth of a cell; coarser on a very big map, so it's never more than MAX_GRID_POINTS points (what
+    // it's for, hiding tokens and the lines' sight, doesn't need more).
+    const step = Math.max(scene.dpi / 5, Math.sqrt(((x1 - x0) * (y1 - y0)) / MAX_GRID_POINTS));
     const w = Math.ceil((x1 - x0) / step) + 1;
     const h = Math.ceil((y1 - y0) / step) + 1;
     const cells = new Float32Array(w * h);
@@ -3044,6 +3046,9 @@ const WATER_FRAGMENT = /* glsl */ `
     gl_FragColor = vec4(color, 0.72);
   }
 `;
+
+/** The most points the heights grid has (see computeGrid). */
+const MAX_GRID_POINTS = 200_000;
 
 /** The free point's id among the lines' origins (see setPoint). */
 export const FREE_POINT = "rising-ranges/free-point";

@@ -104,6 +104,22 @@ export function VistazoBasePicker() {
         className="base-thumb"
         style={{ width: BASE_THUMB_SIZE, height: BASE_THUMB_SIZE }}
         title={t("footprint.baseHint")}
+        // With the keyboard too: the arrows move the cross (a little; with Shift, more).
+        tabIndex={0}
+        role="slider"
+        aria-label={t("footprint.baseHint")}
+        aria-valuetext={shown ? `${Math.round(shown.x * 100)}%, ${Math.round((1 - shown.y) * 100)}%` : undefined}
+        onKeyDown={(event) => {
+          const steps: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+          const step = steps[event.key];
+          if (!step || !shown) {
+            return;
+          }
+          event.preventDefault();
+          const by = event.shiftKey ? 0.1 : 0.02;
+          const round = (value: number) => Math.round(Math.max(0, Math.min(1, value)) * 100) / 100;
+          void apply({ x: round(shown.x + step[0] * by), y: round(shown.y + step[1] * by) });
+        }}
         // The browser's own drag of the picture would take the pointer away from the cross.
         onDragStart={(event) => event.preventDefault()}
         onPointerDown={(event) => {

@@ -267,6 +267,8 @@ export function TerrainPicker() {
     setWalls((next || undefined) as TerrainWallStyle | undefined);
   };
   const disabled = terrainShapes.length === 0;
+  // The Vistazo's own rows, only while it's on (see createTerrainMenu).
+  const vistazoOn = new URLSearchParams(window.location.search).get("vistazo") !== "0";
   const cloth = shapes.length > 0 && shapes.every(getTerrainCloth);
   // A zone and a plain shape (no height) selected together: the shape can be the zone's picture.
   const plain = shapes.filter((shape) => getTerrainHeight(shape) === undefined);
@@ -351,80 +353,84 @@ export function TerrainPicker() {
           ›
         </button>
       </div>
-      <div className="section-title" title={t("terrain.vistazoHint")}>
-        {t("terrain.vistazo")}
-      </div>
-      <div className="step-row" role="group" aria-label={t("terrain.stand")} title={t("terrain.standHint")}>
-        <span className="row-label">{t("terrain.stand")}</span>
-        <button
-          className="step-button"
-          disabled={disabled}
-          title={t("terrain.standPrevious")}
-          aria-label={t("terrain.standPrevious")}
-          onClick={() => cycleStand(-1)}
-        >
-          ‹
-        </button>
-        <span className="step-field wall-value" aria-live="polite" title={standIndex < 0 ? undefined : t(STAND_CHOICES[standIndex][2])}>
-          {standIndex < 0 ? "—" : t(STAND_CHOICES[standIndex][1])}
-        </span>
-        <button
-          className="step-button"
-          disabled={disabled}
-          title={t("terrain.standNext")}
-          aria-label={t("terrain.standNext")}
-          onClick={() => cycleStand(1)}
-        >
-          ›
-        </button>
-      </div>
-      <div className="step-row" role="group" aria-label={t("terrain.walls")} title={t("terrain.wallsHint")}>
-        <span className="row-label">{t("terrain.walls")}</span>
-        <button
-          className="step-button"
-          disabled={disabled}
-          title={t("terrain.wallsPrevious")}
-          aria-label={t("terrain.wallsPrevious")}
-          onClick={() => cycleWalls(-1)}
-        >
-          ‹
-        </button>
-        <span className="step-field wall-value" aria-live="polite">
-          {wallIndex < 0 ? "—" : t(WALL_CHOICES[wallIndex][1])}
-        </span>
-        <button
-          className="step-button"
-          disabled={disabled}
-          title={t("terrain.wallsNext")}
-          aria-label={t("terrain.wallsNext")}
-          onClick={() => cycleWalls(1)}
-        >
-          ›
-        </button>
-      </div>
-      <div className="step-row" role="group" aria-label={t("terrain.skin")} title={t("terrain.skinHint")}>
-        <span className="row-label">{t("terrain.skin")}</span>
-        <button
-          className={linked ? "step-button ground active" : "step-button ground"}
-          style={{ flex: 1, marginLeft: 0 }}
-          disabled={!linked && !canLink}
-          aria-pressed={linked}
-          onClick={() => void toggleSkin()}
-        >
-          {t(linked ? "terrain.skinUnlink" : "terrain.skinLink")}
-        </button>
-      </div>
-      <div title={t("terrain.waterHint")}>
-        <UnitStepper
-          label={t("terrain.water")}
-          current={sharedWater(shapes)}
-          gridScale={gridScale}
-          onStep={(direction) => applyWater((cells) => cells + direction)}
-          onSet={(cells) => applyWater(() => cells)}
-          fine
-          end={<span className="step-button icon-button" aria-hidden="true" style={{ visibility: "hidden" }} />}
-        />
-      </div>
+      {vistazoOn && (
+        <>
+        <div className="section-title" title={t("terrain.vistazoHint")}>
+          {t("terrain.vistazo")}
+        </div>
+        <div className="step-row" role="group" aria-label={t("terrain.stand")} title={t("terrain.standHint")}>
+          <span className="row-label">{t("terrain.stand")}</span>
+          <button
+            className="step-button"
+            disabled={disabled}
+            title={t("terrain.standPrevious")}
+            aria-label={t("terrain.standPrevious")}
+            onClick={() => cycleStand(-1)}
+          >
+            ‹
+          </button>
+          <span className="step-field wall-value" aria-live="polite" title={standIndex < 0 ? undefined : t(STAND_CHOICES[standIndex][2])}>
+            {standIndex < 0 ? "—" : t(STAND_CHOICES[standIndex][1])}
+          </span>
+          <button
+            className="step-button"
+            disabled={disabled}
+            title={t("terrain.standNext")}
+            aria-label={t("terrain.standNext")}
+            onClick={() => cycleStand(1)}
+          >
+            ›
+          </button>
+        </div>
+        <div className="step-row" role="group" aria-label={t("terrain.walls")} title={t("terrain.wallsHint")}>
+          <span className="row-label">{t("terrain.walls")}</span>
+          <button
+            className="step-button"
+            disabled={disabled}
+            title={t("terrain.wallsPrevious")}
+            aria-label={t("terrain.wallsPrevious")}
+            onClick={() => cycleWalls(-1)}
+          >
+            ‹
+          </button>
+          <span className="step-field wall-value" aria-live="polite">
+            {wallIndex < 0 ? "—" : t(WALL_CHOICES[wallIndex][1])}
+          </span>
+          <button
+            className="step-button"
+            disabled={disabled}
+            title={t("terrain.wallsNext")}
+            aria-label={t("terrain.wallsNext")}
+            onClick={() => cycleWalls(1)}
+          >
+            ›
+          </button>
+        </div>
+        <div className="step-row" role="group" aria-label={t("terrain.skin")} title={t("terrain.skinHint")}>
+          <span className="row-label">{t("terrain.skin")}</span>
+          <button
+            className={linked ? "step-button ground active" : "step-button ground"}
+            style={{ flex: 1, marginLeft: 0 }}
+            disabled={!linked && !canLink}
+            aria-pressed={linked}
+            onClick={() => void toggleSkin()}
+          >
+            {t(linked ? "terrain.skinUnlink" : "terrain.skinLink")}
+          </button>
+        </div>
+        <div title={t("terrain.waterHint")}>
+          <UnitStepper
+            label={t("terrain.water")}
+            current={sharedWater(shapes)}
+            gridScale={gridScale}
+            onStep={(direction) => applyWater((cells) => cells + direction)}
+            onSet={(cells) => applyWater(() => cells)}
+            fine
+            end={<span className="step-button icon-button" aria-hidden="true" style={{ visibility: "hidden" }} />}
+          />
+        </div>
+        </>
+      )}
     </div>
   );
 }

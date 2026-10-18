@@ -616,11 +616,17 @@ async function start() {
     sendTimer = setTimeout(() => {
       sendTimer = null;
       lastSent = performance.now();
-      void broadcast({ type: "camera", camera: { ...camera } });
+      void broadcast({ type: "camera", camera: { ...camera }, since: syncSince });
     }, wait);
   }
-  function setSyncing(on: boolean) {
+  /** When this GM began syncing (see SyncMessage). */
+  let syncSince = 0;
+  /** `quiet`: stopped because another GM began syncing since: the players aren't told to stop (they follow that one). */
+  function setSyncing(on: boolean, quiet = false) {
     syncing = on;
+    if (on) {
+      syncSince = Date.now();
+    }
     $("sync").setAttribute("aria-pressed", String(on));
     $("sync").classList.toggle("on", on);
     // Its text by key, so a change of language (which fills the texts in again) keeps it.
@@ -632,8 +638,8 @@ async function start() {
     }
     if (on) {
       sendCamera();
-      heartbeat = setInterval(() => void broadcast({ type: "camera", camera: { ...camera } }), SYNC_HEARTBEAT_MS);
-    } else {
+      heartbeat = setInterval(() => void broadcast({ type: "camera", camera: { ...camera }, since: syncSince }), SYNC_HEARTBEAT_MS);
+    } else if (!quiet) {
       void broadcast({ type: "stop" });
     }
   }
@@ -679,6 +685,13 @@ async function start() {
   }
   if (isGM) {
     $("sync").onclick = () => setSyncing(!syncing);
+    // Another GM began syncing after this one: theirs is followed, this one stops.
+    OBR.broadcast.onMessage(SYNC_CHANNEL, (event) => {
+      const message = event.data as SyncMessage;
+      if (syncing && message.type === "camera" && message.since > syncSince) {
+        setSyncing(false, true);
+      }
+    });
   } else {
     $("sync").hidden = true;
     OBR.broadcast.onMessage(SYNC_CHANNEL, (event) => {

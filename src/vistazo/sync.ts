@@ -9,8 +9,11 @@ import type { Camera } from "./render";
 
 export const SYNC_CHANNEL = getPluginId("vistazo/sync");
 
-/** A GM's camera, or the end of the sync. */
-export type SyncMessage = { type: "camera"; camera: Camera } | { type: "stop" };
+/**
+ * A GM's camera (with when they began syncing: of two GMs syncing, the one
+ * who began last is followed, the other stops), or the end of the sync.
+ */
+export type SyncMessage = { type: "camera"; camera: Camera; since: number } | { type: "stop" };
 
 /** How often a moving camera is sent, at most (ms), and a still one again. */
 export const SYNC_INTERVAL_MS = 120;

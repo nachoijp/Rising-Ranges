@@ -18,6 +18,8 @@ import "./tokenHeight.css";
 export function ElevationPanel({ elevation = true }: { elevation?: boolean }) {
   // Left out when it would change nothing (see createTokenHeightMenu): only sunk tokens drawn down by their head use it.
   const tall = new URLSearchParams(window.location.search).get("tall") !== "0";
+  // Left out when who's looking can't open the Vistazo (see createTokenHeightMenu).
+  const base = new URLSearchParams(window.location.search).get("base") !== "0";
   const { bandSet } = useOBRContext();
   const t = useTranslation();
   // The picker's own area: the Bandas table (Banda names on up to two lines, 32 px, two rows of 52 px
@@ -45,11 +47,15 @@ export function ElevationPanel({ elevation = true }: { elevation?: boolean }) {
           <FootprintPicker part="tall" />
         </>
       )}
-      <hr className="section-divider" />
-      <div className="section-title" title={t("footprint.baseTooltip")}>
-        {t("footprint.baseSection")}
-      </div>
-      <VistazoBasePicker />
+      {base && (
+        <>
+          <hr className="section-divider" />
+          <div className="section-title" title={t("footprint.baseTooltip")}>
+            {t("footprint.baseSection")}
+          </div>
+          <VistazoBasePicker />
+        </>
+      )}
     </div>
   );
 }
