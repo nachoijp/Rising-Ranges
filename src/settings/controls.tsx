@@ -20,10 +20,13 @@ export function ChoiceGroup<T extends string>({
   onChange,
   disabled,
   trailing,
+  warning,
 }: {
   id: string;
   label: string;
   tooltip: string;
+  /** A warning icon beside the label, with this as its tooltip (see FieldLabel). */
+  warning?: string;
   value: T;
   options: { value: T; label: string }[];
   onChange: (value: T) => void;
@@ -34,7 +37,7 @@ export function ChoiceGroup<T extends string>({
   return (
     <Stack sx={{ px: 1 }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between">
-        <FieldLabel id={id} tooltip={tooltip}>
+        <FieldLabel id={id} tooltip={tooltip} warning={warning}>
           {label}
         </FieldLabel>
         {trailing}

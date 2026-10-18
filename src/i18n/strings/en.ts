@@ -115,6 +115,7 @@ const en: Record<TranslationKey, string> = {
   "settings.global.distancePanelEveryone": "Everyone",
   "settings.global.vistazo": "3D Glance",
   "settings.global.vistazoTooltip": "Who gets the 3D Glance button in the Medición's toolbar. Players see it as players: with their fog and without what's hidden.",
+  "settings.global.vistazoLab": "Experimental feature: it may still have bugs or change in future versions, and it asks more of the device than the rest of the extension. For the best results, read its guide in the Help before using it.",
   "settings.general.help": "Help",
   "settings.general.helpTooltip": "Opens the Rising Ranges manual (the README on GitHub) in a new tab.",
   "settings.general.helpOpen": "View manual",

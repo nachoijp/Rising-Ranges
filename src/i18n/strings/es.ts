@@ -112,6 +112,7 @@ const es = {
   "settings.global.distancePanelEveryone": "Todos",
   "settings.global.vistazo": "Vistazo 3D",
   "settings.global.vistazoTooltip": "Quién ve el botón del Vistazo 3D en la barra de la Medición. Los jugadores lo ven como jugadores: con su niebla y sin lo oculto.",
+  "settings.global.vistazoLab": "Función experimental: todavía puede tener errores o cambiar en próximas versiones, y exige más del equipo que el resto de la extensión. Para mejores resultados, leé su instructivo en la Ayuda antes de usarla.",
   "settings.general.help": "Ayuda",
   "settings.general.helpTooltip": "Abre el manual de Rising Ranges (el README en GitHub) en una pestaña nueva.",
   "settings.general.helpOpen": "Ver manual",

@@ -93,6 +93,7 @@ export function GeneralTab({
         id="vistazo-label"
         label={t("settings.global.vistazo")}
         tooltip={t("settings.global.vistazoTooltip")}
+        warning={t("settings.global.vistazoLab")}
         value={vistazoAccess(settings)}
         onChange={(vistazo) => onChangeSettings({ vistazo })}
         options={[
