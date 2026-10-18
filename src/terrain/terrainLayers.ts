@@ -32,17 +32,38 @@ function zoneShape(shape: TerrainShape): MultiPolygon {
   return polygons.length === 1 ? [polygons[0]] : polygonClipping.xor(polygons[0], ...polygons.slice(1));
 }
 
+type Box = { x0: number; y0: number; x1: number; y1: number };
+
+function boxOf(shape: MultiPolygon): Box {
+  const box = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+  for (const polygon of shape) {
+    for (const [x, y] of polygon[0] ?? []) {
+      box.x0 = Math.min(box.x0, x);
+      box.y0 = Math.min(box.y0, y);
+      box.x1 = Math.max(box.x1, x);
+      box.y1 = Math.max(box.y1, y);
+    }
+  }
+  return box;
+}
+
+const meets = (a: Box, b: Box) => a.x0 <= b.x1 && a.x1 >= b.x0 && a.y0 <= b.y1 && a.y1 >= b.y0;
+
 /** The layers to draw, lowest first. `shapes` are the zones, the one that wins first (terrainShapes). */
 export function terrainLayers(shapes: TerrainShape[]): TerrainLayer[] {
   // One per zone, so each follows its own zone when it's dragged (zones at
   // one height don't shade each other: see the view's shadows).
   const layers: TerrainLayer[] = [];
-  let covered: MultiPolygon = [];
+  // Each zone cut only by the smaller ones (earlier) whose box meets its box: against a union of all of
+  // them, growing with every zone, it took the most of the whole terrain's time on a map of many zones.
+  const earlier: { shape: MultiPolygon; box: Box }[] = [];
   for (const shape of shapes) {
     const own = zoneShape(shape);
+    const box = boxOf(own);
+    const over = earlier.filter((other) => meets(box, other.box)).map((other) => other.shape);
     // What of it isn't already a smaller zone's.
-    const visible = covered.length > 0 ? polygonClipping.difference(own, covered) : own;
-    covered = covered.length > 0 ? polygonClipping.union(covered, own) : own;
+    const visible = over.length > 0 ? polygonClipping.difference(own, ...over) : own;
+    earlier.push({ shape: own, box });
     if (visible.length === 0) {
       continue;
     }
@@ -51,6 +72,9 @@ export function terrainLayers(shapes: TerrainShape[]): TerrainLayer[] {
   if (layers.some((layer) => layer.height < 0)) {
     const pits = layers.filter((layer) => layer.height < 0).map((layer) => layer.shape);
     const sunk = pits.length === 1 ? pits[0] : polygonClipping.union(pits[0], ...pits.slice(1));
+    // What covers the ground: every zone (only asked for here, round the pits).
+    const all = earlier.map((other) => other.shape);
+    const covered = all.length === 1 ? all[0] : polygonClipping.union(all[0], ...all.slice(1));
     layers.push({ height: 0, shape: sunk, rim: true, cover: covered });
   }
   // The ground's rim right after the pits, before anything at its level or above.

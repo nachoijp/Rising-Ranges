@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { TessellateModifier } from "three/examples/jsm/modifiers/TessellateModifier.js";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { MultiPolygon } from "polygon-clipping";
 import { growRings, type TerrainSkin } from "../terrain/terrain";
 import polygonClipping from "polygon-clipping";
@@ -220,9 +221,9 @@ export class VistazoView {
   private paused = false;
   /** The weather's particles (see weather.ts), what they were built from, and the frames they're drawn on. */
   private weatherGroup = new THREE.Group();
-  /** Clouds as shadows: the terrain's fog copies again (their geometry shared, not owned), with the shadows' material. */
+  /** Clouds as shadows: the terrain's surfaces under each (see copiesIn), with the shadows' material. */
   private cloudShadowGroup = new THREE.Group();
-  /** Under each bridge, the terrain's fog copies again (geometry shared), filled from beside it (see buildUnderBridges). */
+  /** Under each bridge, the terrain's surfaces there (see copiesIn), filled from beside it (see buildUnderBridges). */
   private underBridgeGroup = new THREE.Group();
   /** Volume templates placed here (see setTemplates), and the meshes drawn for them. */
   private templates: Template[] = [];
@@ -1464,14 +1465,11 @@ export class VistazoView {
    * What the map paints under a bridge is the bridge itself (seen from
    * above): on the ground and walls below it, inside its box, the map from
    * just past its long sides instead, mirrored across them, as if the map
-   * went on under it. Drawn on the terrain's fog copies (their geometry
-   * shared, so only the materials are let go).
+   * went on under it. Drawn on the terrain's surfaces there (see copiesIn).
    */
   private buildUnderBridges() {
-    for (const child of [...this.underBridgeGroup.children]) {
-      this.underBridgeGroup.remove(child);
-      ((child as THREE.Mesh).material as THREE.Material).dispose();
-    }
+    // Each bridge's surfaces are its own (merged from the copies: see copiesIn).
+    this.clear(this.underBridgeGroup);
     const scene = this.scene;
     const texture = this.texture;
     if (!scene || !texture || !this.mapTexture) {
@@ -1497,14 +1495,54 @@ export class VistazoView {
           uBelow: { value: bridge.bottom * this.k },
         },
       });
-      for (const copy of this.fogGroup.children as THREE.Mesh[]) {
-        const under = new THREE.Mesh(copy.geometry, material);
-        under.position.copy(copy.position);
-        under.renderOrder = 1;
-        under.frustumCulled = false;
-        this.underBridgeGroup.add(under);
+      // Only the terrain under its box, as one mesh (one draw, not one for every piece of the map).
+      const u = this.u;
+      const corners = [-1, 1].flatMap((a) => [-1, 1].map((b) => ({ x: center.x + along.x * halfAlong * a + across.x * halfAcross * b, y: center.y + along.y * halfAlong * a + across.y * halfAcross * b })));
+      const box = { x0: Math.min(...corners.map((c) => c.x)) * u, y0: Math.min(...corners.map((c) => c.y)) * u, x1: Math.max(...corners.map((c) => c.x)) * u, y1: Math.max(...corners.map((c) => c.y)) * u };
+      const surfaces = this.copiesIn(box);
+      if (!surfaces) {
+        material.dispose();
+        continue;
       }
+      const under = new THREE.Mesh(surfaces, material);
+      under.renderOrder = 1;
+      under.frustumCulled = false;
+      this.underBridgeGroup.add(under);
     }
+  }
+
+  /**
+   * The terrain's surfaces (its fog copies: ground, tops, walls) within a box
+   * (view units; all of them with none), as one geometry: positions only,
+   * each copy's own offset in them. For what's drawn over the terrain itself
+   * (cloud shadows, a bridge's fill), in one draw.
+   */
+  private copiesIn(box: { x0: number; y0: number; x1: number; y1: number } | null): THREE.BufferGeometry | null {
+    const parts: THREE.BufferGeometry[] = [];
+    for (const copy of this.fogGroup.children as THREE.Mesh[]) {
+      const geometry = copy.geometry;
+      if (!geometry.boundingBox) {
+        geometry.computeBoundingBox();
+      }
+      const bounds = geometry.boundingBox!;
+      if (box && (bounds.max.x < box.x0 || bounds.min.x > box.x1 || bounds.max.y < box.y0 || bounds.min.y > box.y1)) {
+        continue;
+      }
+      const flat = geometry.index ? geometry.toNonIndexed() : null;
+      const part = new THREE.BufferGeometry();
+      part.setAttribute("position", (flat ?? geometry).getAttribute("position").clone());
+      part.translate(copy.position.x, copy.position.y, copy.position.z);
+      parts.push(part);
+      flat?.dispose();
+    }
+    if (parts.length === 0) {
+      return null;
+    }
+    const merged = mergeGeometries(parts);
+    for (const part of parts) {
+      part.dispose();
+    }
+    return merged;
   }
 
   /**
@@ -1930,11 +1968,7 @@ export class VistazoView {
     }
     this.weatherKey = key;
     this.clear(this.weatherGroup);
-    // Their geometry is the fog copies': only their materials are let go.
-    for (const child of [...this.cloudShadowGroup.children]) {
-      this.cloudShadowGroup.remove(child);
-      ((child as THREE.Mesh).material as THREE.Material).dispose();
-    }
+    this.clear(this.cloudShadowGroup);
     if (scene && weathers.length > 0) {
       const frame = { u: this.u, cell: VIEW_CELL, k: this.k, lowest: this.minH, highest: this.maxH, amount: this.look.amount };
       for (const object of buildWeather(weathers, frame, scene.dpi, this.options.clouds)) {
@@ -1943,14 +1977,18 @@ export class VistazoView {
       if (this.options.clouds === "shadows") {
         for (const weather of weathers.filter((w) => w.type === "CLOUD")) {
           const material = cloudShadowMaterial(weather, frame);
-          for (const copy of this.fogGroup.children as THREE.Mesh[]) {
-            const shadow = new THREE.Mesh(copy.geometry, material);
-            shadow.position.copy(copy.position);
-            // Under the fog (5), over the ground and its rings.
-            shadow.renderOrder = 4;
-            shadow.frustumCulled = false;
-            this.cloudShadowGroup.add(shadow);
+          // The terrain within its item's box, as one mesh (one draw).
+          const u = this.u;
+          const surfaces = this.copiesIn({ x0: weather.box.x0 * u, y0: weather.box.y0 * u, x1: weather.box.x1 * u, y1: weather.box.y1 * u });
+          if (!surfaces) {
+            material.dispose();
+            continue;
           }
+          const shadow = new THREE.Mesh(surfaces, material);
+          // Under the fog (5), over the ground and its rings.
+          shadow.renderOrder = 4;
+          shadow.frustumCulled = false;
+          this.cloudShadowGroup.add(shadow);
         }
       }
     }
@@ -2094,11 +2132,16 @@ export class VistazoView {
       const gh = Math.ceil((Math.max(...ys) + margin - gy0) / step) + 1;
       const heightAt = (i: number, j: number) => scene.heightAt(gx0 + i * step, gy0 + j * step) ?? NaN;
       const reached = new Uint8Array(gw * gh);
+      // Each point's ground read once (a point the water can't fill is asked again by each neighbour).
+      const checked = new Uint8Array(gw * gh);
       const queue: number[] = [];
-      for (let j = 0; j < gh; j++) {
-        for (let i = 0; i < gw; i++) {
+      // Its zone's points: only within its zone's box (the margin round it can't be in it).
+      const span = Math.ceil(margin / step);
+      for (let j = span; j < gh - span; j++) {
+        for (let i = span; i < gw - span; i++) {
           if (inShape(gx0 + i * step, gy0 + j * step, piece.shape)) {
             reached[j * gw + i] = 255;
+            checked[j * gw + i] = 1;
             queue.push(j * gw + i);
           }
         }
@@ -2118,7 +2161,11 @@ export class VistazoView {
             continue;
           }
           const next = nj * gw + ni;
-          if (!reached[next] && fits(heightAt(ni, nj))) {
+          if (checked[next]) {
+            continue;
+          }
+          checked[next] = 1;
+          if (fits(heightAt(ni, nj))) {
             reached[next] = 255;
             depth[next] = depth[at] + 1;
             queue.push(next);
