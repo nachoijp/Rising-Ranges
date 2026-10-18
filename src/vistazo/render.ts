@@ -1,6 +1,8 @@
 import * as THREE from "three";
+import { TessellateModifier } from "three/examples/jsm/modifiers/TessellateModifier.js";
 import type { MultiPolygon } from "polygon-clipping";
-import type { TerrainSkin } from "../terrain/terrain";
+import { growRings, type TerrainSkin } from "../terrain/terrain";
+import polygonClipping from "polygon-clipping";
 import { inShape, pieceHeight, type Bridge, type Piece, type Prop, type StandEdge, type Token, type VistazoScene } from "./scene";
 import { distance3D } from "../engine/distance";
 import { cellCorners, groundOffset } from "../engine/hex";
@@ -209,6 +211,8 @@ export class VistazoView {
   private point: TokenView | null = null;
   /** Zones' water surfaces (see buildWater); moving with the weather's frames while waterMotion is on. */
   private waterGroup = new THREE.Group();
+  /** The heights grid as a texture (grid units; outside the map, far up): where water stops at the shore. */
+  private heightTexture: THREE.DataTexture | null = null;
   private weatherKey = "";
   private weatherFrame = 0;
   /** The player view's fog: where it is, and its shade over copies of the flat pieces (as the Banda tint). */
@@ -913,7 +917,8 @@ export class VistazoView {
               }
               const b0 = Math.min(t0, low0);
               const b1 = Math.min(t1, low1);
-              if (t0 - b0 < 1e-6 && t1 - b1 < 1e-6) {
+              // Not a hair of wall (a cloth meets the ground beside it at about its height).
+              if (t0 - b0 < 0.02 && t1 - b1 < 0.02) {
                 continue;
               }
               this.walls.push({
@@ -1573,12 +1578,13 @@ export class VistazoView {
     const u = this.u;
     const k = this.k;
     const z = piece.height * k;
-    const geometry = this.shapeGeometry(piece.shape);
+    // A cloth curves: its outline's triangles cut small (about a third of a cell) to follow its surface.
+    const geometry = piece.surface ? new TessellateModifier(VIEW_CELL / 3, 8).modify(this.shapeGeometry(piece.shape).toNonIndexed()) : this.shapeGeometry(piece.shape);
     const position = geometry.getAttribute("position") as THREE.BufferAttribute;
     if (!piece.stand) {
       geometry.setAttribute("uv", new THREE.BufferAttribute(this.uvs(position.array, position.count), 2));
       const mesh = new THREE.Mesh(geometry, this.pieceMaterial(piece.height, true));
-      if (piece.slope) {
+      if (piece.slope || piece.surface) {
         // A ramp: each corner at its own height (a plane: the triangles stay flat).
         for (let i = 0; i < position.count; i++) {
           position.setZ(i, pieceHeight(piece, position.getX(i) / u, position.getY(i) / u) * k);
@@ -1588,8 +1594,8 @@ export class VistazoView {
         mesh.position.z = z;
       }
       this.terrainGroup.add(mesh);
-      this.fillCopy(geometry, piece.slope ? 0 : z);
-      this.fogCopy(geometry, piece.slope ? 0 : z);
+      this.fillCopy(geometry, piece.slope || piece.surface ? 0 : z);
+      this.fogCopy(geometry, piece.slope || piece.surface ? 0 : z);
       return;
     }
     // Standing: a block (its top plain stone, its sides walls) with the
@@ -1934,11 +1940,30 @@ export class VistazoView {
       return;
     }
     const t = this.texture;
+    this.heightTexture?.dispose();
+    this.heightTexture = null;
+    const grid = this.grid;
     for (const piece of scene.pieces) {
       if (!piece.water || piece.stand) {
         continue;
       }
-      const geometry = this.shapeGeometry(piece.shape);
+      if (!this.heightTexture) {
+        const heights = new Float32Array(grid.cells.length);
+        grid.cells.forEach((h, i) => (heights[i] = Number.isNaN(h) ? 1e6 : h));
+        this.heightTexture = new THREE.DataTexture(heights, grid.w, grid.h, THREE.RedFormat, THREE.FloatType);
+        this.heightTexture.needsUpdate = true;
+      }
+      // Water fills what's below its level, not only its zone: drawn a little past it (two cells), and
+      // only where the ground is under its surface (it stops at the shore of a slope beside it).
+      const level = piece.height + piece.water;
+      let shape = piece.shape;
+      try {
+        const grown = growRings(piece.shape.map((polygon) => polygon[0] as [number, number][]), scene.dpi * 2).map((ring) => [ring]);
+        shape = polygonClipping.intersection(polygonClipping.union(piece.shape, ...grown), scene.world);
+      } catch {
+        // Its zone alone, then.
+      }
+      const geometry = this.shapeGeometry(shape);
       const material = new THREE.ShaderMaterial({
         vertexShader: WATER_VERTEX,
         fragmentShader: WATER_FRAGMENT,
@@ -1951,10 +1976,14 @@ export class VistazoView {
           uU: { value: this.u },
           uCell: { value: scene.dpi },
           uTex: { value: new THREE.Vector4(t.x0, t.y0, t.w, t.h) },
+          uHeights: { value: this.heightTexture },
+          uGrid: { value: new THREE.Vector4(grid.x0, grid.y0, grid.step, 0) },
+          uGridSize: { value: new THREE.Vector2(grid.w, grid.h) },
+          uLevel: { value: level },
         },
       });
       const surface = new THREE.Mesh(geometry, material);
-      surface.position.z = (piece.height + piece.water) * this.k;
+      surface.position.z = level * this.k;
       surface.renderOrder = 4;
       this.waterGroup.add(surface);
     }
@@ -2786,6 +2815,10 @@ const WATER_FRAGMENT = /* glsl */ `
   uniform float uU;
   uniform float uCell;
   uniform vec4 uTex;
+  uniform sampler2D uHeights;
+  uniform vec4 uGrid;
+  uniform vec2 uGridSize;
+  uniform float uLevel;
   varying vec2 vAt;
   float hash(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
@@ -2799,6 +2832,10 @@ const WATER_FRAGMENT = /* glsl */ `
     return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
   }
   void main() {
+    // Only where the ground is below the water's level (its shore on a slope beside it).
+    vec2 scene = vAt / uU;
+    vec2 cell = ((scene - uGrid.xy) / uGrid.z + 0.5) / uGridSize;
+    if (texture2D(uHeights, cell).r >= uLevel) discard;
     // In cells, so the ripples are the same size on any map.
     vec2 p = vAt / uU / uCell;
     float a = noise(p * 1.6 + vec2(uTime * 0.25, uTime * 0.18));

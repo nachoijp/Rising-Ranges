@@ -66,13 +66,15 @@ export type Piece = {
   skin?: TerrainSkin;
   /** Water over it, cells deep (see getTerrainWater). */
   water?: number;
+  /** A cloth's surface: its height at a scene point (see clothSurface). */
+  surface?: (point: { x: number; y: number }) => number;
   /** A ramp's slope: then `height` is its high end. */
   slope?: RampSlope;
 };
 
 /** How high a piece is at a scene point: along its slope, if it's a ramp. */
 export function pieceHeight(piece: Piece, x: number, y: number): number {
-  return piece.slope ? slopeHeight(piece.slope, piece.height, { x, y }) : piece.height;
+  return piece.surface ? piece.surface({ x, y }) : piece.slope ? slopeHeight(piece.slope, piece.height, { x, y }) : piece.height;
 }
 
 export type Token = {
@@ -420,6 +422,7 @@ function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dp
   // under everything instead (the zones above it still cover it).
   const pieces: Piece[] = [];
   const slopes = new Map(shapes.filter((shape) => shape.slope).map((shape) => [shape.id, shape.slope as RampSlope]));
+  const surfaces = new Map(shapes.filter((shape) => shape.surface).map((shape) => [shape.id, shape.surface!]));
   // A zone of exactly four points, for unfolding it standing (see Piece.unfold).
   const quads = new Map<string, [number, number][]>();
   for (const shape of shapes) {
@@ -457,6 +460,7 @@ function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dp
           walls: zone ? getTerrainWall(zone) : undefined,
           skin: zone ? terrainSkin(zone, items) : undefined,
           water: zone ? getTerrainWater(zone) : undefined,
+          surface: layer.zoneId ? surfaces.get(layer.zoneId) : undefined,
           slope: layer.zoneId ? slopes.get(layer.zoneId) : undefined,
         };
         const edge = layer.zoneId ? standing.get(layer.zoneId) : undefined;

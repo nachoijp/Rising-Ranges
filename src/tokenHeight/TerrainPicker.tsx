@@ -7,12 +7,14 @@ import {
   canBeTerrain,
   getTerrainHeight,
   getTerrainRamp,
+  getTerrainCloth,
   getTerrainSkin,
   getTerrainStand,
   getTerrainUnder,
   getTerrainWall,
   getTerrainWater,
   setTerrainHeight,
+  setTerrainCloth,
   setTerrainSkin,
   setTerrainUnder,
   setTerrainWater,
@@ -112,6 +114,10 @@ export function TerrainPicker() {
     await OBR.scene.items.updateItems(ids, (drafts) => {
       for (const draft of drafts) {
         setTerrainHeight(draft, next && clampHeight(next(getTerrainHeight(draft) ?? 0)));
+        // Given a height, it's no cloth any more.
+        if (next) {
+          setTerrainCloth(draft, false);
+        }
         // Lowered under its clear space, a bridge keeps a slab: its underside comes down with it.
         const top = getTerrainHeight(draft);
         const under = getTerrainUnder(draft);
@@ -132,6 +138,26 @@ export function TerrainPicker() {
   }
 
   /** The selected zones' underside (a bridge or balcony; below 0 for one level with the ground), from each one's own (0: solid). */
+  /** Makes the selected shapes cloths (no height of their own: stretched between the terrain round them), or not. */
+  async function setCloth(on: boolean) {
+    const ids = shapes.map((shape) => shape.id);
+    if (ids.length === 0) {
+      return;
+    }
+    await OBR.scene.items.updateItems(ids, (drafts) => {
+      for (const draft of drafts) {
+        setTerrainCloth(draft, on);
+        if (on) {
+          setTerrainHeight(draft, undefined);
+          setTerrainRamp(draft, undefined);
+          setTerrainStand(draft, undefined);
+          setTerrainUnder(draft, undefined);
+        }
+      }
+    });
+    setShapes(await OBR.scene.items.getItems(ids));
+  }
+
   /** The water over the selected zones, from each one's own depth (0: none). */
   async function applyWater(next: (cells: number) => number) {
     const ids = shapes.filter((shape) => getTerrainHeight(shape) !== undefined).map((shape) => shape.id);
@@ -241,6 +267,7 @@ export function TerrainPicker() {
     setWalls((next || undefined) as TerrainWallStyle | undefined);
   };
   const disabled = terrainShapes.length === 0;
+  const cloth = shapes.length > 0 && shapes.every(getTerrainCloth);
   // A zone and a plain shape (no height) selected together: the shape can be the zone's picture.
   const plain = shapes.filter((shape) => getTerrainHeight(shape) === undefined);
   const canLink = terrainShapes.length === 1 && plain.length === 1;
@@ -287,6 +314,18 @@ export function TerrainPicker() {
           fine
           end={<span className="step-button icon-button" aria-hidden="true" style={{ visibility: "hidden" }} />}
         />
+      </div>
+      <div className="step-row" role="group" aria-label={t("terrain.cloth")} title={t("terrain.clothHint")}>
+        <span className="row-label">{t("terrain.cloth")}</span>
+        <button
+          className={cloth ? "step-button ground active" : "step-button ground"}
+          style={{ flex: 1, marginLeft: 0 }}
+          disabled={shapes.length === 0}
+          aria-pressed={cloth}
+          onClick={() => void setCloth(!cloth)}
+        >
+          {t(cloth ? "terrain.clothOff" : "terrain.clothOn")}
+        </button>
       </div>
       <div className="step-row" role="group" aria-label={t("terrain.ramp")} title={t("terrain.rampHint")}>
         <span className="row-label">{t("terrain.ramp")}</span>

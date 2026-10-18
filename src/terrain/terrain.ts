@@ -1,4 +1,5 @@
 import { Command, isCurve, isPath, isShape, type Curve, type Item, type Vector2 } from "@owlbear-rodeo/sdk";
+import polygonClipping, { type Pair, type Polygon } from "polygon-clipping";
 import { getPluginId } from "../util/getPluginId";
 
 // Terrain with a height: an ordinary Owlbear shape — rectangle, circle,
@@ -172,6 +173,8 @@ export type TerrainZone = {
   contains: (point: Vector2) => boolean;
   /** A ramp's slope (its height then is the high end's). */
   slope?: RampSlope;
+  /** A cloth's surface (see clothSurface): its height at each point, from the terrain round it. */
+  surface?: (point: Vector2) => number;
 };
 
 /** How high a ramp is at a point: from its low end to `height`, by how far up it the point is. */
@@ -207,7 +210,7 @@ function inPolygons(polygons: Vector2[][], point: Vector2): boolean {
   return inside;
 }
 
-/** A path's outlines, its curves taken by their end points (close enough for where a token stands). */
+/** A path's outlines, its curves followed along (see the curve commands below). */
 function pathPolygons(commands: number[][]): Vector2[][] {
   const polygons: Vector2[][] = [];
   let current: Vector2[] = [];
@@ -224,9 +227,33 @@ function pathPolygons(commands: number[][]): Vector2[][] {
       }
       current = [];
     } else {
-      // LINE x y · QUAD x1 y1 x y · CONIC x1 y1 x y w · CUBIC x1 y1 x2 y2 x y
+      // LINE x y · QUAD x1 y1 x y · CONIC x1 y1 x y w · CUBIC x1 y1 x2 y2 x y. Curves followed along
+      // (CURVE_STEPS points each), not cut short to their ends: a circle drawn as a path is four
+      // curves between four nodes, and by its ends alone it'd be a square.
+      const from = current[current.length - 1];
       const end = type === Command.CONIC ? 3 : command.length - 2;
-      current.push({ x: command[end], y: command[end + 1] });
+      const to = { x: command[end], y: command[end + 1] };
+      if (from && (type === Command.QUAD || type === Command.CONIC || type === Command.CUBIC)) {
+        for (let step = 1; step < CURVE_STEPS; step++) {
+          const t = step / CURVE_STEPS;
+          const u = 1 - t;
+          if (type === Command.CUBIC) {
+            const [c1, c2] = [{ x: command[1], y: command[2] }, { x: command[3], y: command[4] }];
+            current.push({
+              x: u * u * u * from.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * to.x,
+              y: u * u * u * from.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t * t * t * to.y,
+            });
+          } else {
+            // A quadratic; a conic is one weighted at its control point (w = 1: the same quadratic).
+            const c = { x: command[1], y: command[2] };
+            const w = type === Command.CONIC ? command[5] : 1;
+            const [a0, a1, a2] = [u * u, 2 * u * t * w, t * t];
+            const sum = a0 + a1 + a2;
+            current.push({ x: (a0 * from.x + a1 * c.x + a2 * to.x) / sum, y: (a0 * from.y + a1 * c.y + a2 * to.y) / sum });
+          }
+        }
+      }
+      current.push(to);
     }
   }
   if (current.length >= 3) {
@@ -400,6 +427,31 @@ export function terrainZones(items: Item[]): TerrainZone[] {
     const others = zones.filter((other) => other !== zone);
     zone.slope = { low: terrainAt(others, ends.beyond), origin: ends.low, axis: { x: ends.high.x - ends.low.x, y: ends.high.y - ends.low.y } };
   }
+  // Cloths last: stretched over the terrain round them (which is read without them).
+  const solid = [...zones];
+  // The solid zones' outlines, for what of a cloth they cover (see clothSurface).
+  const solidIds = new Set(solid.map((zone) => zone.id));
+  const solidOutlines: Pair[][] = items
+    .filter((item) => solidIds.has(item.id))
+    .flatMap((item) => localRings(item).filter((ring) => ring.length >= 3).map((ring) => ring.map((p) => toScene(item, p) as Pair)));
+  for (const item of items) {
+    if (!getTerrainCloth(item) || !canBeTerrain(item)) {
+      continue;
+    }
+    const contains = containsFor(item);
+    const cloth = contains && clothSurface(item, solid, solidOutlines);
+    if (cloth) {
+      // A little past its outline too (thin gaps to the shapes beside it closed); last of all, so
+      // where that overlaps any other zone, the zone wins.
+      zones.push({
+        id: item.id,
+        height: cloth.height,
+        area: Number.MAX_VALUE,
+        contains: (point) => contains(toLocal(item, point)) || nearRings(cloth.rings, point, CLOTH_GAP),
+        surface: cloth.at,
+      });
+    }
+  }
   return zones;
 }
 
@@ -407,14 +459,14 @@ export function terrainZones(items: Item[]): TerrainZone[] {
 export function terrainAt(zones: TerrainZone[], point: Vector2): number {
   for (const zone of zones) {
     if (zone.contains(point)) {
-      return zone.slope ? slopeHeight(zone.slope, zone.height, point) : zone.height;
+      return zone.surface ? zone.surface(point) : zone.slope ? slopeHeight(zone.slope, zone.height, point) : zone.height;
     }
   }
   return 0;
 }
 
 /** A zone's outline(s) in scene coordinates, for drawing it (see terrainView.ts); a ramp's slope as terrainZones has it. */
-export type TerrainShape = { id: string; height: number; area: number; rings: [number, number][][]; slope?: RampSlope };
+export type TerrainShape = { id: string; height: number; area: number; rings: [number, number][][]; slope?: RampSlope; surface?: (point: Vector2) => number };
 
 /** How many points a circle zone's outline is drawn with. */
 const CIRCLE_POINTS = 48;
@@ -460,8 +512,23 @@ export function itemOutline(item: Item): [number, number][][] {
 /** The scene's terrain zones with their outlines, the one that wins first (smallest, then highest), as terrainZones. */
 export function terrainShapes(items: Item[]): TerrainShape[] {
   const shapes: TerrainShape[] = [];
-  const slopes = new Map(terrainZones(items).filter((zone) => zone.slope).map((zone) => [zone.id, zone.slope]));
+  const zones = terrainZones(items);
+  const slopes = new Map(zones.filter((zone) => zone.slope).map((zone) => [zone.id, zone.slope]));
+  // A cloth: drawn with its surface (and, for what's coloured by height, the middle of its heights).
+  const cloths = new Map(zones.filter((zone) => zone.surface).map((zone) => [zone.id, zone]));
   for (const item of items) {
+    const cloth = cloths.get(item.id);
+    if (cloth) {
+      const rings = localRings(item)
+        .filter((ring) => ring.length >= 3)
+        .map((ring) => ring.map((p) => toScene(item, p)));
+      // Drawn a little past its outline too (see terrainZones), last of all.
+      const grown = growRings(rings, CLOTH_GAP);
+      if (grown.length > 0) {
+        shapes.push({ id: item.id, height: cloth.height, area: cloth.area, rings: grown, surface: cloth.surface });
+      }
+      continue;
+    }
     const height = getTerrainHeight(item);
     if (height === undefined || !canBeTerrain(item) || isBridge(item, height)) {
       continue;
@@ -658,4 +725,182 @@ export function setTerrainWater(item: Item, cells: number | undefined) {
   } else {
     delete item.metadata[WATER_KEY];
   }
+}
+
+// A cloth: a shape with no height of its own, stretched between the terrain
+// round it like a cloth (a ravine's painted cliff between the rim and the
+// river). Each point of it is as high as the ground just past its outline,
+// the nearer parts of the outline counting far more. It's measured so too.
+
+const CLOTH_KEY = getPluginId("terrainCloth");
+
+export function getTerrainCloth(item: Item): boolean {
+  return item.metadata[CLOTH_KEY] === true;
+}
+
+export function setTerrainCloth(item: Item, cloth: boolean) {
+  if (cloth) {
+    item.metadata[CLOTH_KEY] = true;
+  } else {
+    delete item.metadata[CLOTH_KEY];
+  }
+}
+
+/** The most points a cloth's outline is read at (spread along it). */
+const CLOTH_SAMPLES = 160;
+
+/**
+ * How far past its outline a cloth reaches (scene px, about a tenth of a
+ * cell on a usual map): thin gaps to the shapes beside it, drawn by hand,
+ * are closed; and how far out its outline looks for the terrain it's
+ * stretched to (twice that), past such a gap.
+ */
+const CLOTH_GAP = 16;
+
+/** Whether a point is within `reach` of some outline's sides. */
+function nearRings(rings: Vector2[][], point: Vector2, reach: number): boolean {
+  for (const ring of rings) {
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i];
+      const b = ring[(i + 1) % ring.length];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const length2 = dx * dx + dy * dy;
+      const t = length2 > 0 ? Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / length2)) : 0;
+      if (Math.hypot(point.x - (a.x + dx * t), point.y - (a.y + dy * t)) <= reach) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Outlines grown by `reach` on every side (each side widened to a band, joined), as outer rings. */
+export function growRings(rings: [number, number][][], reach: number): [number, number][][] {
+  const parts: Polygon[] = rings.map((ring) => [ring as Pair[]]);
+  for (const ring of rings) {
+    for (let i = 0; i < ring.length; i++) {
+      const [ax, ay] = ring[i];
+      const [bx, by] = ring[(i + 1) % ring.length];
+      const length = Math.hypot(bx - ax, by - ay);
+      if (length < 1e-9) {
+        continue;
+      }
+      const [nx, ny] = [(-(by - ay) / length) * reach, ((bx - ax) / length) * reach];
+      const [ux, uy] = [((bx - ax) / length) * reach, ((by - ay) / length) * reach];
+      // The side as a band, a little past its ends so the corners close.
+      parts.push([[[ax - ux + nx, ay - uy + ny], [bx + ux + nx, by + uy + ny], [bx + ux - nx, by + uy - ny], [ax - ux - nx, ay - uy - ny]]]);
+    }
+  }
+  try {
+    const grown = polygonClipping.union(parts[0], ...parts.slice(1));
+    return grown.map((polygon) => polygon[0] as [number, number][]);
+  } catch {
+    return rings;
+  }
+}
+
+/**
+ * A cloth's surface: its outline read at points along it, each with the
+ * height of the ground just outside there (`solid`: the terrain without
+ * cloths); a point inside, those heights weighted by how near each is
+ * (1/d³: the nearest part of the outline rules). Also the middle of its
+ * heights (to sort and colour it by).
+ */
+function clothSurface(item: Item, solid: TerrainZone[], solidOutlines: Pair[][] = []): { at: (point: Vector2) => number; height: number; rings: Vector2[][] } | null {
+  const contains = containsFor(item);
+  const rings = localRings(item)
+    .filter((ring) => ring.length >= 3)
+    .map((ring) => ring.map((p) => {
+      const [x, y] = toScene(item, p);
+      return { x, y };
+    }));
+  if (!contains || rings.length === 0) {
+    return null;
+  }
+  // What of it is left where other zones cover it (they win there): its outline is read along that,
+  // so a high zone drawn over its edge (a cliff's top) gives that edge its height.
+  const covered = (() => {
+    const xs = rings.flat().map((p) => p.x);
+    const ys = rings.flat().map((p) => p.y);
+    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+    // Only the zones whose box meets its box.
+    const over = solidOutlines.filter((ring) => {
+      const rx = ring.map(([x]) => x);
+      const ry = ring.map(([, y]) => y);
+      return Math.min(...rx) <= x1 && Math.max(...rx) >= x0 && Math.min(...ry) <= y1 && Math.max(...ry) >= y0;
+    });
+    if (over.length === 0) {
+      return null;
+    }
+    try {
+      const own = rings.map((ring) => [ring.map((p) => [p.x, p.y] as Pair)]);
+      const left = polygonClipping.difference(own as Polygon[], ...over.map((ring) => [ring] as Polygon));
+      return left.flatMap((polygon) => polygon.map((ring) => ring.slice(0, -1).map(([x, y]) => ({ x, y }))));
+    } catch {
+      return null;
+    }
+  })();
+  const outline = covered && covered.length > 0 ? covered : rings;
+  const perimeter = outline.reduce((sum, ring) => sum + ring.reduce((s, p, i) => s + Math.hypot(ring[(i + 1) % ring.length].x - p.x, ring[(i + 1) % ring.length].y - p.y), 0), 0);
+  const step = Math.max(2, perimeter / CLOTH_SAMPLES);
+  // Inside what's left of it (even-odd over its outline's rings).
+  const inside = (p: Vector2) => inPolygons(outline, p);
+  const samples: { x: number; y: number; h: number }[] = [];
+  for (const ring of outline) {
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i];
+      const b = ring[(i + 1) % ring.length];
+      const length = Math.hypot(b.x - a.x, b.y - a.y);
+      if (length < 1e-9) {
+        continue;
+      }
+      let [nx, ny] = [(b.y - a.y) / length, -(b.x - a.x) / length];
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      // Pointing out of it.
+      if (inside({ x: mid.x + nx * 1.5, y: mid.y + ny * 1.5 })) {
+        [nx, ny] = [-nx, -ny];
+      }
+      const n = Math.max(1, Math.round(length / step));
+      for (let j = 0; j < n; j++) {
+        const t = (j + 0.5) / n;
+        const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+        // Outward to the first zone (past a thin gap to it), or else the ground just past it: from right
+        // by its outline, in small steps, so a thin zone beside it (a cliff's narrow top) isn't stepped over.
+        let h = terrainAt(solid, { x: p.x + nx * 2, y: p.y + ny * 2 });
+        for (let d = 1; d <= CLOTH_GAP * 2; d += 2) {
+          const out = { x: p.x + nx * d, y: p.y + ny * d };
+          const zone = solid.find((z) => z.contains(out));
+          if (zone) {
+            h = terrainAt([zone], out);
+            break;
+          }
+        }
+        samples.push({ x: p.x, y: p.y, h });
+      }
+    }
+  }
+  if (samples.length === 0) {
+    return null;
+  }
+  const heights = samples.map((s) => s.h);
+  const height = (Math.min(...heights) + Math.max(...heights)) / 2;
+  return {
+    height,
+    rings,
+    at: (point) => {
+      let sum = 0;
+      let weight = 0;
+      for (const s of samples) {
+        const d2 = (point.x - s.x) ** 2 + (point.y - s.y) ** 2;
+        if (d2 < 1e-6) {
+          return s.h;
+        }
+        const w = 1 / (d2 * Math.sqrt(d2));
+        sum += w * s.h;
+        weight += w;
+      }
+      return sum / weight;
+    },
+  };
 }
