@@ -410,7 +410,19 @@ body {
 .xray .tok.hidden img {
   opacity: 0.6;
 }
-.notok .tok:not(.prop) {
+/* The free point: a small accent dot, on its point (not a picture). */
+.tok.point .pin {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  /* An accent dot with a white rim, all of it grabbed. */
+  background: radial-gradient(circle, var(--accent) 0 62%, #fff 64% 100%);
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.7));
+  pointer-events: auto;
+  cursor: grab;
+}
+.notok .tok:not(.prop):not(.point) {
   display: none;
 }
 .hud {

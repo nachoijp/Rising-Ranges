@@ -11,7 +11,7 @@ import { computeDistanceRows } from "../distances/rows";
 import { getStoredTheme } from "../theme/themes";
 import { getColorString } from "../util/color";
 import { buildScene, propOf, type Token, type VistazoScene } from "./scene";
-import { VistazoView, type Camera, type DistanceLine, type Options } from "./render";
+import { FREE_POINT, VistazoView, type Camera, type DistanceLine, type Options } from "./render";
 import { LIVE_DRAG_CHANNEL, type LiveDrag } from "./live";
 import { SYNC_CHANNEL, SYNC_HEARTBEAT_MS, SYNC_INTERVAL_MS, SYNC_TIMEOUT_MS, type SyncMessage } from "./sync";
 import { stepHeight } from "../engine/heights";
@@ -65,7 +65,7 @@ const POSE = { tilt: 55, yaw: -25 };
 const OPTIONS_KEY = "rising-ranges/vistazo-options";
 
 function readOptions(): Options {
-  const defaults: Options = { heightScale: 1, shade: 0.6, perspective: 45, tint: false, tokens: true, xray: false, edges: true, anchor: "center", levels: true, grid: false, distances: true, tokenLabels: "full", distanceLabels: "full", labelSize: 1, relief: 0.5, weather: true, clouds: "mist", props: "flat", showProps: true, propDistances: false, propShadows: true, propLines: true, propLabels: false, wallStyle: "fold", rings: true, ringFill: false, playerView: false };
+  const defaults: Options = { heightScale: 1, shade: 0.6, perspective: 45, tint: false, tokens: true, xray: false, edges: true, anchor: "center", levels: true, grid: false, distances: true, tokenLabels: "full", distanceLabels: "full", labelSize: 1, relief: 0.5, weather: true, clouds: "mist", waterMotion: true, props: "flat", showProps: true, propDistances: false, propShadows: true, propLines: true, propLabels: false, wallStyle: "fold", rings: true, ringFill: false, playerView: false };
   try {
     const stored: Options = { ...defaults, ...JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? "{}") };
     // "Hidden" was a position of the props once; now it's their own checkbox.
@@ -328,10 +328,14 @@ async function start() {
   const t = (key: TranslationKey, vars?: Record<string, string | number>) => translate(language, key, vars);
   /** Set while a token is being moved here: Esc cancels that instead of closing. */
   let cancelMove: (() => void) | null = null;
+  /** Takes the free point away, if there's one (then Esc does only that); see placePoint. */
+  let clearPoint: () => boolean = () => false;
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       if (cancelMove) {
         cancelMove();
+      } else if (clearPoint()) {
+        // The point gone, the panel stays.
       } else if (FULL) {
         leaveFull();
       } else {
@@ -640,7 +644,9 @@ async function start() {
 
   // Pointer: drag orbits; the wheel held down (or Shift) pans, as in Owlbear; two fingers zoom and pan.
   const pointers = new Map<number, [number, number]>();
-  let mode: "orbit" | "pan" | "pinch" | "token" | null = null;
+  let mode: "orbit" | "pan" | "pinch" | "token" | "point" | null = null;
+  /** The free point being dragged: the level it moves over (grid units) and where it was grabbed from. */
+  let pointDrag: { level: number; grab: { x: number; y: number } } | null = null;
   let last: [number, number] | null = null;
   let pinch: { d: number; zoom: number; mid: [number, number] } | null = null;
   /** Panning moves the point the camera turns around (not the picture), so it always turns around the screen's middle. */
@@ -735,6 +741,16 @@ async function start() {
         };
       }
     }
+    // A press on the free point's marker: ready to drag it (anyone can: it's only this view's).
+    pointDrag = null;
+    if (press?.token === FREE_POINT && freePoint && scene) {
+      const at = stagePoint(event);
+      const level = scene.measuredAt(freePoint.x, freePoint.y) + freePoint.own;
+      const ground = view.pickPlane(at.x, at.y, level);
+      if (ground) {
+        pointDrag = { level, grab: { x: freePoint.x - ground.x, y: freePoint.y - ground.y } };
+      }
+    }
     stage.setPointerCapture(event.pointerId);
     pointers.set(event.pointerId, [event.clientX, event.clientY]);
     stage.classList.add("dragging");
@@ -743,7 +759,7 @@ async function start() {
       pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), zoom: camera.zoom, mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] };
       mode = "pinch";
     } else {
-      mode = moving ? "token" : event.button === 1 || event.shiftKey ? "pan" : "orbit";
+      mode = moving ? "token" : pointDrag ? "point" : event.button === 1 || event.shiftKey ? "pan" : "orbit";
       last = [event.clientX, event.clientY];
     }
   });
@@ -762,6 +778,15 @@ async function start() {
       const dx = event.clientX - last[0];
       const dy = event.clientY - last[1];
       last = [event.clientX, event.clientY];
+      // The free point dragged: over a level at its height, its rings and lines following it.
+      if (mode === "point" && pointDrag && freePoint) {
+        const at = stagePoint(event);
+        const ground = view.pickPlane(at.x, at.y, pointDrag.level);
+        if (ground) {
+          placePoint({ x: ground.x + pointDrag.grab.x, y: ground.y + pointDrag.grab.y, own: freePoint.own });
+        }
+        return;
+      }
       if (mode === "token" && moving) {
         const move = moving;
         if (!move.started && press && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 5) {
@@ -822,6 +847,11 @@ async function start() {
       }
       endMove();
     }
+    pointDrag = null;
+    // A click on the free point's marker: nothing (it isn't a token to select, nor ground to put it on).
+    if (press?.token === FREE_POINT) {
+      press = null;
+    }
     if (press && event.type === "pointerup" && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 5) {
       const id = press.token ?? "";
       const now = performance.now();
@@ -836,6 +866,13 @@ async function start() {
       } else {
         if (id) {
           void OBR.player.select([id]);
+        } else {
+          // On empty ground: the free point there, measured from instead of a token.
+          const rect = stage.getBoundingClientRect();
+          const ground = view.pickTerrain(event.clientX - rect.left, event.clientY - rect.top);
+          if (ground) {
+            placePoint({ x: ground.x, y: ground.y, own: 0 });
+          }
         }
         lastClick = { token: id, at: now, x: event.clientX, y: event.clientY };
       }
@@ -867,6 +904,24 @@ async function start() {
     { passive: false }
   );
   stage.addEventListener("keydown", (event) => {
+    // The free point (no token moving): raised and lowered by the same keys.
+    if (!moving && freePoint && !event.repeat) {
+      const settings = globalSettingsFromMetadata(sceneMetadata);
+      const bandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
+      const before = freePoint.own;
+      if (event.code === letterToCode(settings.hotkeyRaise)) {
+        freePoint.own = stepHeight(freePoint.own, 1, bandSet);
+      } else if (event.code === letterToCode(settings.hotkeyLower)) {
+        freePoint.own = stepHeight(freePoint.own, -1, bandSet);
+      } else if (event.code === letterToCode(groundHotkey(settings))) {
+        freePoint.own = 0;
+      }
+      if (freePoint.own !== before) {
+        event.preventDefault();
+        placePoint(freePoint);
+        return;
+      }
+    }
     // While a token's being moved: its own height, by the scene's keys (as in the Medición).
     if (moving && !event.repeat) {
       const settings = globalSettingsFromMetadata(sceneMetadata);
@@ -951,6 +1006,7 @@ async function start() {
     document.querySelector<HTMLElement>('fieldset[data-section="labels"]')!.hidden = !options.tokens;
     check("xray").checked = options.xray;
     check("edges").checked = options.edges;
+    check("waterMotion").checked = options.waterMotion;
     check("levels").checked = options.levels;
     check("grid").checked = options.grid;
     check("distances").checked = options.distances;
@@ -983,6 +1039,7 @@ async function start() {
   check("showTok").onchange = () => set({ tokens: check("showTok").checked });
   check("xray").onchange = () => set({ xray: check("xray").checked });
   check("edges").onchange = () => set({ edges: check("edges").checked });
+  check("waterMotion").onchange = () => set({ waterMotion: check("waterMotion").checked });
   check("levels").onchange = () => set({ levels: check("levels").checked });
   check("grid").onchange = () => set({ grid: check("grid").checked });
   check("distances").onchange = () => set({ distances: check("distances").checked });
@@ -1029,11 +1086,63 @@ async function start() {
    */
   /** The selected token, or prop (with the lines to props on): where the lines and rings go from. */
   const selectedOrigin = () => {
+    // The free point, while there's one (selecting a token takes it away).
+    if (freePoint) {
+      return pointOrigin();
+    }
     if (!scene || selection.length !== 1) {
       return undefined;
     }
     const withProps = options.propDistances && options.showProps;
     return scene.tokens.find((token) => token.id === selection[0]) ?? (withProps ? scene.props.find((prop) => prop.id === selection[0]) : undefined);
+  };
+  /**
+   * The free point as an origin, a token's size (one cell), at the ground
+   * there plus its own height: the item the distance math reads is made up.
+   */
+  const pointOrigin = () => {
+    if (!scene || !freePoint) {
+      return undefined;
+    }
+    const terrain = scene.measuredAt(freePoint.x, freePoint.y);
+    const item = {
+      id: FREE_POINT,
+      type: "IMAGE",
+      name: "",
+      position: { x: freePoint.x, y: freePoint.y },
+      rotation: 0,
+      scale: { x: 1, y: 1 },
+      image: { width: dpi, height: dpi, url: "", mime: "image/png" },
+      grid: { dpi, offset: { x: dpi / 2, y: dpi / 2 } },
+      metadata: {},
+      text: { plainText: "" },
+    } as unknown as Image;
+    return { id: FREE_POINT, x: freePoint.x, y: freePoint.y, terrain, own: freePoint.own, item };
+  };
+  /** The free point (scene px, and its own height over the ground there), or none. */
+  let freePoint: { x: number; y: number; own: number } | null = null;
+  function placePoint(point: { x: number; y: number; own: number } | null) {
+    freePoint = point;
+    if (point && scene) {
+      // A token selected is measured from first: the point takes its place.
+      // Cleared here too, at once: Owlbear tells us a moment later.
+      if (selection.length > 0) {
+        selection = [];
+        view.setSelected([]);
+        void OBR.player.deselect();
+      }
+      view.setPoint({ x: point.x, y: point.y, height: scene.measuredAt(point.x, point.y) + point.own });
+    } else {
+      view.setPoint(null);
+    }
+    showDistances();
+  }
+  clearPoint = () => {
+    if (!freePoint) {
+      return false;
+    }
+    placePoint(null);
+    return true;
   };
   const showDistances = () => {
     const origin = selectedOrigin();
@@ -1074,7 +1183,7 @@ async function start() {
     const theme = getStoredTheme();
     // To the props as well, with their option on (and the props shown): each at its own height.
     const props = options.propDistances && options.showProps ? scene.props.filter((prop) => prop.id !== origin.id) : [];
-    const heights = props.length > 0 ? new Map([...scene.heights, ...props.map((prop) => [prop.id, prop.terrain + prop.own] as const)]) : scene.heights;
+    const heights = new Map([...scene.heights, ...props.map((prop) => [prop.id, prop.terrain + prop.own] as const), [origin.id, origin.terrain + origin.own] as const]);
     const rows = computeDistanceRows(
       origin.item,
       [...scene.tokens.filter((token) => token.id !== origin.id).map((token) => token.item), ...props.map((prop) => prop.item)],
@@ -1101,6 +1210,11 @@ async function start() {
   OBR.player.onChange((player) => {
     selection = player.selection ?? [];
     view.setSelected(selection);
+    // A token (or prop) selected: measured from instead of the free point.
+    if (selection.length > 0 && freePoint) {
+      freePoint = null;
+      view.setPoint(null);
+    }
     showDistances();
   });
 

@@ -11,9 +11,11 @@ import {
   getTerrainStand,
   getTerrainUnder,
   getTerrainWall,
+  getTerrainWater,
   setTerrainHeight,
   setTerrainSkin,
   setTerrainUnder,
+  setTerrainWater,
   setTerrainRamp,
   setTerrainStand,
   setTerrainWall,
@@ -58,6 +60,12 @@ const WALL_CHOICES = [
   ["earth", "terrain.wallEarth"],
   ["wood", "terrain.wallWood"],
 ] as const;
+
+/** The selected zones' water depth: a number (0: none), or undefined when they differ or none is terrain. */
+function sharedWater(shapes: Item[]): number | undefined {
+  const values = shapes.filter((shape) => getTerrainHeight(shape) !== undefined).map((shape) => getTerrainWater(shape) ?? 0);
+  return values.length > 0 && values.every((value) => value === values[0]) ? values[0] : undefined;
+}
 
 /** The selected zones' underside: a number (0: solid), or undefined when they differ or none is terrain. */
 function sharedUnder(shapes: Item[]): number | undefined {
@@ -116,6 +124,7 @@ export function TerrainPicker() {
           setTerrainRamp(draft, undefined);
           setTerrainUnder(draft, undefined);
           setTerrainSkin(draft, undefined);
+          setTerrainWater(draft, undefined);
         }
       }
     });
@@ -123,6 +132,20 @@ export function TerrainPicker() {
   }
 
   /** The selected zones' underside (a bridge or balcony; below 0 for one level with the ground), from each one's own (0: solid). */
+  /** The water over the selected zones, from each one's own depth (0: none). */
+  async function applyWater(next: (cells: number) => number) {
+    const ids = shapes.filter((shape) => getTerrainHeight(shape) !== undefined).map((shape) => shape.id);
+    if (ids.length === 0) {
+      return;
+    }
+    await OBR.scene.items.updateItems(ids, (drafts) => {
+      for (const draft of drafts) {
+        setTerrainWater(draft, Math.max(0, clampHeight(next(getTerrainWater(draft) ?? 0))));
+      }
+    });
+    setShapes(await OBR.scene.items.getItems(selection));
+  }
+
   async function applyUnder(next: (cells: number) => number) {
     const ids = shapes.filter((shape) => getTerrainHeight(shape) !== undefined).map((shape) => shape.id);
     if (ids.length === 0) {
@@ -351,6 +374,17 @@ export function TerrainPicker() {
         >
           {t(linked ? "terrain.skinUnlink" : "terrain.skinLink")}
         </button>
+      </div>
+      <div title={t("terrain.waterHint")}>
+        <UnitStepper
+          label={t("terrain.water")}
+          current={sharedWater(shapes)}
+          gridScale={gridScale}
+          onStep={(direction) => applyWater((cells) => cells + direction)}
+          onSet={(cells) => applyWater(() => cells)}
+          fine
+          end={<span className="step-button icon-button" aria-hidden="true" style={{ visibility: "hidden" }} />}
+        />
       </div>
     </div>
   );

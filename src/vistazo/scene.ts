@@ -12,6 +12,7 @@ import {
   terrainBridges,
   terrainShapes,
   terrainSkin,
+  getTerrainWater,
   type BridgeFrame,
   type TerrainSkin,
   type RampSlope,
@@ -63,6 +64,8 @@ export type Piece = {
   walls?: TerrainWallStyle;
   /** Its walls' picture from a rectangle of the map, if its zone is linked to one (see terrainSkin). */
   skin?: TerrainSkin;
+  /** Water over it, cells deep (see getTerrainWater). */
+  water?: number;
   /** A ramp's slope: then `height` is its high end. */
   slope?: RampSlope;
 };
@@ -453,6 +456,7 @@ function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dp
           shape,
           walls: zone ? getTerrainWall(zone) : undefined,
           skin: zone ? terrainSkin(zone, items) : undefined,
+          water: zone ? getTerrainWater(zone) : undefined,
           slope: layer.zoneId ? slopes.get(layer.zoneId) : undefined,
         };
         const edge = layer.zoneId ? standing.get(layer.zoneId) : undefined;

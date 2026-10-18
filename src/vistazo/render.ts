@@ -66,6 +66,8 @@ export type Options = {
   weather: boolean;
   /** Its clouds as a mist over the map, or their shadows on it. */
   clouds: CloudStyle;
+  /** Zones' water moving (ripples, glints); still otherwise. */
+  waterMotion: boolean;
   /** Whether the props show at all ("none" above is how it was stored before this option). */
   showProps: boolean;
   /** The selected token's distance lines go to the props too (main.ts works them out). */
@@ -202,6 +204,11 @@ export class VistazoView {
   private cloudShadowGroup = new THREE.Group();
   /** Under each bridge, the terrain's fog copies again (geometry shared), filled from beside it (see buildUnderBridges). */
   private underBridgeGroup = new THREE.Group();
+  /** The free point measured from (see setPoint): where it is, and its marker. */
+  private pointAt: { x: number; y: number; height: number } | null = null;
+  private point: TokenView | null = null;
+  /** Zones' water surfaces (see buildWater); moving with the weather's frames while waterMotion is on. */
+  private waterGroup = new THREE.Group();
   private weatherKey = "";
   private weatherFrame = 0;
   /** The player view's fog: where it is, and its shade over copies of the flat pieces (as the Banda tint). */
@@ -262,7 +269,7 @@ export class VistazoView {
     }
     this.renderer = renderer;
     this.glCamera.matrixAutoUpdate = false;
-    this.world.add(this.terrainGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup, this.fogGroup, this.weatherGroup, this.cloudShadowGroup, this.underBridgeGroup);
+    this.world.add(this.terrainGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup, this.fogGroup, this.weatherGroup, this.cloudShadowGroup, this.underBridgeGroup, this.waterGroup);
     this.overlay = document.createElement("div");
     this.overlay.className = "ov";
     this.lines = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -699,6 +706,72 @@ export class VistazoView {
     return this.options.showProps ? this.options.props : "none";
   }
 
+  /**
+   * The free point measured from (a click on empty ground), at a height
+   * (grid units), or none: a marker there, the lines' and rings' origin
+   * as a token's would be (see main.ts).
+   */
+  setPoint(point: { x: number; y: number; height: number } | null) {
+    this.pointAt = point;
+    this.placePoint();
+    this.requestApply();
+  }
+
+  private placePoint() {
+    if (this.point) {
+      this.point.el.remove();
+      for (const mesh of this.point.marks?.base ?? []) {
+        this.tokenGroup.remove(mesh);
+        mesh.geometry.dispose();
+      }
+      const stem = this.point.marks?.stem;
+      if (stem) {
+        this.tokenGroup.remove(stem);
+        stem.geometry.dispose();
+      }
+      this.point = null;
+    }
+    const at = this.pointAt;
+    const scene = this.scene;
+    if (!at || !scene) {
+      return;
+    }
+    const u = this.u;
+    const k = this.k;
+    const el = document.createElement("div");
+    el.className = "tok point";
+    // Picked like a token (see tokenAt), to drag it.
+    el.dataset.id = FREE_POINT;
+    const disc = document.createElement("div");
+    disc.className = "disc";
+    const img = document.createElement("span");
+    img.className = "pin";
+    disc.append(img);
+    el.append(disc);
+    this.tokenOverlay.append(el);
+    const floor = this.gridHeight(at.x, at.y);
+    const ground = Number.isNaN(floor) ? 0 : floor;
+    // A third of a cell across: there to see and grab, not a token's size.
+    const token = { id: FREE_POINT, name: "", x: at.x, y: at.y, size: scene.dpi / 3, terrain: ground, own: at.height - ground, rotation: 0, flipX: false, flipY: false, hidden: false } as Token;
+    // A ring on the ground under it, and a dashed line up to it when it's raised.
+    const ring = new THREE.Mesh(new THREE.RingGeometry(scene.dpi * u * 0.14, scene.dpi * u * 0.19, 24), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide }));
+    ring.position.set(at.x * u, at.y * u, ground * k + 1);
+    ring.renderOrder = 3;
+    ring.userData.prop = true;
+    this.tokenGroup.add(ring);
+    let stem: THREE.Line | null = null;
+    if (Math.abs(at.height - ground) > 1e-6) {
+      stem = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(at.x * u, at.y * u, at.height * k), new THREE.Vector3(at.x * u, at.y * u, ground * k)]),
+        new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 6, gapSize: 5, transparent: true, opacity: 0.9 })
+      );
+      stem.computeLineDistances();
+      stem.userData.prop = true;
+      this.tokenGroup.add(stem);
+    }
+    this.point = { token, el, disc, img, zTok: at.height * k, screen: { x: 0, y: 0 }, hidden: false, marks: { base: [ring], stem } };
+  }
+
   /** The topmost prop lying flat under a stage point (a standing one is picked by its element, see tokenAt). */
   propAt(x: number, y: number): string | null {
     if (!this.scene || this.propsMode !== "flat") {
@@ -736,7 +809,7 @@ export class VistazoView {
     const rebuild = changed(["heightScale", "shade", "levels", "relief", "tint", "wallStyle", "rings", "ringFill"]);
     const regrid = changed(["grid"]);
     const relabel = changed(["tokenLabels", "props", "showProps", "propShadows", "propLines", "propLabels"]);
-    const reweather = changed(["weather", "clouds"]);
+    const reweather = changed(["weather", "clouds", "waterMotion"]);
     this.options = { ...this.options, ...options };
     this.stage.style.setProperty("--label-scale", String(this.options.labelSize));
     this.stage.classList.toggle("notok", !this.options.tokens);
@@ -752,6 +825,8 @@ export class VistazoView {
       }
       if (reweather) {
         this.updateWeather();
+        // The water's motion turned on: the frames start even when the weather itself didn't change.
+        this.playWeather();
       }
       this.measure();
     }
@@ -1302,6 +1377,7 @@ export class VistazoView {
       this.buildBridge(bridge);
     }
     this.computeSlabs();
+    this.buildWater();
 
     this.buildWalls();
 
@@ -1761,6 +1837,8 @@ export class VistazoView {
     });
     this.tokenViews = [...propViews, ...this.tokenViews];
     this.tokenOverlay.replaceChildren(overlay);
+    // Drawn again with the tokens: the free point's marker too.
+    this.placePoint();
     this.drawnProps = propsKey(scene.props);
     // Drawn again while minimized: its new videos paused too.
     if (this.paused) {
@@ -1841,7 +1919,46 @@ export class VistazoView {
 
   /** Whether there's weather to animate (particles, haze or cloud shadows). */
   private get hasWeather() {
-    return this.weatherGroup.children.length > 0 || this.cloudShadowGroup.children.length > 0;
+    return this.weatherGroup.children.length > 0 || this.cloudShadowGroup.children.length > 0 || (this.options.waterMotion && this.waterGroup.children.length > 0);
+  }
+
+  /**
+   * Each zone with water: a surface at its floor plus the water's depth,
+   * the map's own picture there seen through it (its colour, gently
+   * wobbling), with glints drifting over it and a little see-through.
+   */
+  private buildWater() {
+    this.clear(this.waterGroup);
+    const scene = this.scene;
+    if (!scene || !this.texture || !this.mapTexture) {
+      return;
+    }
+    const t = this.texture;
+    for (const piece of scene.pieces) {
+      if (!piece.water || piece.stand) {
+        continue;
+      }
+      const geometry = this.shapeGeometry(piece.shape);
+      const material = new THREE.ShaderMaterial({
+        vertexShader: WATER_VERTEX,
+        fragmentShader: WATER_FRAGMENT,
+        transparent: true,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        uniforms: {
+          uTime: { value: 0 },
+          uMap: { value: this.mapTexture },
+          uU: { value: this.u },
+          uCell: { value: scene.dpi },
+          uTex: { value: new THREE.Vector4(t.x0, t.y0, t.w, t.h) },
+        },
+      });
+      const surface = new THREE.Mesh(geometry, material);
+      surface.position.z = (piece.height + piece.water) * this.k;
+      surface.renderOrder = 4;
+      this.waterGroup.add(surface);
+    }
+    this.playWeather();
   }
 
   /**
@@ -1873,6 +1990,11 @@ export class VistazoView {
     const pointScale = this.fit * this.camera.zoom * this.persp * (this.renderer?.getPixelRatio() ?? 1);
     // The shadows share one material per cloud: set once is enough, but setting it again is harmless.
     setWeatherTime([...this.weatherGroup.children, ...this.cloudShadowGroup.children], performance.now() / 1000, pointScale, this.persp, this.fit * this.camera.zoom);
+    if (this.options.waterMotion) {
+      for (const surface of this.waterGroup.children) {
+        ((surface as THREE.Mesh).material as THREE.ShaderMaterial).uniforms.uTime.value = performance.now() / 1000;
+      }
+    }
   }
 
   private pauseVideos() {
@@ -2121,26 +2243,28 @@ export class VistazoView {
 
     // The tokens' 3D points on screen: the same matrix, then the perspective (eye at z = persp).
     const eye = camM.inverse().transformPoint(new DOMPoint(0, 0, this.persp));
-    for (const view of this.tokenViews) {
+    for (const view of this.point ? [...this.tokenViews, this.point] : this.tokenViews) {
       const { token, el, disc, img, zTok } = view;
       const p = camM.transformPoint(new DOMPoint(token.x * u, token.y * u, zTok));
       const f = this.persp / Math.max(1, this.persp - p.z);
-      // Lying flat, only its label is an element, on its middle.
-      const d = view.prop?.flat ? 0 : Math.max(22, token.size * u * s * f);
+      // Lying flat, only its label is an element, on its middle; the free point's marker, easy to grab.
+      const d = view.prop?.flat ? 0 : Math.max(view === this.point ? 12 : 22, token.size * u * s * f);
       view.screen = { x: this.width / 2 + p.x * f, y: this.height / 2 + p.y * f };
       el.style.transform = `translate(${view.screen.x}px,${view.screen.y}px)`;
       el.style.zIndex = String(10000 + Math.round(p.z));
       // Behind the eye: not drawn.
       el.style.visibility = this.persp - p.z > 1 ? "" : "hidden";
-      const onBase = (view.prop && !view.prop.flat) || this.options.anchor === "base";
+      // The free point's marker sits on its point, whatever the anchor (it's no picture).
+      const isPoint = view === this.point;
+      const onBase = !isPoint && ((view.prop && !view.prop.flat) || this.options.anchor === "base");
       // By what of its picture shows (not its box, which may have empty margins or the figure off to
       // one side): what it stands on over the token's point, its bottom there on its base, or the
       // middle of what shows there (up and down) otherwise.
       // Set by hand (the Elevation menu's base), it's that point of its picture instead.
-      const manual = view.prop?.flat ? undefined : token.base;
-      const measured = view.prop?.flat ? undefined : visibleBox(token.url, token.video, () => this.requestApply());
-      const whole = { x0: 0, y0: 0, x1: 1, y1: 1, base: 0.5, aspect: token.item.image.width / token.item.image.height };
-      const found = measured ?? (manual ? whole : undefined);
+      const manual = view.prop?.flat || isPoint ? undefined : token.base;
+      const measured = view.prop?.flat || isPoint ? undefined : visibleBox(token.url, token.video, () => this.requestApply());
+      // The whole picture, only when its base is set by hand and it hasn't been read (the free point has no picture).
+      const found = measured ?? (manual ? { x0: 0, y0: 0, x1: 1, y1: 1, base: 0.5, aspect: token.item.image.width / token.item.image.height } : undefined);
       const box = found && manual ? { ...found, base: manual.x, y1: manual.y } : found;
       let left = -d / 2;
       let top = onBase ? -d : -d / 2;
@@ -2167,7 +2291,7 @@ export class VistazoView {
   private drawLines() {
     const svg = this.lines;
     svg.replaceChildren();
-    const origin = this.tokenViews.find((view) => view.token.id === this.distanceOrigin);
+    const origin = this.distanceOrigin === FREE_POINT ? this.point : this.tokenViews.find((view) => view.token.id === this.distanceOrigin);
     if (!origin || !this.options.distances) {
       return;
     }
@@ -2646,3 +2770,49 @@ const UNDER_FRAGMENT = /* glsl */ `
     gl_FragColor = vec4(color * 0.82, ends);
   }
 `;
+
+const WATER_VERTEX = /* glsl */ `
+  varying vec2 vAt;
+  void main() {
+    vec4 world = modelMatrix * vec4(position, 1.0);
+    vAt = world.xy;
+    gl_Position = projectionMatrix * viewMatrix * world;
+  }
+`;
+
+const WATER_FRAGMENT = /* glsl */ `
+  uniform float uTime;
+  uniform sampler2D uMap;
+  uniform float uU;
+  uniform float uCell;
+  uniform vec4 uTex;
+  varying vec2 vAt;
+  float hash(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+  }
+  float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+  }
+  void main() {
+    // In cells, so the ripples are the same size on any map.
+    vec2 p = vAt / uU / uCell;
+    float a = noise(p * 1.6 + vec2(uTime * 0.25, uTime * 0.18));
+    float b = noise(p * 2.3 - vec2(uTime * 0.2, -uTime * 0.27));
+    // The map's picture there, wobbling a little (a few hundredths of a cell).
+    vec2 wobble = (vec2(a, b) - 0.5) * 0.06 * uCell;
+    vec2 q = vAt / uU + wobble;
+    vec3 under = texture2D(uMap, vec2((q.x - uTex.x) / uTex.z, 1.0 - (q.y - uTex.y) / uTex.w)).rgb;
+    // Glints where the two ripple patterns meet.
+    float glint = smoothstep(0.82, 0.95, 1.0 - abs(a - b) * 3.0) * 0.35;
+    vec3 color = under * vec3(0.82, 0.92, 1.0) + glint;
+    gl_FragColor = vec4(color, 0.72);
+  }
+`;
+
+/** The free point's id among the lines' origins (see setPoint). */
+export const FREE_POINT = "rising-ranges/free-point";

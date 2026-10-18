@@ -641,3 +641,21 @@ export function terrainSkin(zone: Item, items: Item[]): TerrainSkin | undefined 
   const [base, top] = far(ends[0]) <= far(ends[1]) ? ends : [ends[1], ends[0]];
   return { base, top, center };
 }
+
+// Water in a zone, for the Vistazo 3D: how deep (cells) over the zone's own
+// height, its floor. Only drawn: the zone still measures at its floor.
+
+const WATER_KEY = getPluginId("terrainWater");
+
+export function getTerrainWater(item: Item): number | undefined {
+  const stored = item.metadata[WATER_KEY];
+  return typeof stored === "number" && Number.isFinite(stored) && stored > 0 ? stored : undefined;
+}
+
+export function setTerrainWater(item: Item, cells: number | undefined) {
+  if (cells !== undefined && cells > 0) {
+    item.metadata[WATER_KEY] = cells;
+  } else {
+    delete item.metadata[WATER_KEY];
+  }
+}
