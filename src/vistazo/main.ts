@@ -426,8 +426,9 @@ async function start() {
   const distance = (units: number) => (scene ? formatDistance(scene.scale, units) : String(units));
   const tokenText = (token: Token) => {
     const total = token.terrain + token.own;
-    const detail =
-      token.own > 0
+    const detail = token.bridge !== undefined
+      ? t("vistazo.onBridge")
+      : token.own > 0
         ? t("vistazo.flying", { terrain: distance(token.terrain), own: distance(token.own) })
         : token.own < 0
           ? t(token.terrain === 0 ? "vistazo.buriedGround" : "vistazo.buriedTerrain", { depth: distance(-token.own) })
@@ -660,7 +661,9 @@ async function start() {
   let moving: {
     id: string;
     item: Image;
-    /** From the terrain under the cursor to the token's position, scene px. */
+    /** The level it's dragged over (grid units up: its height when grabbed). */
+    level: number;
+    /** From the point under the cursor (on that level) to the token's position, scene px. */
     grab: Vector2;
     own: number;
     startOwn: number;
@@ -714,11 +717,14 @@ async function start() {
     const pressed = press?.token && !event.shiftKey ? (scene?.tokens.find((t) => t.id === press!.token) ?? scene?.props.find((p) => p.id === press!.token)) : undefined;
     if (pressed && !pressed.item.locked && isGM) {
       const at = stagePoint(event);
-      const ground = view.pickTerrain(at.x, at.y);
+      // Dragged over a level at its height when grabbed (see pickPlane), not over whatever's under the cursor.
+      const level = pressed.terrain + pressed.own;
+      const ground = view.pickPlane(at.x, at.y, level) ?? view.pickTerrain(at.x, at.y);
       if (ground) {
         moving = {
           id: pressed.id,
           item: pressed.item,
+          level,
           grab: { x: pressed.item.position.x - ground.x, y: pressed.item.position.y - ground.y },
           own: pressed.own,
           startOwn: pressed.own,
@@ -773,7 +779,7 @@ async function start() {
           };
         }
         const at = stagePoint(event);
-        const ground = view.pickTerrain(at.x, at.y);
+        const ground = view.pickPlane(at.x, at.y, move.level);
         if (ground) {
           // Following the cursor as it goes, unsnapped: Owlbear stops a drag at the walls of the
           // dynamic fog (its own, or Smoke & Spectre's), and a jump from cell to cell across a

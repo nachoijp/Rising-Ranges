@@ -217,6 +217,7 @@ export function UnitStepper({
   onSet,
   label,
   end,
+  fine,
 }: {
   /** undefined when the selected tokens are at different heights. */
   current: number | undefined;
@@ -227,10 +228,12 @@ export function UnitStepper({
   label?: string;
   /** In place of the Ground button at the end. */
   end?: React.ReactNode;
+  /** A height typed by hand kept as typed (to hundredths of a cell), not rounded to whole cells. */
+  fine?: boolean;
 }) {
   const t = useTranslation();
   const multiplier = gridScale.parsed.multiplier || 1;
-  const shown = current === undefined ? "" : String(+(current * multiplier).toFixed(gridScale.parsed.digits));
+  const shown = current === undefined ? "" : String(+(current * multiplier).toFixed(fine ? Math.max(2, gridScale.parsed.digits) : gridScale.parsed.digits));
   const [draft, setDraft] = useState(shown);
   useEffect(() => setDraft(shown), [shown]);
 
@@ -240,7 +243,7 @@ export function UnitStepper({
       setDraft(shown);
       return;
     }
-    const height = clampHeight(Math.round(value / multiplier));
+    const height = clampHeight(fine ? Math.round((value / multiplier) * 100) / 100 : Math.round(value / multiplier));
     if (height === current) {
       setDraft(shown);
     } else {

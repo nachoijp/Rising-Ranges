@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { MultiPolygon } from "polygon-clipping";
-import { inShape, pieceHeight, type Piece, type Prop, type StandEdge, type Token, type VistazoScene } from "./scene";
+import type { TerrainSkin } from "../terrain/terrain";
+import { inShape, pieceHeight, type Bridge, type Piece, type Prop, type StandEdge, type Token, type VistazoScene } from "./scene";
 import { distance3D } from "../engine/distance";
 import { cellCorners, groundOffset } from "../engine/hex";
 import type { Fog } from "./fog";
@@ -135,6 +136,8 @@ type Wall = {
   lit: number;
   /** The style a zone asks for: the higher side's, or else the lower's (a pit's walls are the ground's). */
   style?: WallStyle;
+  /** Its picture from a rectangle of the map (the zone's, as its style is): then that's its face. */
+  skin?: TerrainSkin;
 };
 
 type TokenView = {
@@ -197,6 +200,8 @@ export class VistazoView {
   private weatherGroup = new THREE.Group();
   /** Clouds as shadows: the terrain's fog copies again (their geometry shared, not owned), with the shadows' material. */
   private cloudShadowGroup = new THREE.Group();
+  /** Under each bridge, the terrain's fog copies again (geometry shared), filled from beside it (see buildUnderBridges). */
+  private underBridgeGroup = new THREE.Group();
   private weatherKey = "";
   private weatherFrame = 0;
   /** The player view's fog: where it is, and its shade over copies of the flat pieces (as the Banda tint). */
@@ -257,7 +262,7 @@ export class VistazoView {
     }
     this.renderer = renderer;
     this.glCamera.matrixAutoUpdate = false;
-    this.world.add(this.terrainGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup, this.fogGroup, this.weatherGroup, this.cloudShadowGroup);
+    this.world.add(this.terrainGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup, this.fogGroup, this.weatherGroup, this.cloudShadowGroup, this.underBridgeGroup);
     this.overlay = document.createElement("div");
     this.overlay.className = "ov";
     this.lines = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -609,6 +614,26 @@ export class VistazoView {
   }
 
   /** The terrain under a point of the stage (px from its corner), as a place for the camera to turn around; null off the terrain. */
+  /**
+   * Where a stage point's ray meets a level `height` (grid units) up: what
+   * a drag follows, so the cursor passing over something tall (a column)
+   * doesn't make what's dragged jump onto it and back.
+   */
+  pickPlane(x: number, y: number, height: number): Camera["focus"] {
+    if (!this.scene || this.width === 0) {
+      return null;
+    }
+    const inverse = this.camMatrix().inverse();
+    const eye = inverse.transformPoint(new DOMPoint(0, 0, this.persp));
+    const through = inverse.transformPoint(new DOMPoint(x - this.width / 2, y - this.height / 2, 0));
+    const dz = through.z - eye.z;
+    const t = Math.abs(dz) < 1e-6 ? -1 : (height * this.k - eye.z) / dz;
+    if (t <= 0) {
+      return null;
+    }
+    return { x: (eye.x + (through.x - eye.x) * t) / this.u, y: (eye.y + (through.y - eye.y) * t) / this.u, z: height };
+  }
+
   pickTerrain(x: number, y: number): Camera["focus"] {
     if (!this.scene || this.width === 0) {
       return null;
@@ -818,6 +843,7 @@ export class VistazoView {
               }
               this.walls.push({
                 style: piece.walls ?? lower?.walls,
+                skin: piece.skin ?? (piece.walls ? undefined : lower?.skin),
                 ax: px, ay: py, bx: qx, by: qy, t0, t1, b0, b1, edge,
                 mx: (px + qx) / 2 - nx * probe * 3, my: (py + qy) / 2 - ny * probe * 3, nx, ny,
                 lit: Math.max(0, (nx * LIGHT[0] + ny * LIGHT[1]) / l),
@@ -1066,13 +1092,15 @@ export class VistazoView {
     // The fold's strip: how far into the map it reaches, in view units.
     const band = VIEW_CELL * 0.75;
     // One mesh for each style, inside and at the map's edge (which can be hidden).
-    const styles = new Set(this.walls.map((wall) => wall.style ?? this.options.wallStyle));
+    // A wall with a picture from the map's rectangle goes in its own mesh ("skin"), textured with the map.
+    const styleOf = (wall: Wall): WallStyle | "skin" => (wall.skin && this.texture ? "skin" : (wall.style ?? this.options.wallStyle));
+    const styles = new Set(this.walls.map(styleOf));
     for (const [edge, style] of [false, true].flatMap((e) => [...styles].map((st) => [e, st] as const))) {
-      const walls = this.walls.filter((wall) => wall.edge === edge && (wall.style ?? this.options.wallStyle) === style);
+      const walls = this.walls.filter((wall) => wall.edge === edge && styleOf(wall) === style);
       if (walls.length === 0) {
         continue;
       }
-      const fromMap = (style === "stretch" || style === "fold") && this.texture !== null;
+      const fromMap = (style === "stretch" || style === "fold" || style === "skin") && this.texture !== null;
       const pattern = style === "stone" || style === "rubble" || style === "earth" || style === "wood" ? patternTexture(style) : null;
       const positions: number[] = [];
       const colors: number[] = [];
@@ -1091,8 +1119,11 @@ export class VistazoView {
         const length = Math.hypot(bx - ax, by - ay);
         // A slanting side (beside a ramp): one quad with its own heights at each end.
         const slanted = Math.abs(zt0 - zt1) > 1e-3 || Math.abs(zb0 - zb1) > 1e-3;
-        // Into the piece from the edge (the wall's normal points out).
-        const [ix, iy] = [-wall.nx, -wall.ny];
+        // Where its picture is: into the raised piece from the edge (the wall's normal points out,
+        // to the lower side); a sunken zone's walls (a pit, a ravine: not above the ground) are drawn
+        // on the map inside the hollow, on that lower side.
+        const sunken = Math.max(wall.t0, wall.t1) <= 1e-6;
+        const [ix, iy] = sunken ? [wall.nx, wall.ny] : [-wall.nx, -wall.ny];
         // One slice of the face, from depth t0 to t1 below the top, with its texture coordinates.
         const slice = (t0: number, t1: number, uvTop: number[], uvBottom: number[]) => {
           const z0 = zt - t0;
@@ -1106,7 +1137,21 @@ export class VistazoView {
         };
         const mapUv = (x: number, y: number) => this.uvAt(x, y);
         const height = zt - zb;
-        if (slanted) {
+        if (style === "skin" && wall.skin) {
+          // The rectangle's picture: across it by where round the zone each end is, up it by height.
+          const across = (x: number, y: number) => skinAcross(wall.skin!, x / u, y / u);
+          const [sa, sb] = [across(ax, ay), across(bx, by)];
+          const lowest = Math.min(zb0, zb1);
+          const span = Math.max(zt0, zt1) - lowest || 1;
+          const at = (s: number, z: number) => {
+            const [x, y] = skinPoint(wall.skin!, s, (z - lowest) / span);
+            return this.uvAt(x * u, y * u);
+          };
+          positions.push(ax, ay, zt0, bx, by, zt1, bx, by, zb1, ax, ay, zt0, bx, by, zb1, ax, ay, zb0);
+          colors.push(...top, ...top, ...bottom, ...top, ...bottom, ...bottom);
+          const [a0, b0, b1, a1] = [at(sa, zt0), at(sb, zt1), at(sb, zb1), at(sa, zb0)];
+          uvs.push(...a0, ...b0, ...b1, ...a0, ...b1, ...a1);
+        } else if (slanted) {
           positions.push(ax, ay, zt0, bx, by, zt1, bx, by, zb1, ax, ay, zt0, bx, by, zb1, ax, ay, zb0);
           colors.push(...top, ...top, ...bottom, ...top, ...bottom, ...bottom);
           let uvTop: number[];
@@ -1253,6 +1298,10 @@ export class VistazoView {
     for (const piece of scene.pieces) {
       this.buildPiece(piece);
     }
+    for (const bridge of scene.bridges) {
+      this.buildBridge(bridge);
+    }
+    this.computeSlabs();
 
     this.buildWalls();
 
@@ -1288,12 +1337,160 @@ export class VistazoView {
     this.fogTexture?.dispose();
     this.fogTexture = null;
     this.drawFog();
+    this.buildUnderBridges();
     this.buildTokens();
     this.buildReach();
     // The terrain's built again: so are the cloud shadows on it.
     this.weatherKey = "";
     this.updateWeather();
     this.measure();
+  }
+
+  /**
+   * What the map paints under a bridge is the bridge itself (seen from
+   * above): on the ground and walls below it, inside its box, the map from
+   * just past its long sides instead, mirrored across them, as if the map
+   * went on under it. Drawn on the terrain's fog copies (their geometry
+   * shared, so only the materials are let go).
+   */
+  private buildUnderBridges() {
+    for (const child of [...this.underBridgeGroup.children]) {
+      this.underBridgeGroup.remove(child);
+      ((child as THREE.Mesh).material as THREE.Material).dispose();
+    }
+    const scene = this.scene;
+    const texture = this.texture;
+    if (!scene || !texture || !this.mapTexture) {
+      return;
+    }
+    for (const bridge of scene.bridges) {
+      const { center, along, across, halfAlong, halfAcross } = bridge.frame;
+      const material = new THREE.ShaderMaterial({
+        vertexShader: UNDER_VERTEX,
+        fragmentShader: UNDER_FRAGMENT,
+        transparent: true,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+        uniforms: {
+          uMap: { value: this.mapTexture },
+          uU: { value: this.u },
+          uTex: { value: new THREE.Vector4(texture.x0, texture.y0, texture.w, texture.h) },
+          uFrame: { value: new THREE.Vector4(center.x, center.y, along.x, along.y) },
+          uAcross: { value: new THREE.Vector4(across.x, across.y, halfAlong, halfAcross) },
+          uBelow: { value: bridge.bottom * this.k },
+        },
+      });
+      for (const copy of this.fogGroup.children as THREE.Mesh[]) {
+        const under = new THREE.Mesh(copy.geometry, material);
+        under.position.copy(copy.position);
+        under.renderOrder = 1;
+        under.frustumCulled = false;
+        this.underBridgeGroup.add(under);
+      }
+    }
+  }
+
+  /**
+   * A bridge or balcony: a slab floating over the ground, its top the map
+   * (as any terrain's), its underside and sides its wall style's pattern
+   * (stone if it takes its walls from the map: the map there shows its top),
+   * tinted with the map's colour there.
+   */
+  private buildBridge(bridge: Bridge) {
+    const u = this.u;
+    const k = this.k;
+    const top = this.shapeGeometry(bridge.shape);
+    const position = top.getAttribute("position") as THREE.BufferAttribute;
+    top.setAttribute("uv", new THREE.BufferAttribute(this.uvs(position.array, position.count), 2));
+    const deck = new THREE.Mesh(top, this.pieceMaterial(bridge.top, true));
+    deck.position.z = bridge.top * k;
+    this.terrainGroup.add(deck);
+    this.fillCopy(top, bridge.top * k);
+    this.fogCopy(top, bridge.top * k);
+
+    const style = bridge.walls ?? this.options.wallStyle;
+    const kind = style === "rubble" || style === "earth" || style === "wood" ? style : "stone";
+    // With a picture from a rectangle of the map: the map, there, on its underside and sides.
+    const skin = bridge.skin && this.mapTexture ? bridge.skin : undefined;
+    let cx = 0;
+    let cy = 0;
+    let n = 0;
+    for (const polygon of bridge.shape) {
+      for (const [x, y] of polygon[0]) {
+        cx += x;
+        cy += y;
+        n++;
+      }
+    }
+    const rgb = this.colors ? this.colors(cx / n, cy / n) : STONE;
+    const tint = (shade: number) => new THREE.Color(...(rgb.map((v) => (v / 255) * shade) as [number, number, number]));
+    const tile = VIEW_CELL * 2;
+
+    // Its underside, a little darker (in its own shadow).
+    const under = this.shapeGeometry(bridge.shape);
+    const underPosition = under.getAttribute("position") as THREE.BufferAttribute;
+    const underUv = new Float32Array(underPosition.count * 2);
+    for (let i = 0; i < underPosition.count; i++) {
+      underUv[i * 2] = underPosition.getX(i) / tile;
+      underUv[i * 2 + 1] = underPosition.getY(i) / tile;
+    }
+    if (skin) {
+      // The rectangle laid over the slab's box: across it along one side, up it along the other.
+      const xs = bridge.shape.flatMap((polygon) => polygon[0].map((p) => p[0]));
+      const ys = bridge.shape.flatMap((polygon) => polygon[0].map((p) => p[1]));
+      const [bx0, bx1, by0, by1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+      for (let i = 0; i < underPosition.count; i++) {
+        const [x, y] = skinPoint(skin, (underPosition.getX(i) / u - bx0) / (bx1 - bx0 || 1), (underPosition.getY(i) / u - by0) / (by1 - by0 || 1));
+        const [su, sv] = this.uvAt(x * u, y * u);
+        underUv[i * 2] = su;
+        underUv[i * 2 + 1] = sv;
+      }
+    }
+    under.setAttribute("uv", new THREE.BufferAttribute(underUv, 2));
+    const belly = new THREE.Mesh(
+      under,
+      new THREE.MeshBasicMaterial({ map: skin ? this.mapTexture : patternTexture(kind), color: skin ? new THREE.Color(0.6, 0.6, 0.6) : tint(0.6), side: THREE.DoubleSide })
+    );
+    belly.position.z = bridge.bottom * k;
+    this.terrainGroup.add(belly);
+
+    // Its sides, from its underside up to its top, the pattern running along them.
+    const positions: number[] = [];
+    const uvs: number[] = [];
+    const z0 = bridge.bottom * k;
+    const z1 = bridge.top * k;
+    for (const polygon of bridge.shape) {
+      const ring = polygon[0];
+      let along = 0;
+      for (let i = 0; i < ring.length - 1; i++) {
+        const [ax, ay] = [ring[i][0] * u, ring[i][1] * u];
+        const [bx, by] = [ring[i + 1][0] * u, ring[i + 1][1] * u];
+        const length = Math.hypot(bx - ax, by - ay);
+        positions.push(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z0, bx, by, z1, ax, ay, z1);
+        if (skin) {
+          const [sa, sb] = [skinAcross(skin, ax / u, ay / u), skinAcross(skin, bx / u, by / u)];
+          const at = (s: number, v: number) => {
+            const [x, y] = skinPoint(skin, s, v);
+            return this.uvAt(x * u, y * u);
+          };
+          const [a0, b0, b1, a1] = [at(sa, 0), at(sb, 0), at(sb, 1), at(sa, 1)];
+          uvs.push(...a0, ...b0, ...b1, ...a0, ...b1, ...a1);
+        } else {
+          const [ua, ub] = [along / tile, (along + length) / tile];
+          uvs.push(ua, z0 / tile, ub, z0 / tile, ub, z1 / tile, ua, z0 / tile, ub, z1 / tile, ua, z1 / tile);
+        }
+        along += length;
+      }
+    }
+    const sides = new THREE.BufferGeometry();
+    sides.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
+    sides.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uvs), 2));
+    this.terrainGroup.add(
+      new THREE.Mesh(sides, new THREE.MeshBasicMaterial({ map: skin ? this.mapTexture : patternTexture(kind), color: skin ? new THREE.Color(0.85, 0.85, 0.85) : tint(0.85), side: THREE.DoubleSide }))
+    );
   }
 
   private buildPiece(piece: Piece) {
@@ -1518,7 +1715,7 @@ export class VistazoView {
     }
 
     this.tokenViews = scene.tokens.map((token) => {
-      const zFloor = token.terrain * k;
+      const zFloor = floorOf(token) * k;
       const zTok = (token.terrain + token.own) * k;
       // Its base as big as its footprint (80% of it): as it's measured, set by hand or from its image.
       const r = token.radius * u * 0.8;
@@ -1531,7 +1728,7 @@ export class VistazoView {
         this.tokenGroup.add(mesh);
       }
       let stem: THREE.Line | null = null;
-      if (token.own !== 0) {
+      if (raised(token)) {
         stem = stemOf(token, zTok, zFloor);
         this.tokenGroup.add(stem);
       }
@@ -1782,7 +1979,7 @@ export class VistazoView {
     }
     const byId = new Map(scene.tokens.map((token) => [token.id, token]));
     // A footprint changed: its base is drawn again at its new size.
-    if (views.some((view) => !byId.has(view.token.id) || (view.token.own === 0) !== (byId.get(view.token.id)!.own === 0) || (view.token.own < 0) !== (byId.get(view.token.id)!.own < 0) || view.token.radius !== byId.get(view.token.id)!.radius)) {
+    if (views.some((view) => !byId.has(view.token.id) || raised(view.token) !== raised(byId.get(view.token.id)!) || (view.token.own < 0) !== (byId.get(view.token.id)!.own < 0) || view.token.radius !== byId.get(view.token.id)!.radius)) {
       return false;
     }
     const u = this.u;
@@ -1795,7 +1992,7 @@ export class VistazoView {
       if (!moved) {
         continue;
       }
-      const zFloor = token.terrain * k;
+      const zFloor = floorOf(token) * k;
       view.zTok = (token.terrain + token.own) * k;
       for (const mesh of view.marks?.base ?? []) {
         mesh.position.set(token.x * u, token.y * u, zFloor + 1);
@@ -1983,7 +2180,9 @@ export class VistazoView {
       const { x: x1, y: y1 } = origin.screen;
       const { x: x2, y: y2 } = target.screen;
       const group = document.createElementNS(ns, "g");
-      group.setAttribute("class", target.hidden ? "dline hidden" : "dline");
+      // Hidden from the camera: dashed. Out of the origin's sight (the terrain between them): faint, dotted.
+      const sight = this.inSight(origin, target) ? "" : " nosight";
+      group.setAttribute("class", (target.hidden ? "dline hidden" : "dline") + sight);
       const back = document.createElementNS(ns, "line");
       const front = document.createElementNS(ns, "line");
       for (const el of [back, front]) {
@@ -2004,6 +2203,62 @@ export class VistazoView {
       }
       svg.appendChild(group);
     }
+  }
+
+  /** The bridges' slabs, with their boxes (scene px) to skip them quickly, and the highest top (grid units). */
+  private slabs: { bridge: Bridge; x0: number; y0: number; x1: number; y1: number }[] = [];
+  private slabTop = 0;
+
+  private computeSlabs() {
+    this.slabs = (this.scene?.bridges ?? []).map((bridge) => {
+      const points = bridge.shape.flatMap((polygon) => polygon[0]);
+      return {
+        bridge,
+        x0: Math.min(...points.map((p) => p[0])),
+        y0: Math.min(...points.map((p) => p[1])),
+        x1: Math.max(...points.map((p) => p[0])),
+        y1: Math.max(...points.map((p) => p[1])),
+      };
+    });
+    this.slabTop = Math.max(0, ...this.slabs.map((slab) => slab.bridge.top));
+  }
+
+  /** Whether a point (view units) is inside a bridge's slab: over its outline, between its underside and its top. */
+  private inSlab(vx: number, vy: number, vz: number): boolean {
+    if (this.slabs.length === 0) {
+      return false;
+    }
+    const x = vx / this.u;
+    const y = vy / this.u;
+    const z = vz / this.k;
+    return this.slabs.some(({ bridge, x0, y0, x1, y1 }) => x >= x0 && x <= x1 && y >= y0 && y <= y1 && z >= bridge.bottom && z <= bridge.top && inShape(x, y, bridge.shape));
+  }
+
+  /**
+   * Whether two tokens see each other: the straight line between them, at
+   * eye height (most of a cell over each one's height), doesn't go into the
+   * terrain on the way (a hair kept clear of each end, where they stand).
+   */
+  private inSight(from: TokenView, to: TokenView): boolean {
+    const u = this.u;
+    const k = this.k;
+    const eye = 0.8 * k;
+    const a = { x: from.token.x * u, y: from.token.y * u, z: from.zTok + eye };
+    const b = { x: to.token.x * u, y: to.token.y * u, z: to.zTok + eye };
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    const step = (this.grid.step * u) / 2;
+    const clear = VIEW_CELL * 0.4;
+    for (let d = clear; d < length - clear; d += step) {
+      const t = d / length;
+      const h = this.gridHeight((a.x + (b.x - a.x) * t) / u, (a.y + (b.y - a.y) * t) / u) * k;
+      const x = a.x + (b.x - a.x) * t;
+      const y = a.y + (b.y - a.y) * t;
+      const z = a.z + (b.z - a.z) * t;
+      if ((!Number.isNaN(h) && z < h - 1) || this.inSlab(x, y, z)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /**
@@ -2035,10 +2290,10 @@ export class VistazoView {
         return this.options.edges && pz > this.base * k && pz < last;
       }
       last = h;
-      if (pz >= h !== above) {
+      if (pz >= h !== above || this.inSlab(px, py, pz)) {
         return true;
       }
-      if (above && dz > 0 && pz > this.maxH * k) {
+      if (above && dz > 0 && pz > Math.max(this.maxH, this.slabTop) * k) {
         return false;
       }
       if (dz < 0 && (pz < this.base * k || (!this.options.edges && pz < this.minH * k))) {
@@ -2315,3 +2570,79 @@ function visibleOnScreen(box: VisibleBox, d: number, token: Token) {
   }
   return shown;
 }
+
+/** What a token stands on, grid units: a bridge's top, or the terrain under it. */
+function floorOf(token: Token): number {
+  return token.bridge ?? token.terrain;
+}
+
+/** Whether a token is off what it stands on (flying, or sunk): then its line down (or up) is drawn. */
+function raised(token: Token): boolean {
+  return token.terrain + token.own !== floorOf(token);
+}
+
+/**
+ * Where round a zone a point is, as a way across its picture (0 to 1): by
+ * its angle about the zone's middle, there and back (a picture painted from
+ * one side shows the front; going round, the back is its mirror, so the
+ * seam doesn't show).
+ */
+function skinAcross(skin: TerrainSkin, x: number, y: number): number {
+  const turn = (Math.atan2(y - skin.center.y, x - skin.center.x) / (2 * Math.PI) + 1) % 1;
+  return 1 - Math.abs(2 * turn - 1);
+}
+
+/** The scene point (px) of a skin's picture `across` (0–1) and `up` (0 at its foot, 1 at its far end). */
+function skinPoint(skin: TerrainSkin, across: number, up: number): [number, number] {
+  const lerp = (a: { x: number; y: number }, b: { x: number; y: number }, t: number) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+  const foot = lerp(skin.base[0], skin.base[1], across);
+  const head = lerp(skin.top[0], skin.top[1], across);
+  const p = lerp(foot, head, up);
+  return [p.x, p.y];
+}
+
+const UNDER_VERTEX = /* glsl */ `
+  varying vec3 vAt;
+  void main() {
+    vec4 world = modelMatrix * vec4(position, 1.0);
+    vAt = world.xyz;
+    gl_Position = projectionMatrix * viewMatrix * world;
+  }
+`;
+
+const UNDER_FRAGMENT = /* glsl */ `
+  uniform sampler2D uMap;
+  uniform float uU;
+  uniform vec4 uTex;
+  uniform vec4 uFrame;
+  uniform vec4 uAcross;
+  uniform float uBelow;
+  varying vec3 vAt;
+  void main() {
+    // Only what's below the bridge's underside, inside its box.
+    if (vAt.z > uBelow) discard;
+    vec2 p = vAt.xy / uU;
+    vec2 d = p - uFrame.xy;
+    float a = dot(d, uFrame.zw);
+    float b = dot(d, uAcross.xy);
+    if (abs(a) > uAcross.z || abs(b) > uAcross.w) discard;
+    // The map mirrored across each long side (just past it, going out as it goes in), the two blended
+    // across its width: each side's own next to it, fading into the other's, so no seam in the middle.
+    vec2 base = uFrame.xy + uFrame.zw * a;
+    // On a wall (an upright face: its slope from the screen's derivatives), the deeper below the bridge
+    // the farther out the picture comes from, as a folded wall's: not one colour streaked down it.
+    vec3 normal = normalize(cross(dFdx(vAt), dFdy(vAt)));
+    float upright = 1.0 - smoothstep(0.3, 0.7, abs(normal.z));
+    float deep = upright * max(0.0, uBelow - vAt.z) / uU;
+    vec2 north = base + uAcross.xy * (2.0 * uAcross.w - b + 2.0 + deep);
+    vec2 south = base + uAcross.xy * (-2.0 * uAcross.w - b - 2.0 - deep);
+    vec2 scale = vec2(1.0 / uTex.z, -1.0 / uTex.w);
+    vec3 fromNorth = texture2D(uMap, (north - uTex.xy) * scale + vec2(0.0, 1.0)).rgb;
+    vec3 fromSouth = texture2D(uMap, (south - uTex.xy) * scale + vec2(0.0, 1.0)).rgb;
+    vec3 color = mix(fromSouth, fromNorth, smoothstep(0.0, 1.0, (b + uAcross.w) / (2.0 * uAcross.w)));
+    // Faded out toward its ends, into what the map has there (no straight cut across the walls).
+    float ends = 1.0 - smoothstep(uAcross.z - uAcross.w * 0.6, uAcross.z, abs(a));
+    // A little darker: in the bridge's shadow.
+    gl_FragColor = vec4(color * 0.82, ends);
+  }
+`;

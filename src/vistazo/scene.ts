@@ -9,7 +9,11 @@ import {
   getTerrainStand,
   getTerrainWall,
   slopeHeight,
+  terrainBridges,
   terrainShapes,
+  terrainSkin,
+  type BridgeFrame,
+  type TerrainSkin,
   type RampSlope,
   type TerrainStandEdge,
   type TerrainWallStyle,
@@ -57,6 +61,8 @@ export type Piece = {
   unfold?: { base: [Pair, Pair]; top: [Pair, Pair]; out: Pair; rise: number };
   /** Its zone's own wall style, if it has one. */
   walls?: TerrainWallStyle;
+  /** Its walls' picture from a rectangle of the map, if its zone is linked to one (see terrainSkin). */
+  skin?: TerrainSkin;
   /** A ramp's slope: then `height` is its high end. */
   slope?: RampSlope;
 };
@@ -91,6 +97,8 @@ export type Token = {
   item: Image;
   /** Where its picture touches the ground standing, if set by hand (see getVistazoBase). */
   base?: VistazoBase;
+  /** Raised to a bridge's top over where it is: it stands on it (drawn so, not flying); that top, grid units. */
+  bridge?: number;
 };
 
 /** An image of the Props layer, where it lies, to draw flat on the ground or standing. */
@@ -160,7 +168,12 @@ type Terrain = {
   measuredAt: (x: number, y: number) => number;
   /** Terrain is off for this scene (turned off, heights off, or an axonometric grid). */
   terrainOff: boolean;
+  /** Bridges and balconies: slabs floating over the ground (not ground themselves). */
+  bridges: Bridge[];
 };
+
+/** A bridge or balcony drawn: its outline (scene px), top and underside (grid units), its wall style. */
+export type Bridge = { id: string; shape: MultiPolygon; top: number; bottom: number; walls?: TerrainWallStyle; skin?: TerrainSkin; frame: BridgeFrame };
 
 /**
  * The player view's sight: what of the map the fog leaves clear (worked out
@@ -319,7 +332,13 @@ export function buildScene(
       item,
       base: getVistazoBase(item),
     };
-    heights.set(item.id, token.terrain + token.own);
+    // Raised exactly to a bridge's top over it: standing on the bridge.
+    const total = token.terrain + token.own;
+    const bridge = token.own > 0 ? terrain.bridges.find((b) => Math.abs(b.top - total) < 1e-6 && inShape(x, y, b.shape)) : undefined;
+    if (bridge) {
+      token.bridge = bridge.top;
+    }
+    heights.set(item.id, total);
     return token;
   });
 
@@ -338,6 +357,7 @@ export function buildScene(
     pieceAt: terrain.pieceAt,
     measuredAt,
     terrainOff: terrain.terrainOff,
+    bridges: terrain.bridges,
     dpi,
     scale,
     squareGrid: gridType === "SQUARE",
@@ -432,6 +452,7 @@ function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dp
           height: layer.height,
           shape,
           walls: zone ? getTerrainWall(zone) : undefined,
+          skin: zone ? terrainSkin(zone, items) : undefined,
           slope: layer.zoneId ? slopes.get(layer.zoneId) : undefined,
         };
         const edge = layer.zoneId ? standing.get(layer.zoneId) : undefined;
@@ -562,7 +583,17 @@ function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dp
     piece.height = piece.standBase + (edge === "top" || edge === "bottom" ? py1 - py0 : px1 - px0) / dpi;
   }
 
-  return { terrainKey, maps, world, bounds, pieces, heightAt, pieceAt, measuredAt, terrainOff };
+  const bridges: Bridge[] = (terrainOff ? [] : terrainBridges(items)).map((bridge) => ({
+    id: bridge.id,
+    shape: bridge.rings.map((ring) => [closed(ring)]),
+    top: bridge.top,
+    bottom: bridge.bottom,
+    walls: bridge.walls,
+    skin: bridge.skin,
+    frame: bridge.frame,
+  }));
+
+  return { terrainKey, maps, world, bounds, pieces, heightAt, pieceAt, measuredAt, terrainOff, bridges };
 }
 
 /** Which way each named edge faces, for picking a four-point zone's edge (see unfoldQuad). */

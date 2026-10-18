@@ -62,8 +62,8 @@ export function createTerrainMenu(language: Language) {
         },
       },
     ],
-    // The height's and the ramp's rows, the Vistazo 3D's title and its two rows, plus padding.
-    embed: { url: "/token-height.html?view=terrain", height: 200 },
+    // The height's, the underside's and the ramp's rows, the Vistazo 3D's title and its three rows, plus padding.
+    embed: { url: "/token-height.html?view=terrain", height: 284 },
   });
 }
 

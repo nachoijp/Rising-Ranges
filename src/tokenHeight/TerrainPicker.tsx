@@ -7,9 +7,13 @@ import {
   canBeTerrain,
   getTerrainHeight,
   getTerrainRamp,
+  getTerrainSkin,
   getTerrainStand,
+  getTerrainUnder,
   getTerrainWall,
   setTerrainHeight,
+  setTerrainSkin,
+  setTerrainUnder,
   setTerrainRamp,
   setTerrainStand,
   setTerrainWall,
@@ -55,6 +59,12 @@ const WALL_CHOICES = [
   ["wood", "terrain.wallWood"],
 ] as const;
 
+/** The selected zones' underside: a number (0: solid), or undefined when they differ or none is terrain. */
+function sharedUnder(shapes: Item[]): number | undefined {
+  const values = shapes.filter((shape) => getTerrainHeight(shape) !== undefined).map((shape) => getTerrainUnder(shape) ?? 0);
+  return values.length > 0 && values.every((value) => value === values[0]) ? values[0] : undefined;
+}
+
 /** The selected shapes' ground height: a number, or undefined when they differ or none is terrain. */
 function sharedHeight(shapes: Item[]): number | undefined {
   const values = shapes.map(getTerrainHeight);
@@ -94,14 +104,38 @@ export function TerrainPicker() {
     await OBR.scene.items.updateItems(ids, (drafts) => {
       for (const draft of drafts) {
         setTerrainHeight(draft, next && clampHeight(next(getTerrainHeight(draft) ?? 0)));
+        // Lowered under its clear space, a bridge keeps a slab: its underside comes down with it.
+        const top = getTerrainHeight(draft);
+        const under = getTerrainUnder(draft);
+        if (top !== undefined && under !== undefined && under >= top) {
+          setTerrainUnder(draft, top - 0.05);
+        }
         if (!next) {
           setTerrainStand(draft, undefined);
           setTerrainWall(draft, undefined);
           setTerrainRamp(draft, undefined);
+          setTerrainUnder(draft, undefined);
+          setTerrainSkin(draft, undefined);
         }
       }
     });
     setShapes(await OBR.scene.items.getItems(ids));
+  }
+
+  /** The selected zones' underside (a bridge or balcony; below 0 for one level with the ground), from each one's own (0: solid). */
+  async function applyUnder(next: (cells: number) => number) {
+    const ids = shapes.filter((shape) => getTerrainHeight(shape) !== undefined).map((shape) => shape.id);
+    if (ids.length === 0) {
+      return;
+    }
+    await OBR.scene.items.updateItems(ids, (drafts) => {
+      for (const draft of drafts) {
+        // Always under its top: a slab at least a twentieth of a cell thick (more would make it no bridge at all).
+        const top = getTerrainHeight(draft) ?? 0;
+        setTerrainUnder(draft, Math.min(top - 0.05, clampHeight(next(getTerrainUnder(draft) ?? 0))));
+      }
+    });
+    setShapes(await OBR.scene.items.getItems(selection));
   }
 
   /** Makes the selected zones ramps rising toward `ramp`, or flat again (undefined). */
@@ -184,6 +218,20 @@ export function TerrainPicker() {
     setWalls((next || undefined) as TerrainWallStyle | undefined);
   };
   const disabled = terrainShapes.length === 0;
+  // A zone and a plain shape (no height) selected together: the shape can be the zone's picture.
+  const plain = shapes.filter((shape) => getTerrainHeight(shape) === undefined);
+  const canLink = terrainShapes.length === 1 && plain.length === 1;
+  const linked = terrainShapes.some((shape) => getTerrainSkin(shape) !== undefined);
+  async function toggleSkin() {
+    const ids = terrainShapes.map((shape) => shape.id);
+    const source = linked ? undefined : plain[0]?.id;
+    await OBR.scene.items.updateItems(ids, (drafts) => {
+      for (const draft of drafts) {
+        setTerrainSkin(draft, source);
+      }
+    });
+    setShapes(await OBR.scene.items.getItems(selection));
+  }
   return (
     <div className="picker-stack terrain-picker" role="group" aria-label={t("terrain.label")}>
       <UnitStepper
@@ -206,6 +254,17 @@ export function TerrainPicker() {
           </button>
         }
       />
+      <div title={t("terrain.underHint")}>
+        <UnitStepper
+          label={t("terrain.under")}
+          current={sharedUnder(shapes)}
+          gridScale={gridScale}
+          onStep={(direction) => applyUnder((cells) => cells + direction)}
+          onSet={(cells) => applyUnder(() => cells)}
+          fine
+          end={<span className="step-button icon-button" aria-hidden="true" style={{ visibility: "hidden" }} />}
+        />
+      </div>
       <div className="step-row" role="group" aria-label={t("terrain.ramp")} title={t("terrain.rampHint")}>
         <span className="row-label">{t("terrain.ramp")}</span>
         <button
@@ -279,6 +338,18 @@ export function TerrainPicker() {
           onClick={() => cycleWalls(1)}
         >
           ›
+        </button>
+      </div>
+      <div className="step-row" role="group" aria-label={t("terrain.skin")} title={t("terrain.skinHint")}>
+        <span className="row-label">{t("terrain.skin")}</span>
+        <button
+          className={linked ? "step-button ground active" : "step-button ground"}
+          style={{ flex: 1, marginLeft: 0 }}
+          disabled={!linked && !canLink}
+          aria-pressed={linked}
+          onClick={() => void toggleSkin()}
+        >
+          {t(linked ? "terrain.skinUnlink" : "terrain.skinLink")}
         </button>
       </div>
     </div>

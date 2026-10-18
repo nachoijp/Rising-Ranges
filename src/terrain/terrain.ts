@@ -108,6 +108,34 @@ export function setTerrainWall(item: Item, style: TerrainWallStyle | undefined) 
   }
 }
 
+// A bridge or a balcony: a zone with an underside (its height, cells: up
+// in the air, or below 0 for a bridge level with the ground over a ravine).
+// It doesn't change the ground (what's under it is what's
+// measured); a token on it stands at its height by its own (raised to it),
+// and the Vistazo draws it as a floating slab.
+
+const UNDER_KEY = getPluginId("terrainUnder");
+
+/** The zone's underside, in cells (undefined, or 0: solid down to the ground). */
+export function getTerrainUnder(item: Item): number | undefined {
+  const stored = item.metadata[UNDER_KEY];
+  return typeof stored === "number" && Number.isFinite(stored) && stored !== 0 ? stored : undefined;
+}
+
+export function setTerrainUnder(item: Item, cells: number | undefined) {
+  if (cells !== undefined && cells !== 0) {
+    item.metadata[UNDER_KEY] = cells;
+  } else {
+    delete item.metadata[UNDER_KEY];
+  }
+}
+
+/** Whether a terrain item is a bridge: an underside of its own, below its top. */
+function isBridge(item: Item, height: number): boolean {
+  const under = getTerrainUnder(item);
+  return under !== undefined && under < height;
+}
+
 /** Which way a ramp zone rises, in its own frame: toward its top, bottom, left or right side. */
 export type TerrainRamp = "up" | "down" | "left" | "right";
 
@@ -344,7 +372,8 @@ export function terrainZones(items: Item[]): TerrainZone[] {
   const ramps: { zone: TerrainZone; ends: NonNullable<ReturnType<typeof rampEnds>> }[] = [];
   for (const item of items) {
     const height = getTerrainHeight(item);
-    if (height === undefined || !canBeTerrain(item)) {
+    // A bridge isn't ground: what's under it is.
+    if (height === undefined || !canBeTerrain(item) || isBridge(item, height)) {
       continue;
     }
     const contains = containsFor(item);
@@ -434,7 +463,7 @@ export function terrainShapes(items: Item[]): TerrainShape[] {
   const slopes = new Map(terrainZones(items).filter((zone) => zone.slope).map((zone) => [zone.id, zone.slope]));
   for (const item of items) {
     const height = getTerrainHeight(item);
-    if (height === undefined || !canBeTerrain(item)) {
+    if (height === undefined || !canBeTerrain(item) || isBridge(item, height)) {
       continue;
     }
     const rings = localRings(item)
@@ -445,4 +474,170 @@ export function terrainShapes(items: Item[]): TerrainShape[] {
     }
   }
   return shapes.sort((a, b) => a.area - b.area || b.height - a.height);
+}
+
+/** A bridge or balcony (see getTerrainUnder): its outline in the scene, its top and underside (cells), its wall style. */
+/**
+ * A bridge's own box in the scene (px): its middle, its length's way and
+ * its width's (unit vectors), and half of each — what's painted under it
+ * on the map is filled from beside its long sides (see the Vistazo).
+ */
+export type BridgeFrame = { center: Vector2; along: Vector2; across: Vector2; halfAlong: number; halfAcross: number };
+
+export type TerrainBridge = { id: string; top: number; bottom: number; rings: [number, number][][]; walls?: TerrainWallStyle; skin?: TerrainSkin; frame: BridgeFrame };
+
+/**
+ * The tightest box round an item's outline in the scene, at whatever angle
+ * (a bridge drawn along the map, not only one turned as an item): of the
+ * boxes lined up with each side of its convex hull, the smallest. Its
+ * length is its longer side.
+ */
+function bridgeFrame(item: Item): BridgeFrame {
+  const points = localRings(item)
+    .flat()
+    .map((p) => {
+      const [x, y] = toScene(item, p);
+      return { x, y };
+    });
+  const hull = convexHull(points);
+  let best: BridgeFrame | null = null;
+  let bestArea = Infinity;
+  for (let i = 0; i < hull.length; i++) {
+    const a = hull[i];
+    const b = hull[(i + 1) % hull.length];
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    if (length < 1e-9) {
+      continue;
+    }
+    const u = { x: (b.x - a.x) / length, y: (b.y - a.y) / length };
+    const v = { x: -u.y, y: u.x };
+    let [u0, u1, v0, v1] = [Infinity, -Infinity, Infinity, -Infinity];
+    for (const p of hull) {
+      const pu = p.x * u.x + p.y * u.y;
+      const pv = p.x * v.x + p.y * v.y;
+      [u0, u1, v0, v1] = [Math.min(u0, pu), Math.max(u1, pu), Math.min(v0, pv), Math.max(v1, pv)];
+    }
+    const area = (u1 - u0) * (v1 - v0);
+    if (area < bestArea) {
+      bestArea = area;
+      const [mu, mv] = [(u0 + u1) / 2, (v0 + v1) / 2];
+      const center = { x: u.x * mu + v.x * mv, y: u.y * mu + v.y * mv };
+      const [lu, lv] = [u1 - u0, v1 - v0];
+      best = lu >= lv ? { center, along: u, across: v, halfAlong: lu / 2, halfAcross: lv / 2 } : { center, along: v, across: u, halfAlong: lv / 2, halfAcross: lu / 2 };
+    }
+  }
+  return best ?? { center: points[0] ?? { x: 0, y: 0 }, along: { x: 1, y: 0 }, across: { x: 0, y: 1 }, halfAlong: 0, halfAcross: 0 };
+}
+
+/** The convex hull of some points (monotone chain), counterclockwise. */
+function convexHull(points: Vector2[]): Vector2[] {
+  const sorted = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+  if (sorted.length < 3) {
+    return sorted;
+  }
+  const cross = (o: Vector2, a: Vector2, b: Vector2) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower: Vector2[] = [];
+  for (const p of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) {
+      lower.pop();
+    }
+    lower.push(p);
+  }
+  const upper: Vector2[] = [];
+  for (const p of [...sorted].reverse()) {
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) {
+      upper.pop();
+    }
+    upper.push(p);
+  }
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
+}
+
+/** The scene's bridges and balconies, for drawing them (they're not ground: see terrainZones). */
+export function terrainBridges(items: Item[]): TerrainBridge[] {
+  const bridges: TerrainBridge[] = [];
+  for (const item of items) {
+    const height = getTerrainHeight(item);
+    if (height === undefined || !canBeTerrain(item) || !isBridge(item, height)) {
+      continue;
+    }
+    const rings = localRings(item)
+      .filter((ring) => ring.length >= 3)
+      .map((ring) => ring.map((p) => toScene(item, p)));
+    if (rings.length > 0) {
+      bridges.push({ id: item.id, top: height, bottom: getTerrainUnder(item)!, rings, walls: getTerrainWall(item), skin: terrainSkin(item, items), frame: bridgeFrame(item) });
+    }
+  }
+  return bridges;
+}
+
+// A zone's walls (and a bridge's underside) can take their picture from
+// another part of the map: a rectangle drawn over something painted lying
+// down, seen from above (a column, a tree). The zone keeps the rectangle's
+// id; the rectangle's long side becomes the walls' height, from its end
+// nearest the zone (the foot) to the far one, and its width goes round.
+
+const SKIN_KEY = getPluginId("terrainSkin");
+
+export function getTerrainSkin(item: Item): string | undefined {
+  const stored = item.metadata[SKIN_KEY];
+  return typeof stored === "string" && stored.length > 0 ? stored : undefined;
+}
+
+export function setTerrainSkin(item: Item, sourceId: string | undefined) {
+  if (sourceId) {
+    item.metadata[SKIN_KEY] = sourceId;
+  } else {
+    delete item.metadata[SKIN_KEY];
+  }
+}
+
+/**
+ * Where a zone's picture is on the map (scene px): `base` the rectangle's
+ * short edge nearest the zone (its foot), `top` the other, each listed
+ * from the same long side; and the zone's middle, which the picture goes
+ * round.
+ */
+export type TerrainSkin = { base: [Vector2, Vector2]; top: [Vector2, Vector2]; center: Vector2 };
+
+/** A zone's picture from the map, if it's linked to a rectangle that's still there. */
+export function terrainSkin(zone: Item, items: Item[]): TerrainSkin | undefined {
+  const id = getTerrainSkin(zone);
+  const source = id ? items.find((item) => item.id === id) : undefined;
+  const zonePoints = localRings(zone).flat();
+  const points = source ? localRings(source).flat() : [];
+  if (!source || points.length < 3 || zonePoints.length < 3) {
+    return undefined;
+  }
+  const scene = (p: Vector2) => {
+    const [x, y] = toScene(zone, p);
+    return { x, y };
+  };
+  const zx = zonePoints.map((p) => p.x);
+  const zy = zonePoints.map((p) => p.y);
+  const center = scene({ x: (Math.min(...zx) + Math.max(...zx)) / 2, y: (Math.min(...zy) + Math.max(...zy)) / 2 });
+  // The rectangle's corners: its own box, turned as it is.
+  const x0 = Math.min(...points.map((p) => p.x));
+  const x1 = Math.max(...points.map((p) => p.x));
+  const y0 = Math.min(...points.map((p) => p.y));
+  const y1 = Math.max(...points.map((p) => p.y));
+  const corner = (x: number, y: number) => {
+    const [sx, sy] = toScene(source, { x, y });
+    return { x: sx, y: sy };
+  };
+  const [c00, c10, c11, c01] = [corner(x0, y0), corner(x1, y0), corner(x1, y1), corner(x0, y1)];
+  const wide = Math.hypot(c10.x - c00.x, c10.y - c00.y) >= Math.hypot(c01.x - c00.x, c01.y - c00.y);
+  // Its short edges, each from the same long side.
+  const ends: [[Vector2, Vector2], [Vector2, Vector2]] = wide
+    ? [
+        [c00, c01],
+        [c10, c11],
+      ]
+    : [
+        [c00, c10],
+        [c01, c11],
+      ];
+  const far = (edge: [Vector2, Vector2]) => Math.hypot((edge[0].x + edge[1].x) / 2 - center.x, (edge[0].y + edge[1].y) / 2 - center.y);
+  const [base, top] = far(ends[0]) <= far(ends[1]) ? ends : [ends[1], ends[0]];
+  return { base, top, center };
 }

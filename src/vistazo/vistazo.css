@@ -336,6 +336,13 @@ body {
 .dline.hidden line:not(.casing) {
   stroke-dasharray: 6 6;
 }
+/* Out of the origin token's sight: the terrain stands between them. */
+.dline.nosight {
+  opacity: 0.55;
+}
+.dline.nosight line:not(.casing) {
+  stroke-dasharray: 1 7;
+}
 .dline text {
   font: 600 calc(12px * var(--label-scale, 1)) Roboto, "Segoe UI", system-ui, sans-serif;
   fill: #fff;
