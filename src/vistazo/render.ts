@@ -9,6 +9,7 @@ import { cellCorners, groundOffset } from "../engine/hex";
 import type { Fog } from "./fog";
 import { visibleBox, type VisibleBox } from "./visibleBox";
 import { buildWeather, cloudShadowMaterial, setWeatherTime, type CloudStyle } from "./weather";
+import { buildTemplate, templateTip, type Template } from "./templates";
 
 // The Vistazo's 3D view. The terrain is drawn with WebGL (three.js): each
 // piece lies at its height with the map as its texture, walls go down to
@@ -206,13 +207,20 @@ export class VistazoView {
   private cloudShadowGroup = new THREE.Group();
   /** Under each bridge, the terrain's fog copies again (geometry shared), filled from beside it (see buildUnderBridges). */
   private underBridgeGroup = new THREE.Group();
+  /** Volume templates placed here (see setTemplates), and the meshes drawn for them. */
+  private templates: Template[] = [];
+  private templateGroup = new THREE.Group();
+  /** Each template's handles (its origin; a cone's or a line's tip too), to drag it here. */
+  private handles: TokenView[] = [];
+  /** The tokens a template reaches (see setAffected): ringed. */
+  private affected = new Set<string>();
   /** The free point measured from (see setPoint): where it is, and its marker. */
   private pointAt: { x: number; y: number; height: number } | null = null;
   private point: TokenView | null = null;
   /** Zones' water surfaces (see buildWater); moving with the weather's frames while waterMotion is on. */
   private waterGroup = new THREE.Group();
-  /** The heights grid as a texture (grid units; outside the map, far up): where water stops at the shore. */
-  private heightTexture: THREE.DataTexture | null = null;
+  /** Each water's reach on the heights grid, as a texture (see buildWater): where it stops at a shore or a rim. */
+  private waterMasks: THREE.DataTexture[] = [];
   private weatherKey = "";
   private weatherFrame = 0;
   /** The player view's fog: where it is, and its shade over copies of the flat pieces (as the Banda tint). */
@@ -273,7 +281,7 @@ export class VistazoView {
     }
     this.renderer = renderer;
     this.glCamera.matrixAutoUpdate = false;
-    this.world.add(this.terrainGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup, this.fogGroup, this.weatherGroup, this.cloudShadowGroup, this.underBridgeGroup, this.waterGroup);
+    this.world.add(this.terrainGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup, this.fogGroup, this.weatherGroup, this.cloudShadowGroup, this.underBridgeGroup, this.waterGroup, this.templateGroup);
     this.overlay = document.createElement("div");
     this.overlay.className = "ov";
     this.lines = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -1383,6 +1391,8 @@ export class VistazoView {
     }
     this.computeSlabs();
     this.buildWater();
+    // Their heights follow the height scale.
+    this.buildTemplates();
 
     this.buildWalls();
 
@@ -1815,7 +1825,7 @@ export class VistazoView {
         this.tokenGroup.add(stem);
       }
       const el = document.createElement("div");
-      el.className = "tok" + (token.own < 0 ? " buried" : "") + (token.hidden ? " gmhidden" : "") + (this.selected.has(token.id) ? " selected" : "");
+      el.className = "tok" + (token.own < 0 ? " buried" : "") + (token.hidden ? " gmhidden" : "") + (this.selected.has(token.id) ? " selected" : "") + (this.affected.has(token.id) ? " affected" : "");
       el.dataset.id = token.id;
       const disc = document.createElement("div");
       disc.className = "disc";
@@ -1843,8 +1853,9 @@ export class VistazoView {
     });
     this.tokenViews = [...propViews, ...this.tokenViews];
     this.tokenOverlay.replaceChildren(overlay);
-    // Drawn again with the tokens: the free point's marker too.
+    // Drawn again with the tokens: the free point's marker and the templates' handles too.
     this.placePoint();
+    this.placeHandles();
     this.drawnProps = propsKey(scene.props);
     // Drawn again while minimized: its new videos paused too.
     if (this.paused) {
@@ -1925,7 +1936,103 @@ export class VistazoView {
 
   /** Whether there's weather to animate (particles, haze or cloud shadows). */
   private get hasWeather() {
-    return this.weatherGroup.children.length > 0 || this.cloudShadowGroup.children.length > 0 || (this.options.waterMotion && this.waterGroup.children.length > 0);
+    return (
+      this.weatherGroup.children.length > 0 ||
+      this.cloudShadowGroup.children.length > 0 ||
+      this.templateGroup.children.length > 0 ||
+      (this.options.waterMotion && this.waterGroup.children.length > 0)
+    );
+  }
+
+  /** The volume templates to draw (only in this view), moving with the weather's frames. */
+  setTemplates(templates: Template[]) {
+    this.templates = templates;
+    this.buildTemplates();
+    this.playWeather();
+    this.requestApply();
+  }
+
+  private buildTemplates() {
+    this.clear(this.templateGroup);
+    if (!this.scene) {
+      return;
+    }
+    for (const template of this.templates) {
+      this.templateGroup.add(buildTemplate(template, this.u, VIEW_CELL, this.k));
+    }
+    this.placeHandles();
+  }
+
+  /**
+   * Each template's handles, as markers on the overlay (picked like a
+   * token: see tokenAt): its origin, to move it; a cone's or a line's tip
+   * (at its length's end, a body's height up), to turn it.
+   */
+  private placeHandles() {
+    for (const handle of this.handles) {
+      handle.el.remove();
+      for (const mesh of [...(handle.marks?.base ?? []), ...(handle.marks?.stem ? [handle.marks.stem] : [])]) {
+        this.tokenGroup.remove(mesh);
+        (mesh as THREE.Mesh).geometry.dispose();
+      }
+    }
+    this.handles = [];
+    const scene = this.scene;
+    if (!scene) {
+      return;
+    }
+    const k = this.k;
+    const make = (id: string, x: number, y: number, z: number, tip: boolean) => {
+      const el = document.createElement("div");
+      el.className = "tok point handle" + (tip ? " tip" : "");
+      el.dataset.id = id;
+      const disc = document.createElement("div");
+      disc.className = "disc";
+      const img = document.createElement("span");
+      img.className = "pin";
+      disc.append(img);
+      el.append(disc);
+      this.tokenOverlay.append(el);
+      const token = { id, name: "", x, y, size: scene.dpi / 4, terrain: z, own: 0, rotation: 0, flipX: false, flipY: false, hidden: false } as Token;
+      // A ring on the ground under it, and a dashed line down to it when it's off the ground.
+      const u = this.u;
+      const floor = this.gridHeight(x, y);
+      const ground = Number.isNaN(floor) ? 0 : floor;
+      const ring = new THREE.Mesh(new THREE.RingGeometry(scene.dpi * u * 0.1, scene.dpi * u * 0.14, 20), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, depthWrite: false, side: THREE.DoubleSide }));
+      ring.position.set(x * u, y * u, ground * k + 1);
+      ring.renderOrder = 3;
+      ring.userData.prop = true;
+      this.tokenGroup.add(ring);
+      let stem: THREE.Line | null = null;
+      if (Math.abs(z - ground) > 1e-6) {
+        stem = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(x * u, y * u, z * k), new THREE.Vector3(x * u, y * u, ground * k)]),
+          new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 6, gapSize: 5, transparent: true, opacity: 0.85 })
+        );
+        stem.computeLineDistances();
+        stem.userData.prop = true;
+        this.tokenGroup.add(stem);
+      }
+      this.handles.push({ token, el, disc, img, zTok: z * k, screen: { x: 0, y: 0 }, hidden: false, marks: { base: [ring], stem } });
+    };
+    for (const template of this.templates) {
+      make(`${TEMPLATE_HANDLE}${template.id}:origin`, template.x, template.y, template.z, false);
+      if (template.shape === "cone" || template.shape === "line") {
+        const tip = templateTip(template);
+        const across = tip.across * scene.dpi;
+        make(`${TEMPLATE_HANDLE}${template.id}:tip`, template.x + template.dir.x * across, template.y + template.dir.y * across, template.z + tip.rise, true);
+      }
+    }
+  }
+
+  /** The tokens a template reaches, ringed (see main.ts). */
+  setAffected(ids: Set<string>) {
+    this.affected = ids;
+    for (const view of this.tokenViews) {
+      if (!view.prop) {
+        view.el.classList.toggle("affected", ids.has(view.token.id));
+      }
+    }
   }
 
   /**
@@ -1940,22 +2047,66 @@ export class VistazoView {
       return;
     }
     const t = this.texture;
-    this.heightTexture?.dispose();
-    this.heightTexture = null;
-    const grid = this.grid;
+    for (const mask of this.waterMasks) {
+      mask.dispose();
+    }
+    this.waterMasks = [];
     for (const piece of scene.pieces) {
       if (!piece.water || piece.stand) {
         continue;
       }
-      if (!this.heightTexture) {
-        const heights = new Float32Array(grid.cells.length);
-        grid.cells.forEach((h, i) => (heights[i] = Number.isNaN(h) ? 1e6 : h));
-        this.heightTexture = new THREE.DataTexture(heights, grid.w, grid.h, THREE.RedFormat, THREE.FloatType);
-        this.heightTexture.needsUpdate = true;
-      }
-      // Water fills what's below its level, not only its zone: drawn a little past it (two cells), and
-      // only where the ground is under its surface (it stops at the shore of a slope beside it).
+      // Water fills what's below its level, not only its zone: from its zone outward over the heights
+      // grid, through ground between its floor and its level, up to two cells away. It stops at the shore
+      // of a slope beside it, and can't cross a rim higher than its level (a raised pool's).
       const level = piece.height + piece.water;
+      // On its own fine grid (a twentieth of a cell, the terrain's exact heights), over its zone's box and
+      // two cells round it: so its edges sit on its zone's, not rounded to the coarser heights grid.
+      const xs = piece.shape.flatMap((polygon) => polygon[0].map((p) => p[0]));
+      const ys = piece.shape.flatMap((polygon) => polygon[0].map((p) => p[1]));
+      const margin = scene.dpi * 2;
+      const step = scene.dpi / 20;
+      const gx0 = Math.min(...xs) - margin;
+      const gy0 = Math.min(...ys) - margin;
+      const gw = Math.ceil((Math.max(...xs) + margin - gx0) / step) + 1;
+      const gh = Math.ceil((Math.max(...ys) + margin - gy0) / step) + 1;
+      const heightAt = (i: number, j: number) => scene.heightAt(gx0 + i * step, gy0 + j * step) ?? NaN;
+      const reached = new Uint8Array(gw * gh);
+      const queue: number[] = [];
+      for (let j = 0; j < gh; j++) {
+        for (let i = 0; i < gw; i++) {
+          if (inShape(gx0 + i * step, gy0 + j * step, piece.shape)) {
+            reached[j * gw + i] = 255;
+            queue.push(j * gw + i);
+          }
+        }
+      }
+      const fits = (h: number) => !Number.isNaN(h) && h >= piece.height - 0.01 && h < level;
+      const reach = 40; // two cells, in twentieths
+      const depth = new Uint8Array(gw * gh);
+      for (let q = 0; q < queue.length; q++) {
+        const at = queue[q];
+        if (depth[at] >= reach) {
+          continue;
+        }
+        const i = at % gw;
+        const j = (at - i) / gw;
+        for (const [ni, nj] of [[i + 1, j], [i - 1, j], [i, j + 1], [i, j - 1]]) {
+          if (ni < 0 || nj < 0 || ni >= gw || nj >= gh) {
+            continue;
+          }
+          const next = nj * gw + ni;
+          if (!reached[next] && fits(heightAt(ni, nj))) {
+            reached[next] = 255;
+            depth[next] = depth[at] + 1;
+            queue.push(next);
+          }
+        }
+      }
+      const mask = new THREE.DataTexture(reached, gw, gh, THREE.RedFormat, THREE.UnsignedByteType);
+      // A byte a cell: rows not padded to four bytes (any width).
+      mask.unpackAlignment = 1;
+      mask.needsUpdate = true;
+      this.waterMasks.push(mask);
       let shape = piece.shape;
       try {
         const grown = growRings(piece.shape.map((polygon) => polygon[0] as [number, number][]), scene.dpi * 2).map((ring) => [ring]);
@@ -1976,10 +2127,10 @@ export class VistazoView {
           uU: { value: this.u },
           uCell: { value: scene.dpi },
           uTex: { value: new THREE.Vector4(t.x0, t.y0, t.w, t.h) },
-          uHeights: { value: this.heightTexture },
-          uGrid: { value: new THREE.Vector4(grid.x0, grid.y0, grid.step, 0) },
-          uGridSize: { value: new THREE.Vector2(grid.w, grid.h) },
-          uLevel: { value: level },
+          uReach: { value: mask },
+          uGrid: { value: new THREE.Vector4(gx0, gy0, step, 0) },
+          uGridSize: { value: new THREE.Vector2(gw, gh) },
+
         },
       });
       const surface = new THREE.Mesh(geometry, material);
@@ -2019,6 +2170,11 @@ export class VistazoView {
     const pointScale = this.fit * this.camera.zoom * this.persp * (this.renderer?.getPixelRatio() ?? 1);
     // The shadows share one material per cloud: set once is enough, but setting it again is harmless.
     setWeatherTime([...this.weatherGroup.children, ...this.cloudShadowGroup.children], performance.now() / 1000, pointScale, this.persp, this.fit * this.camera.zoom);
+    for (const mesh of this.templateGroup.children) {
+      const { uniforms } = (mesh as THREE.Mesh).material as THREE.ShaderMaterial;
+      uniforms.uTime.value = performance.now() / 1000;
+      uniforms.uEyeZ.value = this.persp;
+    }
     if (this.options.waterMotion) {
       for (const surface of this.waterGroup.children) {
         ((surface as THREE.Mesh).material as THREE.ShaderMaterial).uniforms.uTime.value = performance.now() / 1000;
@@ -2272,19 +2428,20 @@ export class VistazoView {
 
     // The tokens' 3D points on screen: the same matrix, then the perspective (eye at z = persp).
     const eye = camM.inverse().transformPoint(new DOMPoint(0, 0, this.persp));
-    for (const view of this.point ? [...this.tokenViews, this.point] : this.tokenViews) {
+    for (const view of [...this.tokenViews, ...(this.point ? [this.point] : []), ...this.handles]) {
       const { token, el, disc, img, zTok } = view;
       const p = camM.transformPoint(new DOMPoint(token.x * u, token.y * u, zTok));
       const f = this.persp / Math.max(1, this.persp - p.z);
       // Lying flat, only its label is an element, on its middle; the free point's marker, easy to grab.
-      const d = view.prop?.flat ? 0 : Math.max(view === this.point ? 12 : 22, token.size * u * s * f);
+      const marker = view === this.point || this.handles.includes(view);
+      const d = view.prop?.flat ? 0 : Math.max(marker ? 12 : 22, token.size * u * s * f);
       view.screen = { x: this.width / 2 + p.x * f, y: this.height / 2 + p.y * f };
       el.style.transform = `translate(${view.screen.x}px,${view.screen.y}px)`;
       el.style.zIndex = String(10000 + Math.round(p.z));
       // Behind the eye: not drawn.
       el.style.visibility = this.persp - p.z > 1 ? "" : "hidden";
       // The free point's marker sits on its point, whatever the anchor (it's no picture).
-      const isPoint = view === this.point;
+      const isPoint = marker;
       const onBase = !isPoint && ((view.prop && !view.prop.flat) || this.options.anchor === "base");
       // By what of its picture shows (not its box, which may have empty margins or the figure off to
       // one side): what it stands on over the token's point, its bottom there on its base, or the
@@ -2815,10 +2972,9 @@ const WATER_FRAGMENT = /* glsl */ `
   uniform float uU;
   uniform float uCell;
   uniform vec4 uTex;
-  uniform sampler2D uHeights;
+  uniform sampler2D uReach;
   uniform vec4 uGrid;
   uniform vec2 uGridSize;
-  uniform float uLevel;
   varying vec2 vAt;
   float hash(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
@@ -2832,10 +2988,10 @@ const WATER_FRAGMENT = /* glsl */ `
     return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
   }
   void main() {
-    // Only where the ground is below the water's level (its shore on a slope beside it).
+    // Only where the water reaches (see buildWater): its zone, and what's connected to it below its level.
     vec2 scene = vAt / uU;
     vec2 cell = ((scene - uGrid.xy) / uGrid.z + 0.5) / uGridSize;
-    if (texture2D(uHeights, cell).r >= uLevel) discard;
+    if (texture2D(uReach, cell).r < 0.5) discard;
     // In cells, so the ripples are the same size on any map.
     vec2 p = vAt / uU / uCell;
     float a = noise(p * 1.6 + vec2(uTime * 0.25, uTime * 0.18));
@@ -2853,3 +3009,6 @@ const WATER_FRAGMENT = /* glsl */ `
 
 /** The free point's id among the lines' origins (see setPoint). */
 export const FREE_POINT = "rising-ranges/free-point";
+
+/** What a template's handle's id starts with: then the template's id and ":origin" or ":tip". */
+export const TEMPLATE_HANDLE = "rising-ranges/template:";

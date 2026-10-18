@@ -155,6 +155,44 @@
           <label class="check" for="propDistances"><input id="propDistances" type="checkbox" /><span data-t="vistazo.propDistances"></span></label>
           </div>
         </fieldset>
+
+        <fieldset data-section="templates">
+          <legend data-t="vistazo.templates"></legend>
+          <label class="row" for="templateShape"
+            ><span data-t="vistazo.templateShape"></span>
+            <select id="templateShape">
+              <option value="cone" data-t="vistazo.shapeCone"></option>
+              <option value="sphere" data-t="vistazo.shapeSphere"></option>
+              <option value="cylinder" data-t="vistazo.shapeCylinder"></option>
+              <option value="line" data-t="vistazo.shapeLine"></option>
+              <option value="cube" data-t="vistazo.shapeCube"></option>
+            </select>
+          </label>
+          <label class="row" for="templateLook"
+            ><span data-t="vistazo.templateLook"></span>
+            <select id="templateLook">
+              <option value="fire" data-t="vistazo.lookFire"></option>
+              <option value="ice" data-t="vistazo.lookIce"></option>
+              <option value="poison" data-t="vistazo.lookPoison"></option>
+              <option value="lightning" data-t="vistazo.lookLightning"></option>
+              <option value="darkness" data-t="vistazo.lookDarkness"></option>
+              <option value="arcane" data-t="vistazo.lookArcane"></option>
+              <option value="force" data-t="vistazo.lookForce"></option>
+              <option value="necrotic" data-t="vistazo.lookNecrotic"></option>
+              <option value="acid" data-t="vistazo.lookAcid"></option>
+              <option value="thunder" data-t="vistazo.lookThunder"></option>
+              <option value="psychic" data-t="vistazo.lookPsychic"></option>
+              <option value="radiant" data-t="vistazo.lookRadiant"></option>
+            </select>
+          </label>
+          <label class="row" for="templateSize" data-title="vistazo.templateSizeHint"
+            ><span data-t="vistazo.templateSize"></span><output id="templateUnit"></output><input id="templateSize" type="number" min="1" step="5" value="20" class="number" /></label>
+          <div class="buttons">
+            <button class="ghost" id="templatePlace" type="button" aria-pressed="false" data-t="vistazo.templatePlace"></button>
+            <button class="ghost" id="templateClear" type="button" data-t="vistazo.templateClear"></button>
+          </div>
+          <ul class="template-list" id="templateList"></ul>
+        </fieldset>
       </aside>
       </div>
       <div class="resize" id="resize" data-title="vistazo.resize">

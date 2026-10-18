@@ -410,6 +410,65 @@ body {
 .xray .tok.hidden img {
   opacity: 0.6;
 }
+/* A template's handles: white dots (its tip's ringed with the accent). */
+.tok.handle .pin {
+  background: radial-gradient(circle, #fff 0 55%, rgba(0, 0, 0, 0.55) 58% 100%);
+}
+.tok.handle.tip .pin {
+  background: radial-gradient(circle, #fff 0 45%, var(--accent) 48% 100%);
+}
+/* A token a template reaches. */
+.tok.affected img,
+.tok.affected video {
+  box-shadow: 0 0 0 3px #ff9f43, 0 0 14px #ff9f43;
+}
+/* Volume templates: their size typed in, the list of those placed. */
+input.number {
+  width: 64px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+button.ghost[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.template-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.template-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.template-list li span {
+  flex: 1;
+  min-width: 0;
+}
+.template-list button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+.template-list button:hover {
+  color: var(--fg);
+}
+.placing .stage {
+  cursor: crosshair;
+}
 /* The free point: a small accent dot, on its point (not a picture). */
 .tok.point .pin {
   display: block;

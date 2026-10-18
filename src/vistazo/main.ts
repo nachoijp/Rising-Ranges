@@ -11,7 +11,8 @@ import { computeDistanceRows } from "../distances/rows";
 import { getStoredTheme } from "../theme/themes";
 import { getColorString } from "../util/color";
 import { buildScene, propOf, type Token, type VistazoScene } from "./scene";
-import { FREE_POINT, VistazoView, type Camera, type DistanceLine, type Options } from "./render";
+import { FREE_POINT, TEMPLATE_HANDLE, VistazoView, type Camera, type DistanceLine, type Options } from "./render";
+import { templateTip, type Template, type TemplateLook, type TemplateShape } from "./templates";
 import { LIVE_DRAG_CHANNEL, type LiveDrag } from "./live";
 import { SYNC_CHANNEL, SYNC_HEARTBEAT_MS, SYNC_INTERVAL_MS, SYNC_TIMEOUT_MS, type SyncMessage } from "./sync";
 import { stepHeight } from "../engine/heights";
@@ -328,12 +329,119 @@ async function start() {
   const t = (key: TranslationKey, vars?: Record<string, string | number>) => translate(language, key, vars);
   /** Set while a token is being moved here: Esc cancels that instead of closing. */
   let cancelMove: (() => void) | null = null;
+  // ---------- Volume templates (only in this view; see templates.ts) ----------
+  let templates: Template[] = [];
+  /** Waiting for a click to put the next one down; and a cone or a line being pointed. */
+  let placing = false;
+  let aiming: Template | null = null;
+  const setPlacing = (on: boolean) => {
+    placing = on;
+    document.documentElement.classList.toggle("placing", on);
+    $("templatePlace").setAttribute("aria-pressed", String(on));
+  };
+  /** The one the controls ask for, at a point of the ground. */
+  const newTemplate = (ground: { x: number; y: number; z: number }): Template => {
+    const units = Number(($("templateSize") as HTMLInputElement).value) || 20;
+    const perCell = scale.parsed.multiplier || 1;
+    return {
+      id: String(Date.now()) + Math.random().toString(36).slice(2, 6),
+      shape: ($("templateShape") as HTMLSelectElement).value as TemplateShape,
+      look: ($("templateLook") as HTMLSelectElement).value as TemplateLook,
+      x: ground.x,
+      y: ground.y,
+      z: ground.z,
+      lift: 0,
+      dir: { x: 1, y: 0 },
+      rise: 0,
+      size: Math.max(0.2, units / perCell),
+    };
+  };
+  /** The template the scene's keys raise and lower: the last one put down or grabbed; and which of its points. */
+  let activeTemplate: string | null = null;
+  let activePart: "origin" | "tip" = "origin";
+  function addTemplate(template: Template) {
+    templates = [...templates, template];
+    activeTemplate = template.id;
+    activePart = "origin";
+    setPlacing(false);
+    showTemplates();
+  }
+  /**
+   * The tokens a template reaches: their body (round, as tall as wide)
+   * within it, with the Lecturas' tolerance; all in cells (grid units up).
+   */
+  function updateAffected() {
+    if (!scene || templates.length === 0) {
+      view.setAffected(new Set());
+      return;
+    }
+    // Never in the way of what calls it (the lines, the rings, the list): a failure is only logged.
+    try {
+      reachTokens(scene);
+    } catch (error) {
+      console.error("Rising Ranges: Vistazo couldn't tell which tokens the templates reach", error);
+    }
+  }
+  function reachTokens(scene: VistazoScene) {
+    const bandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
+    const tolerance = (bandSet.tolerance ?? DEFAULT_TOLERANCE) / 100;
+    const reached = new Set<string>();
+    for (const token of scene.tokens) {
+      const radius = getTokenRadius(token.item, dpi, 0);
+      const reach = radius + tolerance;
+      const c = { x: token.x / dpi, y: token.y / dpi, z: bodyCenterHeight(token.terrain + token.own, radius) };
+      if (templates.some((template) => templateReaches(template, c, reach, dpi))) {
+        reached.add(token.id);
+      }
+    }
+    view.setAffected(reached);
+  }
+  /** Drawn, and listed with a button to take each away. */
+  function showTemplates() {
+    view.setTemplates(templates);
+    updateAffected();
+    const list = $("templateList");
+    list.replaceChildren(
+      ...templates.map((template) => {
+        const item = document.createElement("li");
+        const name = document.createElement("span");
+        const shapeKey = `vistazo.shape${template.shape[0].toUpperCase()}${template.shape.slice(1)}` as TranslationKey;
+        const lookKey = `vistazo.look${template.look[0].toUpperCase()}${template.look.slice(1)}` as TranslationKey;
+        name.textContent = `${t(shapeKey)} · ${t(lookKey)} · ${formatDistance(scale, template.size)}`;
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "✕";
+        remove.title = t("vistazo.templateRemove");
+        remove.onclick = () => {
+          templates = templates.filter((other) => other.id !== template.id);
+          if (activeTemplate === template.id) {
+            activeTemplate = null;
+          }
+          showTemplates();
+        };
+        item.append(name, remove);
+        return item;
+      })
+    );
+    $("templateClear").hidden = templates.length === 0;
+  }
+  $("templatePlace").onclick = () => setPlacing(!placing);
+  $("templateClear").onclick = () => {
+    templates = [];
+    showTemplates();
+  };
+  $("templateClear").hidden = true;
   /** Takes the free point away, if there's one (then Esc does only that); see placePoint. */
   let clearPoint: () => boolean = () => false;
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       if (cancelMove) {
         cancelMove();
+      } else if (placing || aiming) {
+        // Placing a template: Esc stops that.
+        aiming = null;
+        setPlacing(false);
+        showTemplates();
       } else if (clearPoint()) {
         // The point gone, the panel stays.
       } else if (FULL) {
@@ -644,7 +752,9 @@ async function start() {
 
   // Pointer: drag orbits; the wheel held down (or Shift) pans, as in Owlbear; two fingers zoom and pan.
   const pointers = new Map<number, [number, number]>();
-  let mode: "orbit" | "pan" | "pinch" | "token" | "point" | null = null;
+  let mode: "orbit" | "pan" | "pinch" | "token" | "point" | "handle" | null = null;
+  /** A template's handle being dragged: which template, and which handle. */
+  let handleDrag: { id: string; part: "origin" | "tip" } | null = null;
   /** The free point being dragged: the level it moves over (grid units) and where it was grabbed from. */
   let pointDrag: { level: number; grab: { x: number; y: number } } | null = null;
   let last: [number, number] | null = null;
@@ -710,6 +820,23 @@ async function start() {
     if ((event.target as Element).closest("button")) {
       return;
     }
+    // Placing a template: this press puts it down (a cone or a line: from here, pointed by the drag).
+    if (placing && event.button === 0 && scene) {
+      event.preventDefault();
+      const at = stagePoint(event);
+      const ground = view.pickTerrain(at.x, at.y);
+      if (ground) {
+        const template = newTemplate(ground);
+        if (template.shape === "cone" || template.shape === "line") {
+          aiming = template;
+          stage.setPointerCapture(event.pointerId);
+          view.setTemplates([...templates, template]);
+        } else {
+          addTemplate(template);
+        }
+      }
+      return;
+    }
     // Guided by the GM's camera: it isn't this player's to move.
     if (guided) {
       return;
@@ -741,6 +868,17 @@ async function start() {
         };
       }
     }
+    // A press on a template's handle: ready to move it (its origin) or turn it (its tip).
+    handleDrag = null;
+    if (press?.token?.startsWith(TEMPLATE_HANDLE)) {
+      const [id, part] = press.token.slice(TEMPLATE_HANDLE.length).split(":");
+      const template = templates.find((t) => t.id === id);
+      if (template) {
+        handleDrag = { id, part: part === "tip" ? "tip" : "origin" };
+        activeTemplate = id;
+        activePart = handleDrag.part;
+      }
+    }
     // A press on the free point's marker: ready to drag it (anyone can: it's only this view's).
     pointDrag = null;
     if (press?.token === FREE_POINT && freePoint && scene) {
@@ -759,7 +897,7 @@ async function start() {
       pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), zoom: camera.zoom, mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] };
       mode = "pinch";
     } else {
-      mode = moving ? "token" : pointDrag ? "point" : event.button === 1 || event.shiftKey ? "pan" : "orbit";
+      mode = moving ? "token" : handleDrag ? "handle" : pointDrag ? "point" : event.button === 1 || event.shiftKey ? "pan" : "orbit";
       last = [event.clientX, event.clientY];
     }
   });
@@ -778,6 +916,30 @@ async function start() {
       const dx = event.clientX - last[0];
       const dy = event.clientY - last[1];
       last = [event.clientX, event.clientY];
+      // A template's handle dragged: its origin moves it (over the ground), its tip turns it.
+      if (mode === "handle" && handleDrag && scene) {
+        const drag = handleDrag;
+        const template = templates.find((t) => t.id === drag.id);
+        const at = stagePoint(event);
+        const ground = template && (view.pickPlane(at.x, at.y, template.z) ?? view.pickTerrain(at.x, at.y));
+        if (template && ground) {
+          let next: Template = template;
+          if (drag.part === "origin") {
+            // Keeping its height over the ground.
+            next = { ...template, x: ground.x, y: ground.y, z: scene.measuredAt(ground.x, ground.y) + template.lift };
+          } else {
+            const [dx, dy] = [ground.x - template.x, ground.y - template.y];
+            const length = Math.hypot(dx, dy);
+            if (length > dpi * 0.1) {
+              next = { ...template, dir: { x: dx / length, y: dy / length } };
+            }
+          }
+          templates = templates.map((t) => (t.id === next.id ? next : t));
+          view.setTemplates(templates);
+          updateAffected();
+        }
+        return;
+      }
       // The free point dragged: over a level at its height, its rings and lines following it.
       if (mode === "point" && pointDrag && freePoint) {
         const at = stagePoint(event);
@@ -848,8 +1010,17 @@ async function start() {
       endMove();
     }
     pointDrag = null;
-    // A click on the free point's marker: nothing (it isn't a token to select, nor ground to put it on).
-    if (press?.token === FREE_POINT) {
+    if (handleDrag) {
+      handleDrag = null;
+      // Its list redrawn; a failure there mustn't keep the pointer held (the drag would go on).
+      try {
+        showTemplates();
+      } catch (error) {
+        console.error("Rising Ranges: Vistazo couldn't redraw the templates", error);
+      }
+    }
+    // A click on the free point's marker or a template's handle: nothing (no token, no ground).
+    if (press?.token === FREE_POINT || press?.token?.startsWith(TEMPLATE_HANDLE)) {
       press = null;
     }
     if (press && event.type === "pointerup" && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 5) {
@@ -889,6 +1060,29 @@ async function start() {
     }
   };
   stage.addEventListener("pointerup", up);
+  // A cone or a line being pointed: toward the ground under the cursor; let go, it's placed.
+  stage.addEventListener("pointermove", (event) => {
+    if (!aiming) {
+      return;
+    }
+    const at = stagePoint(event);
+    const ground = view.pickPlane(at.x, at.y, aiming.z) ?? view.pickTerrain(at.x, at.y);
+    if (ground) {
+      const [dx, dy] = [ground.x - aiming.x, ground.y - aiming.y];
+      const length = Math.hypot(dx, dy);
+      if (length > dpi * 0.1) {
+        aiming = { ...aiming, dir: { x: dx / length, y: dy / length } };
+        view.setTemplates([...templates, aiming]);
+      }
+    }
+  });
+  stage.addEventListener("pointerup", () => {
+    if (aiming) {
+      const template = aiming;
+      aiming = null;
+      addTemplate(template);
+    }
+  });
   stage.addEventListener("pointercancel", up);
   stage.addEventListener(
     "wheel",
@@ -904,6 +1098,32 @@ async function start() {
     { passive: false }
   );
   stage.addEventListener("keydown", (event) => {
+    // The template last put down or grabbed (no token moving): raised and lowered by the same keys.
+    const active = activeTemplate && !moving && !event.repeat ? templates.find((t) => t.id === activeTemplate) : undefined;
+    if (active && scene) {
+      const settings = globalSettingsFromMetadata(sceneMetadata);
+      const bandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
+      // Its tip (a cone's or a line's, if that's what was grabbed): its own height over the origin.
+      const tip = activePart === "tip" && (active.shape === "cone" || active.shape === "line");
+      const before = tip ? active.rise : active.lift;
+      let value = before;
+      if (event.code === letterToCode(settings.hotkeyRaise)) {
+        value = stepHeight(value, 1, bandSet);
+      } else if (event.code === letterToCode(settings.hotkeyLower)) {
+        value = stepHeight(value, -1, bandSet);
+      } else if (event.code === letterToCode(groundHotkey(settings))) {
+        value = 0;
+      }
+      if (value !== before) {
+        event.preventDefault();
+        const next = tip
+          ? { ...active, rise: Math.max(-active.size, Math.min(active.size, value)) }
+          : { ...active, lift: value, z: scene.measuredAt(active.x, active.y) + value };
+        templates = templates.map((t) => (t.id === next.id ? next : t));
+        showTemplates();
+        return;
+      }
+    }
     // The free point (no token moving): raised and lowered by the same keys.
     if (!moving && freePoint && !event.repeat) {
       const settings = globalSettingsFromMetadata(sceneMetadata);
@@ -1073,6 +1293,8 @@ async function start() {
   let items = await OBR.scene.items.getItems();
   let sceneMetadata = metadata;
   let [dpi, scale] = await Promise.all([OBR.scene.grid.getDpi(), OBR.scene.grid.getScale()]);
+  // The templates' size is typed in the grid's own unit.
+  $("templateUnit").textContent = scale.parsed.unit;
   // On a hex grid, one cell's center: where its cells are drawn from (see useTexture).
   const findHexCenter = async () =>
     gridType === "HEX_HORIZONTAL" || gridType === "HEX_VERTICAL" ? await OBR.scene.grid.snapPosition({ x: 0, y: 0 }, 1, false, true) : null;
@@ -1123,6 +1345,10 @@ async function start() {
   let freePoint: { x: number; y: number; own: number } | null = null;
   function placePoint(point: { x: number; y: number; own: number } | null) {
     freePoint = point;
+    // The scene's keys move the point now, not a template.
+    if (point) {
+      activeTemplate = null;
+    }
     if (point && scene) {
       // A token selected is measured from first: the point takes its place.
       // Cleared here too, at once: Owlbear tells us a moment later.
@@ -1145,6 +1371,7 @@ async function start() {
     return true;
   };
   const showDistances = () => {
+    updateAffected();
     const origin = selectedOrigin();
     if (!scene || !origin) {
       view.setDistances(null, []);
@@ -1426,6 +1653,7 @@ async function start() {
   OBR.scene.grid.onChange(async (grid) => {
     gridType = grid.type;
     [dpi, scale] = await Promise.all([OBR.scene.grid.getDpi(), OBR.scene.grid.getScale()]);
+    $("templateUnit").textContent = scale.parsed.unit;
     hexCenter = await findHexCenter().catch(() => null);
     later();
   });
@@ -1468,3 +1696,45 @@ async function start() {
 OBR.onReady(() => {
   start().catch((error) => console.error("Rising Ranges: failed to open the Vistazo 3D", error));
 });
+
+/**
+ * Whether a template reaches a point (cells; a body's middle) within
+ * `reach` (its radius and the tolerance): a sphere round its point, a
+ * cylinder standing on it (as tall as wide), a cube on it, a line a cell
+ * wide and tall from it toward its tip, a cone from it (as wide at its end
+ * as it's long) toward its tip; their tip may be higher or lower (see templateTip).
+ */
+function templateReaches(template: Template, c: { x: number; y: number; z: number }, reach: number, dpi: number): boolean {
+  const o = { x: template.x / dpi, y: template.y / dpi, z: template.z };
+  const s = template.size;
+  const [dx, dy] = [template.dir.x, template.dir.y];
+  switch (template.shape) {
+    case "sphere":
+      return Math.hypot(c.x - o.x, c.y - o.y, c.z - o.z) <= s + reach;
+    case "cylinder":
+      return Math.hypot(c.x - o.x, c.y - o.y) <= s + reach && c.z >= o.z - reach && c.z <= o.z + s * 2 + reach;
+    case "cube": {
+      const ax = Math.max(0, Math.abs(c.x - o.x) - s / 2);
+      const ay = Math.max(0, Math.abs(c.y - o.y) - s / 2);
+      const az = Math.max(0, o.z - c.z, c.z - (o.z + s));
+      return Math.hypot(ax, ay, az) <= reach;
+    }
+    case "line":
+    default: {
+      // Along its axis (from its point toward its tip: it may tilt), and how far from it.
+      const tip = templateTip(template);
+      const a = { x: (dx * tip.across) / s, y: (dy * tip.across) / s, z: tip.rise / s };
+      const v = { x: c.x - o.x, y: c.y - o.y, z: c.z - o.z };
+      const along = v.x * a.x + v.y * a.y + v.z * a.z;
+      const off = Math.hypot(v.x - a.x * along, v.y - a.y * along, v.z - a.z * along);
+      if (along < -reach || along > s + reach) {
+        return false;
+      }
+      // A line: half a cell round its axis; a cone: its half-width there is half that far.
+      if (template.shape === "line") {
+        return off <= 0.5 + reach;
+      }
+      return off <= Math.max(0, along) / 2 + reach;
+    }
+  }
+}
