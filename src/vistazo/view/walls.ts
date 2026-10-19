@@ -9,7 +9,8 @@ import { FACING, LIGHT, type Wall } from "./types";
 export function computeWalls(scene: VistazoScene, base: number): Wall[] {
   const probe = scene.dpi * 0.03;
   const l = Math.hypot(...LIGHT);
-  const sloped = scene.pieces.some((piece) => piece.slope);
+  // A ramp or a cloth about: its heights change along an edge.
+  const sloped = scene.pieces.some((piece) => piece.slope || piece.surface);
   const walls: Wall[] = [];
   for (const piece of scene.pieces) {
     for (const polygon of piece.shape) {
@@ -39,7 +40,8 @@ export function computeWalls(scene: VistazoScene, base: number): Wall[] {
           const lower = scene.pieceAt(mx + nx * probe, my + ny * probe);
           // With ramps about, every edge is cut in short steps: a ramp may meet it anywhere along
           // it (not only at its middle), and the heights on either side change there.
-          const steps = sloped ? Math.max(1, Math.ceil(len / (scene.dpi * 0.25))) : 1;
+          // (A side already that short, a cloth's: see scene.ts, one step, at its own ends.)
+          const steps = sloped ? Math.max(1, Math.ceil(len / (scene.dpi * 0.25) - 1e-6)) : 1;
           for (let j = 0; j < steps; j++) {
             const [px, py] = [ax + (dx * j) / steps, ay + (dy * j) / steps];
             const [qx, qy] = [ax + (dx * (j + 1)) / steps, ay + (dy * (j + 1)) / steps];

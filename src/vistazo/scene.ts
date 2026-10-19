@@ -251,6 +251,25 @@ export function inShape(x: number, y: number, shape: MultiPolygon): boolean {
   return shape.some((polygon) => inRing(x, y, polygon[0]) && !polygon.slice(1).some((hole) => inRing(x, y, hole)));
 }
 
+/** A shape's rings with points added along each side, none longer than `step` (px). */
+function densified(shape: MultiPolygon, step: number): MultiPolygon {
+  return shape.map((polygon) =>
+    polygon.map((ring) => {
+      const out: Pair[] = [];
+      for (let i = 0; i < ring.length - 1; i++) {
+        const [ax, ay] = ring[i];
+        const [bx, by] = ring[i + 1];
+        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / step));
+        for (let j = 0; j < n; j++) {
+          out.push([ax + ((bx - ax) * j) / n, ay + ((by - ay) * j) / n]);
+        }
+      }
+      out.push(ring[ring.length - 1]);
+      return out;
+    })
+  );
+}
+
 function closed(ring: Pair[]): Pair[] {
   return [...ring, ring[0]];
 }
@@ -526,6 +545,15 @@ function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dp
   const groundPiece: Piece | null = ground.length > 0 ? { height: 0, shape: ground } : null;
   if (groundPiece) {
     pieces.unshift(groundPiece);
+  }
+  // A cloth's outline in short steps (a quarter of a cell): its walls are cut at the same points (see
+  // computeWalls), so their tops are its edge exactly, not straight lines across its curve (teeth). Only
+  // once the ground is cut: points added along a side are a hair off it, and cut from the map they'd
+  // leave hairline gaps of ground beside it (thin walls standing up).
+  for (const piece of pieces) {
+    if (piece.surface) {
+      piece.shape = densified(piece.shape, dpi / 4);
+    }
   }
   // For asking points fast: the zones' pieces (the ground is what none of them has), each with its box first.
   const boxed = pieces

@@ -832,17 +832,27 @@ function nearRings(rings: Vector2[][], point: Vector2, reach: number): boolean {
 export function growRings(rings: [number, number][][], reach: number): [number, number][][] {
   const parts: Polygon[] = rings.map((ring) => [ring as Pair[]]);
   for (const ring of rings) {
-    for (let i = 0; i < ring.length; i++) {
-      const [ax, ay] = ring[i];
+    // Each side's normal, `reach` long (none for a side of no length).
+    const normals = ring.map(([ax, ay], i): Pair | null => {
       const [bx, by] = ring[(i + 1) % ring.length];
       const length = Math.hypot(bx - ax, by - ay);
-      if (length < 1e-9) {
+      return length < 1e-9 ? null : [(-(by - ay) / length) * reach, ((bx - ax) / length) * reach];
+    });
+    for (let i = 0; i < ring.length; i++) {
+      const n = normals[i];
+      if (!n) {
         continue;
       }
-      const [nx, ny] = [(-(by - ay) / length) * reach, ((bx - ax) / length) * reach];
-      const [ux, uy] = [((bx - ax) / length) * reach, ((by - ay) / length) * reach];
-      // The side as a band, a little past its ends so the corners close.
-      parts.push([[[ax - ux + nx, ay - uy + ny], [bx + ux + nx, by + uy + ny], [bx + ux - nx, by + uy - ny], [ax - ux - nx, ay - uy - ny]]]);
+      const [ax, ay] = ring[i];
+      const [bx, by] = ring[(i + 1) % ring.length];
+      // The side as a band; at its end, a corner cut straight across to the next side's band (a band past
+      // its ends would stick out of a sharp corner as a spike).
+      parts.push([[[ax + n[0], ay + n[1]], [bx + n[0], by + n[1]], [bx - n[0], by - n[1]], [ax - n[0], ay - n[1]]]]);
+      const next = normals[(i + 1) % ring.length];
+      if (next) {
+        parts.push([[[bx, by], [bx + n[0], by + n[1]], [bx + next[0], by + next[1]]]]);
+        parts.push([[[bx, by], [bx - n[0], by - n[1]], [bx - next[0], by - next[1]]]]);
+      }
     }
   }
   try {
@@ -904,8 +914,12 @@ function clothSurface(item: Item, solid: TerrainZone[], solidOutlines: Pair[][] 
   const step = Math.max(2, perimeter / CLOTH_SAMPLES);
   // Inside what's left of it (even-odd over its outline's rings).
   const inside = (p: Vector2) => inPolygons(outline, p);
-  const samples: { x: number; y: number; h: number }[] = [];
+  // What it lies on: the smallest zone it's wholly inside, or the ground (see terrainZones).
+  const floor = solid.find((zone) => rings.every((ring) => ring.every((point) => zone.contains(point))));
+  const samples: { x: number; y: number; h: number; held: boolean; ring: number }[] = [];
+  let ringIndex = -1;
   for (const ring of outline) {
+    ringIndex++;
     for (let i = 0; i < ring.length; i++) {
       const a = ring[i];
       const b = ring[(i + 1) % ring.length];
@@ -926,15 +940,18 @@ function clothSurface(item: Item, solid: TerrainZone[], solidOutlines: Pair[][] 
         // Outward to the first zone (past a thin gap to it), or else the ground just past it: from right
         // by its outline, in small steps, so a thin zone beside it (a cliff's narrow top) isn't stepped over.
         let h = terrainAt(solid, { x: p.x + nx * 2, y: p.y + ny * 2 });
+        // Held to it where it meets a zone (not what it lies on, nor bare ground): it reaches that zone there.
+        let held = false;
         for (let d = 1; d <= CLOTH_GAP * 2; d += 2) {
           const out = { x: p.x + nx * d, y: p.y + ny * d };
           const zone = solid.find((z) => z.contains(out));
           if (zone) {
             h = terrainAt([zone], out);
+            held = zone !== floor;
             break;
           }
         }
-        samples.push({ x: p.x, y: p.y, h });
+        samples.push({ x: p.x, y: p.y, h, held, ring: ringIndex });
       }
     }
   }
@@ -943,31 +960,68 @@ function clothSurface(item: Item, solid: TerrainZone[], solidOutlines: Pair[][] 
   }
   const heights = samples.map((s) => s.h);
   const height = (Math.min(...heights) + Math.max(...heights)) / 2;
-  // What it lies on (the smallest zone it's wholly inside, or the ground): what's higher round it holds
-  // it up, taut over it as a tent's cloth over its poles (the upper hull of those heights: straight from
-  // one support to the next, its free edges hanging between them); what's lower it falls into, as a
-  // slope down a bank (weighted by how near: see idw).
-  const floor = solid.find((zone) => rings.every((ring) => ring.every((point) => zone.contains(point))));
+  // Over what it lies on, what's higher round it holds it up, taut over it as a tent's cloth over its
+  // poles (the upper hull of those heights: straight from one support to the next, its free edges hanging
+  // between them); what's lower it falls into, as a slope down a bank (weighted by how near: see idw).
+  // Where it meets a zone lower than that taut sheet (a step between two cliffs' tops) it's brought down
+  // to it, fading away from there (see `pull`).
   const baseAt = (point: Vector2) => (floor ? terrainAt([floor], point) : 0);
   const above = samples.map((s) => ({ x: s.x, y: s.y, h: Math.max(0, s.h - baseAt(s)) }));
   const below = samples.map((s) => ({ x: s.x, y: s.y, h: Math.min(0, s.h - baseAt(s)) }));
   const taut = above.some((s) => s.h > 1e-6) ? upperHull(above) : null;
   const highest = Math.max(...above.map((s) => s.h));
   const sags = below.some((s) => s.h < -1e-6);
+  // The sheet's height at each point of its outline (on it, or under it where it hangs).
+  const edge = taut ? above.map((s) => ({ x: s.x, y: s.y, h: taut(s) ?? s.h })) : above;
+  /** Straight from support to support, eased into an S (as a cloth leaves one and comes to the next). */
+  const sheet = (point: Vector2) => {
+    if (!taut) {
+      return 0;
+    }
+    // Past what its outline spans (the little it's grown by: see terrainZones), the sheet as it is along
+    // its outline, weighed by how near: not the heights round it, which would leave a step at its edge.
+    const straight = taut(point) ?? idw(edge, point);
+    const t = Math.max(0, Math.min(1, straight / highest));
+    const s = t * t * (3 - 2 * t);
+    return highest * (t + (s - t) * CLOTH_CURVE);
+  };
+  // Which stretches of its outline that meet no zone hang free: those held up at both ends (a tent's edge
+  // between two poles). One that ends against anything else (a lower zone, the ravine under a bank) lies
+  // on the ground it's over, as the cloth leaves the support behind.
+  const hangs = samples.map(() => false);
+  for (let r = 0; r <= ringIndex; r++) {
+    const ring = samples.map((_, i) => i).filter((i) => samples[i].ring === r);
+    const start = ring.findIndex((i) => samples[i].held);
+    if (start < 0) {
+      continue;
+    }
+    const supports = (i: number) => samples[i].held && above[i].h > 1e-6;
+    let run: number[] = [];
+    let before = ring[start];
+    for (let step = 1; step <= ring.length; step++) {
+      const i = ring[(start + step) % ring.length];
+      if (!samples[i].held) {
+        run.push(i);
+        continue;
+      }
+      if (supports(before) && supports(i)) {
+        for (const j of run) {
+          hangs[j] = true;
+        }
+      }
+      run = [];
+      before = i;
+    }
+  }
+  // How far below the sheet each zone it meets is, and the ground under each stretch that doesn't hang (0
+  // where it hangs free): weighed as the heights are, the sheet comes down to each where it meets it, and
+  // stays as it is away from them.
+  const pull = above.map((s, i) => ({ x: s.x, y: s.y, h: samples[i].held || !hangs[i] ? Math.min(0, s.h - sheet(s)) : 0 }));
+  const pulls = pull.some((s) => s.h < -1e-6);
   return {
     height,
     rings,
-    at: (point) => {
-      let up = 0;
-      if (taut) {
-        // Straight from support to support, eased into an S (as a cloth leaves one and comes to the next).
-        const straight = taut(point) ?? idw(above, point);
-        const t = Math.max(0, Math.min(1, straight / highest));
-        const s = t * t * (3 - 2 * t);
-        up = highest * (t + (s - t) * CLOTH_CURVE);
-      }
-      return baseAt(point) + up + (sags ? idw(below, point) : 0);
-    },
+    at: (point) => baseAt(point) + sheet(point) + (pulls ? idw(pull, point) : 0) + (sags ? idw(below, point) : 0),
   };
 }
 
@@ -1027,6 +1081,29 @@ function upperHull(samples: { x: number; y: number; h: number }[]): (point: Vect
       }
       const h = u * t.ah + v * t.bh + w * t.ch;
       best = best === undefined ? h : Math.max(best, h);
+    }
+    if (best !== undefined) {
+      return best;
+    }
+    // Just past what they span (on its edge, by rounding, or a little out): its height at the nearest
+    // point of its edge, so it goes on level from there rather than leaving a step.
+    let nearest = Infinity;
+    for (const t of triangles) {
+      for (const [ax, ay, ah, bx, by, bh] of [
+        [t.ax, t.ay, t.ah, t.bx, t.by, t.bh],
+        [t.bx, t.by, t.bh, t.cx, t.cy, t.ch],
+        [t.cx, t.cy, t.ch, t.ax, t.ay, t.ah],
+      ]) {
+        const length2 = (bx - ax) ** 2 + (by - ay) ** 2;
+        const along = length2 > 0 ? Math.max(0, Math.min(1, ((point.x - ax) * (bx - ax) + (point.y - ay) * (by - ay)) / length2)) : 0;
+        const d2 = (point.x - ax - (bx - ax) * along) ** 2 + (point.y - ay - (by - ay) * along) ** 2;
+        // Of two edges as near (the same edge, in two faces), the higher: the sheet's top.
+        const h = ah + (bh - ah) * along;
+        if (d2 < nearest - 1e-6 || (Math.abs(d2 - nearest) <= 1e-6 && h > (best ?? -Infinity))) {
+          nearest = d2;
+          best = h;
+        }
+      }
     }
     return best;
   };

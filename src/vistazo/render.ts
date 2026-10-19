@@ -1208,12 +1208,35 @@ export class VistazoView {
       const colors = new Float32Array(inside.length * 24);
       const reach = VIEW_CELL * 0.45;
       const dark = 0.45 * this.options.relief;
+      // Each end goes out along the walls' normals there, averaged with the next wall's: the shadows of
+      // a wall's pieces meet at their ends (out along each piece's own normal, a curve's left wedges between).
+      const key = (x: number, y: number) => `${Math.round(x * 100)},${Math.round(y * 100)}`;
+      const normals = new Map<string, [number, number]>();
+      for (const wall of inside) {
+        for (const [x, y] of [[wall.ax, wall.ay], [wall.bx, wall.by]]) {
+          const sum = normals.get(key(x, y)) ?? [0, 0];
+          normals.set(key(x, y), [sum[0] + wall.nx, sum[1] + wall.ny]);
+        }
+      }
+      const out = (x: number, y: number, wall: (typeof inside)[number]): [number, number] => {
+        const [sx, sy] = normals.get(key(x, y)) ?? [wall.nx, wall.ny];
+        const length = Math.hypot(sx, sy);
+        // Walls facing apart (a thin wall's two sides): its own way.
+        return length < 0.5 ? [wall.nx, wall.ny] : [sx / length, sy / length];
+      };
       inside.forEach((wall, i) => {
         const [ax, ay, bx, by] = [wall.ax * u, wall.ay * u, wall.bx * u, wall.by * u];
-        const [cx, cy, dx, dy] = [ax + wall.nx * reach, ay + wall.ny * reach, bx + wall.nx * reach, by + wall.ny * reach];
+        const [nax, nay] = out(wall.ax, wall.ay, wall);
+        const [nbx, nby] = out(wall.bx, wall.by, wall);
+        const [cx, cy, dx, dy] = [ax + nax * reach, ay + nay * reach, bx + nbx * reach, by + nby * reach];
         const za = wall.b0 * k + 0.4;
         const zb = wall.b1 * k + 0.4;
-        positions.set([ax, ay, za, bx, by, zb, dx, dy, zb, ax, ay, za, dx, dy, zb, cx, cy, za], i * 18);
+        // Its far edge down on the ground there where that falls away (a cloth's slope: level with the
+        // wall's foot it would hang in the air), but never up: by a corner its far edge lands on the next
+        // wall's top, and climbing to it, it would cut through that wall.
+        const zc = Math.min(wall.b0, scene.heightAt(cx / u, cy / u) ?? wall.b0) * k + 0.4;
+        const zd = Math.min(wall.b1, scene.heightAt(dx / u, dy / u) ?? wall.b1) * k + 0.4;
+        positions.set([ax, ay, za, bx, by, zb, dx, dy, zd, ax, ay, za, dx, dy, zd, cx, cy, zc], i * 18);
         const alphas = [dark, dark, 0, dark, 0, 0];
         alphas.forEach((a, j) => colors.set([0, 0, 0, a], i * 24 + j * 4));
       });
