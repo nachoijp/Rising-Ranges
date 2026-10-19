@@ -1,5 +1,6 @@
 import { isCurve, isLight, isPath, isShape, isWall, type Item, type Light, type Wall } from "@owlbear-rodeo/sdk";
-import polygonClipping, { type MultiPolygon } from "polygon-clipping";
+import type { MultiPolygon } from "polygon-clipping";
+import polygonClipping from "../terrain/clip";
 import { itemOutline } from "../terrain/terrain";
 
 // The fog as a player sees it, for the Vistazo's player view: Owlbear's

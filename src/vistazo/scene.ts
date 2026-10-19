@@ -1,5 +1,6 @@
 import { isImage, type GridScale, type GridType, type Image, type Item } from "@owlbear-rodeo/sdk";
-import polygonClipping, { type MultiPolygon, type Pair } from "polygon-clipping";
+import type { MultiPolygon, Pair } from "polygon-clipping";
+import polygonClipping from "../terrain/clip";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
 import { onGrid } from "../engine/hex";
 import { tokenName } from "../distances/rows";
@@ -510,7 +511,17 @@ function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dp
     const covered = taken.length > 0 ? polygonClipping.union(taken[0], ...taken.slice(1)) : [];
     ground = covered.length > 0 ? polygonClipping.difference(world, covered) : world;
   } catch (error) {
-    console.error("Rising Ranges: Vistazo couldn't cut the ground, drawing the whole map", error);
+    // Each zone taken out by itself instead, any that still fails left in the ground (a whole map of
+    // ground at 0 would cover every pit).
+    console.warn("Rising Ranges: Vistazo cut the ground zone by zone", error);
+    ground = world;
+    for (const piece of pieces) {
+      try {
+        ground = polygonClipping.difference(ground, piece.shape);
+      } catch (failed) {
+        console.error("Rising Ranges: Vistazo couldn't cut a zone from the ground", failed);
+      }
+    }
   }
   const groundPiece: Piece | null = ground.length > 0 ? { height: 0, shape: ground } : null;
   if (groundPiece) {

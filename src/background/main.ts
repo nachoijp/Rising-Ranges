@@ -10,7 +10,7 @@ import { prefetchPanels } from "./prefetchPanels";
 import { startTerrainStyle } from "./terrainStyle";
 import { startTerrainView } from "./terrainView";
 import { SYNC_CHANNEL, type SyncMessage } from "../vistazo/sync";
-import { isVistazoOpen, openVistazoPanel, watchVistazoPanel } from "../vistazo/panel";
+import { isVistazoShown, openVistazoPanel, vistazoClosedAt, watchVistazoPanel } from "../vistazo/panel";
 import { globalSettingsFromMetadata, vistazoAccess } from "../settings/globalSettings";
 
 async function waitUntilOBRReady() {
@@ -96,22 +96,56 @@ async function init() {
 
 /**
  * A player's Vistazo opens by itself when the GM syncs their view (see
- * vistazo/sync.ts), if the scene lets players have it; the page then follows the camera.
+ * vistazo/sync.ts), if the scene lets players have it; the page then
+ * follows the camera. Not while it shows (the panel, or full screen), and
+ * not again in a sync the player closed it during: only when the GM syncs
+ * anew. Who's playing and what the scene allows are kept as they change
+ * (the camera comes several times a second).
  */
 function watchSyncedView() {
   watchVistazoPanel();
+  let role: string | null = null;
+  let everyone = false;
+  const readAccess = (metadata: Record<string, unknown>) => {
+    everyone = vistazoAccess(globalSettingsFromMetadata(metadata)) === "everyone";
+  };
+  const loadAccess = () => {
+    OBR.scene.getMetadata().then(readAccess, () => {
+      everyone = false;
+    });
+  };
+  OBR.player.getRole().then((value) => {
+    role = value;
+  }, () => {});
+  OBR.player.onChange((player) => {
+    role = player.role;
+  });
+  loadAccess();
+  OBR.scene.onMetadataChange(readAccess);
+  OBR.scene.onReadyChange((ready) => (ready ? loadAccess() : (everyone = false)));
+  // The sync followed (when the GM began it) and when it was first heard here.
+  let since = 0;
+  let heardAt = 0;
+  let opening = false;
   OBR.broadcast.onMessage(SYNC_CHANNEL, async (event) => {
     const message = event.data as SyncMessage;
-    if (message.type !== "camera" || isVistazoOpen()) {
+    if (message.type !== "camera") {
       return;
     }
+    if (message.since !== since) {
+      since = message.since;
+      heardAt = Date.now();
+    }
+    if (opening || isVistazoShown() || role !== "PLAYER" || !everyone || vistazoClosedAt() > heardAt) {
+      return;
+    }
+    opening = true;
     try {
-      const [role, metadata] = await Promise.all([OBR.player.getRole(), OBR.scene.getMetadata()]);
-      if (role !== "GM" && vistazoAccess(globalSettingsFromMetadata(metadata)) === "everyone") {
-        await openVistazoPanel();
-      }
+      await openVistazoPanel();
     } catch {
-      // No scene: nothing to open.
+      // Not now; the next camera tries again.
+    } finally {
+      opening = false;
     }
   });
 }

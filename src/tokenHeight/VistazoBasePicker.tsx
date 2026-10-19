@@ -49,21 +49,42 @@ export function VistazoBasePicker() {
       setImage(null);
       return;
     }
-    OBR.scene.items.getItems(selection).then((items) => {
-      setBase(sharedBase(items));
-      setImage(items.find(isImage) ?? null);
-    });
+    // The selection's items now, and as they change (another client, or the other menu, setting the base);
+    // a reply for a selection that's no longer this one is let go.
+    let current = true;
+    const show = (items: Item[]) => {
+      const selected = items.filter((item) => selection.includes(item.id));
+      setBase(sharedBase(selected));
+      setImage(selected.find(isImage) ?? null);
+    };
+    OBR.scene.items.getItems(selection).then((items) => current && show(items));
+    const unsubscribe = OBR.scene.items.onChange((items) => current && show(items));
+    return () => {
+      current = false;
+      unsubscribe();
+    };
   }, [selection]);
 
+  // Measured again only when the picture itself changes (not on every change of its item).
+  const imageUrl = image?.image.url;
+  const imageVideo = image?.image.mime.startsWith("video") ?? false;
   useEffect(() => {
-    if (!image) {
+    if (!imageUrl) {
       setMeasured(undefined);
       return;
     }
-    const { url, mime } = image.image;
-    const read = () => setMeasured(visibleBox(url, mime.startsWith("video"), read));
+    // An image still loading reports later: not once another one is shown.
+    let current = true;
+    const read = () => {
+      if (current) {
+        setMeasured(visibleBox(imageUrl, imageVideo, read));
+      }
+    };
     read();
-  }, [image]);
+    return () => {
+      current = false;
+    };
+  }, [imageUrl, imageVideo]);
 
   async function apply(next: VistazoBase | undefined) {
     if (selection.length === 0) {

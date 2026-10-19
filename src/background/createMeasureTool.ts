@@ -10,7 +10,7 @@ import OBR, {
 } from "@owlbear-rodeo/sdk";
 import { axonometryOf } from "../engine/axonometry";
 import { isHexShape, onGrid, snapToOrigin } from "../engine/hex";
-import { getTerrainHeight, terrainAt, terrainZones, type TerrainZone } from "../terrain/terrain";
+import { isTerrainTagged, terrainAt, terrainZones, type TerrainZone } from "../terrain/terrain";
 import measureIcon from "../assets/range.svg";
 import { canUpdateItem } from "./permission";
 import {
@@ -34,6 +34,7 @@ import {
 import { clearFixedMedicion, hasFixedMedicion, pinFixedMedicion, setFixedLive } from "./fixedMedicion";
 import { setDraggedToken } from "./heightOverlays";
 import { DragPath } from "../util/dragPath";
+import { saveDraggedToken } from "../util/saveDrag";
 import { sameLecturaState, type LecturaContext, type LecturaState } from "../render/lecturaItems";
 import { buildBandRingItems, buildGradientShaders, buildOriginAnchor, originShapeKey, reshapeOrigin } from "../render/bandRings";
 import { getGridType, knownHexCenter, prefetchGridAxonometry } from "../util/gridAxonometry";
@@ -412,53 +413,14 @@ function cleanup() {
   lastDragPointer = null;
 }
 
-// Owlbear refuses bursts of scene writes ("Too many requests"). The waits
-// grow, so a short limit costs little and a longer one still gets a chance.
-const SAVE_RETRY_DELAYS_MS = [50, 100, 200];
-
 /**
- * Saves the dragged token's final position (and brings it and its
- * attachments to the top), retrying refused writes, then ends the drag. If
- * every attempt fails the token goes back where it started. Returns where
- * it landed, or null if it went back.
+ * Saves the dragged token's final position (see saveDraggedToken), then
+ * ends the drag. Returns where it landed, or null if it went back.
  */
 async function saveTokenPosition(interaction: InteractionManager<Item>, path: DragPath): Promise<Vector2 | null> {
   const final = interaction[0](() => {});
   try {
-    // Along the way it was dragged (see dragPath.ts), then where it ends up with its attachments.
-    const dpi = await OBR.scene.grid.getDpi();
-    const steps = path.steps(final.position, dpi * 0.3);
-    for (const step of steps.slice(0, -1)) {
-      await OBR.scene.items.updateItems([final.id], (items) => {
-        for (const item of items) {
-          item.position = step;
-        }
-      });
-    }
-    for (let attempt = 0; ; attempt++) {
-      try {
-        const withAttachments = await OBR.scene.items.getItemAttachments([final.id]);
-        withAttachments.sort((a, b) => a.zIndex - b.zIndex);
-        await OBR.scene.items.updateItems(withAttachments, (items) => {
-          for (let i = 0; i < items.length; i++) {
-            const item = items[i];
-            if (item.id === final.id) {
-              item.position = final.position;
-            }
-            if (!item.disableAutoZIndex) {
-              item.zIndex = Date.now() + i;
-            }
-          }
-        });
-        return final.position;
-      } catch (error) {
-        if (attempt >= SAVE_RETRY_DELAYS_MS.length) {
-          console.error("Rising Ranges: failed to save the dragged token's position", error);
-          return null;
-        }
-        await new Promise((resolve) => setTimeout(resolve, SAVE_RETRY_DELAYS_MS[attempt]));
-      }
-    }
+    return await saveDraggedToken(final, path);
   } finally {
     interaction[1]();
   }
@@ -637,7 +599,7 @@ async function startFixedDrag(event: ToolEvent) {
       OBR.scene.getMetadata(),
       OBR.scene.grid.getDpi(),
       getGridType(),
-      OBR.scene.items.getItems((item) => isTokenHeightMarker(item) || getTerrainHeight(item) !== undefined),
+      OBR.scene.items.getItems((item) => isTokenHeightMarker(item) || isTerrainTagged(item)),
     ]);
     const heightMarkers = markersAndTerrain.filter(isTokenHeightMarker);
     if (generation !== toolDownGeneration || !canUpdate) {
@@ -762,7 +724,7 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
           OBR.scene.grid.getScale(),
           getGridType(),
           OBR.scene.items.getItems(
-            (item) => (isImage(item) && item.layer === "CHARACTER") || getTerrainHeight(item) !== undefined
+            (item) => (isImage(item) && item.layer === "CHARACTER") || isTerrainTagged(item)
           ),
           getAllTokenHeightMarkers(),
           OBR.player.getRole(),

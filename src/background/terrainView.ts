@@ -7,7 +7,8 @@ import OBR, {
   type Item,
   type PathCommand,
 } from "@owlbear-rodeo/sdk";
-import polygonClipping, { type MultiPolygon } from "polygon-clipping";
+import type { MultiPolygon } from "polygon-clipping";
+import polygonClipping from "../terrain/clip";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
 import {
   globalSettingsFromMetadata,
@@ -303,21 +304,23 @@ async function redraw() {
   if (key === wantedKey) {
     return;
   }
-  wantedKey = key;
   const next = wanted();
   if (next.signature === drawnSignature) {
+    wantedKey = key;
     return;
   }
   const old = drawn;
-  drawn = next.items.map((item) => item.id);
-  drawnSignature = next.signature;
   // Added first, so the old ones go without a gap.
   if (next.items.length > 0) {
     await OBR.scene.local.addItems(next.items);
   }
+  drawn = next.items.map((item) => item.id);
+  drawnSignature = next.signature;
   if (old.length > 0) {
     await OBR.scene.local.deleteItems(old);
   }
+  // Only once it's drawn: if anything above failed, the same state is tried again on the next change.
+  wantedKey = key;
 }
 
 /** Redraws a moment after the last change; one pass at a time. */

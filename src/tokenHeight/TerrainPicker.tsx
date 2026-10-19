@@ -147,11 +147,16 @@ export function TerrainPicker() {
     await OBR.scene.items.updateItems(ids, (drafts) => {
       for (const draft of drafts) {
         setTerrainCloth(draft, on);
+        // A cloth takes its heights from round it: what a zone of its own height had goes (the menu's rows for
+        // it are off for a cloth, so nothing left behind would be in reach to change).
         if (on) {
           setTerrainHeight(draft, undefined);
           setTerrainRamp(draft, undefined);
           setTerrainStand(draft, undefined);
           setTerrainUnder(draft, undefined);
+          setTerrainWater(draft, undefined);
+          setTerrainWall(draft, undefined);
+          setTerrainSkin(draft, undefined);
         }
       }
     });
@@ -180,8 +185,17 @@ export function TerrainPicker() {
     await OBR.scene.items.updateItems(ids, (drafts) => {
       for (const draft of drafts) {
         // Always under its top: a slab at least a twentieth of a cell thick (more would make it no bridge at all).
+        // Set to 0 it's solid again (no underside); so is a zone at the ground's level or below (a pit) whose
+        // underside goes up past that, or it would be held a bridge with no way back.
         const top = getTerrainHeight(draft) ?? 0;
-        setTerrainUnder(draft, Math.min(top - 0.05, clampHeight(next(getTerrainUnder(draft) ?? 0))));
+        const now = getTerrainUnder(draft) ?? 0;
+        const value = clampHeight(next(now));
+        const highest = top - 0.05;
+        if (value === 0 || (value > highest && value > now && highest <= 0)) {
+          setTerrainUnder(draft, undefined);
+        } else {
+          setTerrainUnder(draft, Math.min(highest, value));
+        }
       }
     });
     setShapes(await OBR.scene.items.getItems(selection));

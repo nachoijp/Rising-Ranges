@@ -95,18 +95,34 @@ export function savePanelSize(size: Partial<PanelSize>) {
 // over a broadcast that never leaves this client.
 const STATE_CHANNEL = getPluginId("vistazoPanel");
 
-// Whether this client has the panel open (Owlbear can't tell: see the Distancias panel).
+// Whether this client has the panel open, or the full-screen view instead, and when the panel was last
+// closed (Owlbear can't tell: see the Distancias panel). The page says: true (open), false (closed),
+// "full" (closed for the full-screen view).
 let open = false;
+let full = false;
+let closedAt = 0;
 let watching = false;
 
-/** Background script: keeps `open` in step with the page closing or reopening itself. */
+function setState(state: unknown) {
+  open = state === true;
+  full = state === "full";
+  if (state === false) {
+    closedAt = Date.now();
+  }
+}
+
+/** Background script: keeps the state in step with the page closing or reopening itself. */
 export function watchVistazoPanel() {
   if (watching) {
     return;
   }
   watching = true;
-  OBR.broadcast.onMessage(STATE_CHANNEL, (event) => {
-    open = event.data === true;
+  OBR.broadcast.onMessage(STATE_CHANNEL, (event) => setState(event.data));
+  // A new scene closes the full-screen view too.
+  OBR.scene.onReadyChange((ready) => {
+    if (!ready) {
+      full = false;
+    }
   });
 }
 
@@ -128,7 +144,7 @@ export async function openVistazoPanel() {
   } catch {
     // The defaults, then.
   }
-  open = true;
+  setState(true);
   await OBR.broadcast.sendMessage(STATE_CHANNEL, true, { destination: "LOCAL" }).catch(() => {});
   await OBR.popover.open(popoverOptions(position, Math.max(MIN_WIDTH, width), Math.max(MIN_HEIGHT, height)));
 }
@@ -138,10 +154,21 @@ export function isVistazoOpen(): boolean {
   return open;
 }
 
-/** The page: closes its panel, and lets the button know. */
-export async function closeVistazoPanel() {
-  open = false;
-  await OBR.broadcast.sendMessage(STATE_CHANNEL, false, { destination: "LOCAL" }).catch(() => {});
+/** Whether this client shows the Vistazo at all: its panel, or its full-screen view. */
+export function isVistazoShown(): boolean {
+  return open || full;
+}
+
+/** When this client's panel was last closed (ms, Date.now()), 0 if never. */
+export function vistazoClosedAt(): number {
+  return closedAt;
+}
+
+/** The page: closes its panel (`forFull`: for the full-screen view, opening instead), and lets the button know. */
+export async function closeVistazoPanel(forFull = false) {
+  const state = forFull ? "full" : false;
+  setState(state);
+  await OBR.broadcast.sendMessage(STATE_CHANNEL, state, { destination: "LOCAL" }).catch(() => {});
   await OBR.popover.close(VISTAZO_POPOVER_ID);
 }
 

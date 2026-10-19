@@ -2,7 +2,7 @@ import OBR, { isCurve, isPath, isShape, type Curve, type GridType, type Item, ty
 import { bandSetFromMetadata } from "../bandSets/bandSets";
 import { globalSettingsFromMetadata, terrainOn, terrainVisibility, type TerrainVisibility } from "../settings/globalSettings";
 import { getGridType } from "../util/gridAxonometry";
-import { canBeTerrain, getTerrainHeight } from "../terrain/terrain";
+import { canBeTerrain, getTerrainCloth, getTerrainHeight, terrainZones } from "../terrain/terrain";
 import { markerBaseColor } from "../tokenHeight/markers";
 import { getStoredTheme, THEME_STORAGE_KEYS } from "../theme/themes";
 import { getColorString } from "../util/color";
@@ -102,13 +102,19 @@ const sameLook = (a: ReturnType<typeof lookOf>, b: ReturnType<typeof lookOf>) =>
   a.visible === b.visible &&
   a.disableHit === b.disableHit;
 
+/** A cloth's middle height (see clothSurface), 0 until it's worked out. */
+function clothHeight(id: string): number {
+  return terrainZones(items).find((zone) => zone.id === id)?.height ?? 0;
+}
+
 /** What a shape needs written, or null when it's already right. */
 function plan(item: Item): { look: ReturnType<typeof lookOf>; original: Original | undefined } | null {
   if (!styled(item)) {
     return null;
   }
   const settings = globalSettingsFromMetadata(metadata);
-  const height = getTerrainHeight(item);
+  // A cloth has no height of its own: its outline in the colour of the middle of its heights.
+  const height = getTerrainHeight(item) ?? (getTerrainCloth(item) ? clothHeight(item.id) : undefined);
   const original = getOriginal(item);
   const isTerrain = terrainOn(settings, gridType) && height !== undefined && canBeTerrain(item);
   if (!isTerrain) {

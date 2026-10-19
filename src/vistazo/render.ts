@@ -2,16 +2,23 @@ import * as THREE from "three";
 import { TessellateModifier } from "three/examples/jsm/modifiers/TessellateModifier.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { MultiPolygon } from "polygon-clipping";
-import { growRings, type TerrainSkin } from "../terrain/terrain";
-import polygonClipping from "polygon-clipping";
 import { inShape, pieceHeight, type Bridge, type Piece, type Prop, type StandEdge, type Token, type VistazoScene } from "./scene";
 import { distance3D } from "../engine/distance";
 import { cellCorners, groundOffset } from "../engine/hex";
 import type { Fog } from "./fog";
-import { visibleBox, type VisibleBox } from "./visibleBox";
-import { buildWeather, cloudShadowMaterial, setWeatherTime, type CloudStyle } from "./weather";
+import { visibleBox } from "./visibleBox";
+import { buildWeather, cloudShadowMaterial, setWeatherTime } from "./weather";
 import { buildTemplate, templateTip, type Template } from "./templates";
-import { NOISE_2D } from "./glsl";
+import { QUALITY, STONE, TEXTURE_MAX, VIEW_CELL, type Camera, type DistanceLine, type Options, type Reach, type Texture, type TokenText, type TokenView, type Wall, type WallStyle, tintOf } from "./view/types";
+import { patternTexture } from "./view/patterns";
+import { floorOf, mediaElement, propsKey, propToken, raised, skinAcross, skinPoint, visibleOnScreen, within } from "./view/helpers";
+import { computeWalls } from "./view/walls";
+import { BaseBatch, moveBase, type BaseSeat } from "./view/bases";
+import { UNDER_FRAGMENT, UNDER_VERTEX } from "./view/shaders";
+import { waterMaterial, waterReach, waterShape } from "./view/water";
+
+export type { Camera, DistanceLine, Options, Quality, Reach, TokenText, WallStyle } from "./view/types";
+export { tintOf };
 
 // The Vistazo's 3D view. The terrain is drawn with WebGL (three.js): each
 // piece lies at its height with the map as its texture, walls go down to
@@ -34,168 +41,9 @@ import { NOISE_2D } from "./glsl";
 // Everything is drawn in view units, VIEW_CELL px a cell, whatever the
 // scene's dpi; x right, y down (as on the map), z up.
 
-const VIEW_CELL = 50;
-
 // Colours pass through as they are, as they did in CSS: the map's pixels,
 // the walls' shades and the tints, without linear/sRGB conversions.
 THREE.ColorManagement.enabled = false;
-
-export type Options = {
-  heightScale: number;
-  /** 0..1: how much darker walls facing away from the light get. */
-  shade: number;
-  /** 0..100: from almost isometric to strong. */
-  perspective: number;
-  tint: boolean;
-  tokens: boolean;
-  xray: boolean;
-  edges: boolean;
-  anchor: "center" | "base";
-  /** Faint lines on the walls at every cell of height. */
-  levels: boolean;
-  /** The grid's cells drawn on the ground and the tops (square grids). */
-  grid: boolean;
-  /** Lines from the selected token to the others, by Banda. */
-  distances: boolean;
-  /** What a token's label says. */
-  tokenLabels: "full" | "height" | "name" | "none";
-  /** What a distance line says. */
-  distanceLabels: "full" | "distance" | "none";
-  /** The labels' size, 1 as designed. */
-  labelSize: number;
-  /** 0..1: higher ground a little lighter, and a soft shadow at the foot of the walls. */
-  relief: number;
-  /** The Props layer: lying on the ground as on the map, standing up like the tokens, or left out. */
-  props: "flat" | "stand" | "none";
-  /** The Weather extension's rain, snow, sand, embers, petals and clouds, drawn here (see weather.ts). */
-  weather: boolean;
-  /** Its clouds as a mist over the map, or their shadows on it. */
-  clouds: CloudStyle;
-  /** Zones' water moving (ripples, glints); still otherwise. */
-  waterMotion: boolean;
-  /**
-   * How much the view asks of the device: high as designed; medium a little
-   * less sharp on dense screens and lighter weather; low sharp only to the
-   * screen's pixels, a third of the weather at fewer frames, water and
-   * templates still and videos paused.
-   */
-  quality: Quality;
-  /** Whether the props show at all ("none" above is how it was stored before this option). */
-  showProps: boolean;
-  /** The selected token's distance lines go to the props too (main.ts works them out). */
-  propDistances: boolean;
-  /** A prop's shadow (on the ground under it), its dashed line down when it's raised, and its label. */
-  propShadows: boolean;
-  propLines: boolean;
-  propLabels: boolean;
-  /** What the walls' faces show (see buildWalls). */
-  wallStyle: WallStyle;
-  /** Each Banda's limit around the selected token, drawn on the terrain. */
-  rings: boolean;
-  /** And the ground in each Banda tinted its colour. */
-  ringFill: boolean;
-  /** As a player sees it: the fog over the scene, hidden tokens and what the fog covers left out. */
-  playerView: boolean;
-};
-
-/**
- * The Bandas' rings around a token, as on the map: each Banda's radius plus
- * the Tolerancia (`reach`) and the token's excess bulk, across only, by the
- * metric (hex steps on a hex grid). `z` (its body's middle) isn't used by
- * the rings, which leave height out.
- */
-export type Reach = {
-  x: number;
-  y: number;
-  z: number;
-  excess: number;
-  metric: "spherical" | "cubic" | "cylindrical";
-  hex: "hexHorizontal" | "hexVertical" | null;
-  bands: { reach: number; color: string }[];
-};
-
-/**
- * A wall's face: one colour; the map's pixels at its top edge stretched
- * down; a strip of the map inside the edge folded down (mirrored where the
- * wall is taller); or a pattern drawn here (stone courses, earth strata,
- * planks) tinted with the map's colour at the edge.
- */
-// "stone" is brick courses (its name from before "rubble", irregular stones, was added; kept for what's saved).
-export type Quality = "low" | "medium" | "high";
-
-/** Each quality's sharpness (most device pixels to a screen pixel), weather (share, ms a frame) and motion. */
-const QUALITY: Record<Quality, { pixels: number; amount: number; frameMs: number; motion: boolean }> = {
-  high: { pixels: 2, amount: 1, frameMs: 33, motion: true },
-  medium: { pixels: 1.5, amount: 0.65, frameMs: 40, motion: true },
-  low: { pixels: 1, amount: 0.35, frameMs: 66, motion: false },
-};
-
-export type WallStyle = "flat" | "stretch" | "fold" | "stone" | "rubble" | "earth" | "wood";
-
-/** `focus`: the scene point the camera turns around (null: the map's middle), and its height in grid units. */
-export type Camera = { tilt: number; yaw: number; zoom: number; panX: number; panY: number; focus: { x: number; y: number; z: number } | null };
-
-/** A line from the origin token to another: its colour and what it says. */
-export type DistanceLine = { id: string; color: string; band: string; distance: string };
-
-/** A token's label parts: its name, its height, and where it is (on the ground, flying…). */
-export type TokenText = (token: Token) => { name: string; height: string; detail: string };
-
-type Wall = {
-  ax: number;
-  ay: number;
-  bx: number;
-  by: number;
-  /** Its top and bottom (grid units) at its two ends, a and b: a ramp's side slants. */
-  t0: number;
-  t1: number;
-  b0: number;
-  b1: number;
-  edge: boolean;
-  mx: number;
-  my: number;
-  nx: number;
-  ny: number;
-  lit: number;
-  /** The style a zone asks for: the higher side's, or else the lower's (a pit's walls are the ground's). */
-  style?: WallStyle;
-  /** Its picture from a rectangle of the map (the zone's, as its style is): then that's its face. */
-  skin?: TerrainSkin;
-};
-
-type TokenView = {
-  token: Token;
-  el: HTMLElement;
-  disc: HTMLElement;
-  img: HTMLElement;
-  zTok: number;
-  /** Its marks in 3D (base and line), and its label's lines: moved and rewritten in place (see setScene). */
-  marks?: { base: THREE.Mesh[]; stem: THREE.Line | null };
-  title?: HTMLElement;
-  detail?: HTMLElement;
-  screen: { x: number; y: number };
-  hidden: boolean;
-  /** A prop: standing (always on its base) or lying flat (its picture a mesh, the element only its label). */
-  prop?: PropView;
-};
-
-type PropView = { data: Prop; flat: boolean; mesh: THREE.Mesh | null; shadow: THREE.Mesh | null };
-
-type Texture = { canvas: HTMLCanvasElement; x0: number; y0: number; w: number; h: number };
-
-/** Which way a standing block's front faces. */
-const FACING: Record<StandEdge, [number, number]> = { bottom: [0, 1], top: [0, -1], right: [1, 0], left: [-1, 0] };
-
-/** Light from the north-west, for the walls' shading. */
-const LIGHT: [number, number] = [-0.6, -0.8];
-
-/** A neutral stone, for walls (and pieces) when the map can't be read. */
-const STONE: [number, number, number] = [138, 128, 112];
-
-/** The texture's longest side at most, in px. */
-const TEXTURE_MAX = 4096;
-
-export const tintOf = (height: number) => `hsl(${200 - height * 34} 75% 50%)`;
 
 export class VistazoView {
   private readonly canvas: HTMLCanvasElement;
@@ -321,8 +169,9 @@ export class VistazoView {
     const heights = scene.pieces.map((piece) => piece.height);
     this.minH = Math.min(0, ...heights);
     this.maxH = Math.max(0, ...heights);
-    // The block reaches below the deepest token, so a buried one is inside it.
-    const base = Math.min(this.minH, ...scene.tokens.map((t) => t.terrain + t.own - 1));
+    // The block reaches a level below the lowest ground, and below the deepest token, so a buried one is
+    // inside it. Not by the lowest standing token: one dragged up off the ground would build it all again.
+    const base = Math.min(this.minH - 1, ...scene.tokens.map((t) => t.terrain + t.own - 1));
     if (scene.terrainKey === this.terrainKey && base === this.base) {
       // Only tokens moved (a drag): put them where they are now, without building them again.
       if (!this.moveTokens(scene)) {
@@ -335,7 +184,7 @@ export class VistazoView {
     this.terrainKey = scene.terrainKey;
     this.base = base;
     this.computeGrid();
-    this.computeWalls();
+    this.walls = computeWalls(scene, base);
     this.build();
     this.loadColors();
   }
@@ -750,7 +599,7 @@ export class VistazoView {
   private placePoint() {
     if (this.point) {
       this.point.el.remove();
-      for (const mesh of this.point.marks?.base ?? []) {
+      for (const mesh of this.point.marks?.ring ? [this.point.marks.ring] : []) {
         this.tokenGroup.remove(mesh);
         mesh.geometry.dispose();
       }
@@ -799,7 +648,7 @@ export class VistazoView {
       stem.userData.prop = true;
       this.tokenGroup.add(stem);
     }
-    this.point = { token, el, disc, img, zTok: at.height * k, screen: { x: 0, y: 0 }, hidden: false, marks: { base: [ring], stem } };
+    this.point = { token, el, disc, img, zTok: at.height * k, screen: { x: 0, y: 0 }, hidden: false, marks: { ring, stem } };
   }
 
   /** The topmost prop lying flat under a stage point (a standing one is picked by its element, see tokenAt). */
@@ -894,78 +743,6 @@ export class VistazoView {
     return i < 0 || j < 0 || i >= w || j >= h ? NaN : cells[j * w + i];
   }
 
-  private computeWalls() {
-    const scene = this.scene!;
-    const probe = scene.dpi * 0.03;
-    const l = Math.hypot(...LIGHT);
-    const sloped = scene.pieces.some((piece) => piece.slope);
-    this.walls = [];
-    for (const piece of scene.pieces) {
-      for (const polygon of piece.shape) {
-        for (const ring of polygon) {
-          for (let i = 0; i < ring.length - 1; i++) {
-            const [ax, ay] = ring[i];
-            const [bx, by] = ring[i + 1];
-            const dx = bx - ax;
-            const dy = by - ay;
-            const len = Math.hypot(dx, dy);
-            if (len < probe) {
-              continue;
-            }
-            let nx = dy / len;
-            let ny = -dx / len;
-            const mx = (ax + bx) / 2;
-            const my = (ay + by) / 2;
-            if (inShape(mx + nx * probe, my + ny * probe, piece.shape)) {
-              nx = -nx;
-              ny = -ny;
-            }
-            // A standing block's front is the picture itself: an unfolded one's, its base edge only (its
-            // slanting sides, wider than the picture, keep their walls); a box's, whatever faces its way.
-            if (piece.unfold ? onBase(piece.unfold.base, mx, my, nx, ny, piece.unfold.out, probe * 3) : piece.stand && nx * FACING[piece.stand][0] + ny * FACING[piece.stand][1] > 0.5) {
-              continue;
-            }
-            const lower = scene.pieceAt(mx + nx * probe, my + ny * probe);
-            // With ramps about, every edge is cut in short steps: a ramp may meet it anywhere along
-            // it (not only at its middle), and the heights on either side change there.
-            const steps = sloped ? Math.max(1, Math.ceil(len / (scene.dpi * 0.25))) : 1;
-            for (let j = 0; j < steps; j++) {
-              const [px, py] = [ax + (dx * j) / steps, ay + (dy * j) / steps];
-              const [qx, qy] = [ax + (dx * (j + 1)) / steps, ay + (dy * (j + 1)) / steps];
-              const outP = scene.heightAt(px + nx * probe, py + ny * probe);
-              const outQ = scene.heightAt(qx + nx * probe, qy + ny * probe);
-              const edge = outP === undefined && outQ === undefined;
-              const t0 = pieceHeight(piece, px, py);
-              const t1 = pieceHeight(piece, qx, qy);
-              // The higher side draws the wall: where this one's lower at an end, it narrows to nothing there.
-              // Beside a ramp, down to the lowest ground along the step (its ends and middle): where a ramp
-              // ends partway along, a straight line between the ends would leave a wedge open, and what
-              // reaches below the ground is hidden under it.
-              let low0 = outP ?? this.base;
-              let low1 = outQ ?? this.base;
-              if (steps > 1) {
-                const outM = scene.heightAt((px + qx) / 2 + nx * probe, (py + qy) / 2 + ny * probe) ?? this.base;
-                low0 = low1 = Math.min(low0, low1, outM);
-              }
-              const b0 = Math.min(t0, low0);
-              const b1 = Math.min(t1, low1);
-              // Not a hair of wall (a cloth meets the ground beside it at about its height).
-              if (t0 - b0 < 0.02 && t1 - b1 < 0.02) {
-                continue;
-              }
-              this.walls.push({
-                style: piece.walls ?? lower?.walls,
-                skin: piece.skin ?? (piece.walls ? undefined : lower?.skin),
-                ax: px, ay: py, bx: qx, by: qy, t0, t1, b0, b1, edge,
-                mx: (px + qx) / 2 - nx * probe * 3, my: (py + qy) / 2 - ny * probe * 3, nx, ny,
-                lit: Math.max(0, (nx * LIGHT[0] + ny * LIGHT[1]) / l),
-              });
-            }
-          }
-        }
-      }
-    }
-  }
 
   /**
    * The map drawn once on a canvas: small, to colour each wall like the
@@ -1132,6 +909,10 @@ export class VistazoView {
       child.traverse((object) => {
         const mesh = object as THREE.Mesh;
         mesh.geometry?.dispose();
+        // A batch's instances (see BaseBatch) are its own buffer, let go with it.
+        if ((object as THREE.InstancedMesh).isInstancedMesh) {
+          (object as THREE.InstancedMesh).dispose();
+        }
         const material = mesh.material as THREE.Material | THREE.Material[] | undefined;
         (Array.isArray(material) ? material : material ? [material] : []).forEach((m) => {
           // The map texture is shared: only a prop's own is let go.
@@ -1754,6 +1535,10 @@ export class VistazoView {
       return stem;
     };
 
+    // The bases drawn together (see BaseBatch): the props' (a disc), then the tokens' (a disc and a ring).
+    const propBases = new BaseBatch(false);
+    const tokenBases = new BaseBatch(true);
+
     // Props first, so a token is drawn over a prop where they meet.
     const propViews: TokenView[] = [];
     const loader = new THREE.TextureLoader();
@@ -1772,7 +1557,7 @@ export class VistazoView {
       let img: HTMLElement;
       let mesh: THREE.Mesh | null = null;
       let shadow: THREE.Mesh | null = null;
-      const base: THREE.Mesh[] = [];
+      let seat: BaseSeat | undefined;
       if (flat) {
         // Its picture lying on the ground, where the map has it (and, raised, its shadow on the ground under it).
         img = document.createElement("span");
@@ -1820,13 +1605,7 @@ export class VistazoView {
         if (propShadows) {
           // A dark base on the ground under it, as a token's.
           // As big as its footprint (80% of it, as a token's).
-          const r = prop.radius * u * 0.8;
-          const disc3d = new THREE.Mesh(new THREE.CircleGeometry(r, 32), fill);
-          disc3d.position.set(prop.x * u, prop.y * u, zFloor + 1);
-          disc3d.renderOrder = 3;
-          disc3d.userData.prop = true;
-          this.tokenGroup.add(disc3d);
-          base.push(disc3d);
+          seat = propBases.add(prop.radius * u * 0.8, prop.x * u, prop.y * u, zFloor + 1);
         }
       }
       let stem: THREE.Line | null = null;
@@ -1858,7 +1637,8 @@ export class VistazoView {
         zTok,
         screen: { x: 0, y: 0 },
         hidden: false,
-        marks: { base, stem },
+        marks: { ring: null, stem },
+        seat,
         title,
         detail,
         prop: { data: prop, flat, mesh, shadow },
@@ -1873,13 +1653,7 @@ export class VistazoView {
       // Its base as big as its footprint (80% of it): as it's measured, set by hand or from its image.
       const r = token.radius * u * 0.8;
       // Its base on the ground under it, and a dashed line up (or down) to it.
-      const disc3d = new THREE.Mesh(new THREE.CircleGeometry(r, 32), fill);
-      const ring3d = new THREE.Mesh(new THREE.RingGeometry(r - 2, r, 32), ring);
-      for (const mesh of [disc3d, ring3d]) {
-        mesh.position.set(token.x * u, token.y * u, zFloor + 1);
-        mesh.renderOrder = 3;
-        this.tokenGroup.add(mesh);
-      }
+      const seat = tokenBases.add(r, token.x * u, token.y * u, zFloor + 1);
       let stem: THREE.Line | null = null;
       if (raised(token)) {
         stem = stemOf(token, zTok, zFloor);
@@ -1908,11 +1682,13 @@ export class VistazoView {
       disc.append(img);
       el.appendChild(disc);
       overlay.appendChild(el);
-      const view: TokenView = { token, el, disc, img, zTok, screen: { x: 0, y: 0 }, hidden: false, marks: { base: [disc3d, ring3d], stem }, title, detail };
+      const view: TokenView = { token, el, disc, img, zTok, screen: { x: 0, y: 0 }, hidden: false, marks: { ring: null, stem }, seat, title, detail };
       this.writeLabel(view);
       return view;
     });
     this.tokenViews = [...propViews, ...this.tokenViews];
+    propBases.build(this.tokenGroup, fill, ring, true);
+    tokenBases.build(this.tokenGroup, fill, ring, false);
     this.tokenOverlay.replaceChildren(overlay);
     // Drawn again with the tokens: the free point's marker and the templates' handles too.
     this.placePoint();
@@ -2032,7 +1808,7 @@ export class VistazoView {
   private placeHandles() {
     for (const handle of this.handles) {
       handle.el.remove();
-      for (const mesh of [...(handle.marks?.base ?? []), ...(handle.marks?.stem ? [handle.marks.stem] : [])]) {
+      for (const mesh of [handle.marks?.ring, handle.marks?.stem].filter((mark): mark is THREE.Mesh | THREE.Line => !!mark)) {
         this.tokenGroup.remove(mesh);
         (mesh as THREE.Mesh).geometry.dispose();
       }
@@ -2074,7 +1850,7 @@ export class VistazoView {
         stem.userData.prop = true;
         this.tokenGroup.add(stem);
       }
-      this.handles.push({ token, el, disc, img, zTok: z * k, screen: { x: 0, y: 0 }, hidden: false, marks: { base: [ring], stem } });
+      this.handles.push({ token, el, disc, img, zTok: z * k, screen: { x: 0, y: 0 }, hidden: false, marks: { ring, stem } });
     };
     for (const template of this.templates) {
       make(`${TEMPLATE_HANDLE}${template.id}:origin`, template.x, template.y, template.z, false);
@@ -2116,94 +1892,10 @@ export class VistazoView {
       if (!piece.water || piece.stand) {
         continue;
       }
-      // Water fills what's below its level, not only its zone: from its zone outward over the heights
-      // grid, through ground between its floor and its level, up to two cells away. It stops at the shore
-      // of a slope beside it, and can't cross a rim higher than its level (a raised pool's).
       const level = piece.height + piece.water;
-      // On its own fine grid (a twentieth of a cell, the terrain's exact heights), over its zone's box and
-      // two cells round it: so its edges sit on its zone's, not rounded to the coarser heights grid.
-      const xs = piece.shape.flatMap((polygon) => polygon[0].map((p) => p[0]));
-      const ys = piece.shape.flatMap((polygon) => polygon[0].map((p) => p[1]));
-      const margin = scene.dpi * 2;
-      const step = scene.dpi / 20;
-      const gx0 = Math.min(...xs) - margin;
-      const gy0 = Math.min(...ys) - margin;
-      const gw = Math.ceil((Math.max(...xs) + margin - gx0) / step) + 1;
-      const gh = Math.ceil((Math.max(...ys) + margin - gy0) / step) + 1;
-      const heightAt = (i: number, j: number) => scene.heightAt(gx0 + i * step, gy0 + j * step) ?? NaN;
-      const reached = new Uint8Array(gw * gh);
-      // Each point's ground read once (a point the water can't fill is asked again by each neighbour).
-      const checked = new Uint8Array(gw * gh);
-      const queue: number[] = [];
-      // Its zone's points: only within its zone's box (the margin round it can't be in it).
-      const span = Math.ceil(margin / step);
-      for (let j = span; j < gh - span; j++) {
-        for (let i = span; i < gw - span; i++) {
-          if (inShape(gx0 + i * step, gy0 + j * step, piece.shape)) {
-            reached[j * gw + i] = 255;
-            checked[j * gw + i] = 1;
-            queue.push(j * gw + i);
-          }
-        }
-      }
-      const fits = (h: number) => !Number.isNaN(h) && h >= piece.height - 0.01 && h < level;
-      const reach = 40; // two cells, in twentieths
-      const depth = new Uint8Array(gw * gh);
-      for (let q = 0; q < queue.length; q++) {
-        const at = queue[q];
-        if (depth[at] >= reach) {
-          continue;
-        }
-        const i = at % gw;
-        const j = (at - i) / gw;
-        for (const [ni, nj] of [[i + 1, j], [i - 1, j], [i, j + 1], [i, j - 1]]) {
-          if (ni < 0 || nj < 0 || ni >= gw || nj >= gh) {
-            continue;
-          }
-          const next = nj * gw + ni;
-          if (checked[next]) {
-            continue;
-          }
-          checked[next] = 1;
-          if (fits(heightAt(ni, nj))) {
-            reached[next] = 255;
-            depth[next] = depth[at] + 1;
-            queue.push(next);
-          }
-        }
-      }
-      const mask = new THREE.DataTexture(reached, gw, gh, THREE.RedFormat, THREE.UnsignedByteType);
-      // A byte a cell: rows not padded to four bytes (any width).
-      mask.unpackAlignment = 1;
-      mask.needsUpdate = true;
-      this.waterMasks.push(mask);
-      let shape = piece.shape;
-      try {
-        const grown = growRings(piece.shape.map((polygon) => polygon[0] as [number, number][]), scene.dpi * 2).map((ring) => [ring]);
-        shape = polygonClipping.intersection(polygonClipping.union(piece.shape, ...grown), scene.world);
-      } catch {
-        // Its zone alone, then.
-      }
-      const geometry = this.shapeGeometry(shape);
-      const material = new THREE.ShaderMaterial({
-        vertexShader: WATER_VERTEX,
-        fragmentShader: WATER_FRAGMENT,
-        transparent: true,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-        uniforms: {
-          uTime: { value: 0 },
-          uMap: { value: this.mapTexture },
-          uU: { value: this.u },
-          uCell: { value: scene.dpi },
-          uTex: { value: new THREE.Vector4(t.x0, t.y0, t.w, t.h) },
-          uReach: { value: mask },
-          uGrid: { value: new THREE.Vector4(gx0, gy0, step, 0) },
-          uGridSize: { value: new THREE.Vector2(gw, gh) },
-
-        },
-      });
-      const surface = new THREE.Mesh(geometry, material);
+      const reach = waterReach(scene, piece as Piece & { water: number });
+      this.waterMasks.push(reach.mask);
+      const surface = new THREE.Mesh(this.shapeGeometry(waterShape(scene, piece)), waterMaterial(this.mapTexture, t, this.u, scene.dpi, reach));
       surface.position.z = level * this.k;
       surface.renderOrder = 4;
       this.waterGroup.add(surface);
@@ -2322,8 +2014,8 @@ export class VistazoView {
         object.geometry.computeBoundingSphere();
       }
     }
-    for (const base of view.marks?.base ?? []) {
-      base.position.set(prop.x * u, prop.y * u, zFloor + 1);
+    if (view.seat) {
+      moveBase(view.seat, prop.x * u, prop.y * u, zFloor + 1);
     }
     const stem = view.marks?.stem;
     if (stem) {
@@ -2398,8 +2090,8 @@ export class VistazoView {
       }
       const zFloor = floorOf(token) * k;
       view.zTok = (token.terrain + token.own) * k;
-      for (const mesh of view.marks?.base ?? []) {
-        mesh.position.set(token.x * u, token.y * u, zFloor + 1);
+      if (view.seat) {
+        moveBase(view.seat, token.x * u, token.y * u, zFloor + 1);
       }
       const stem = view.marks?.stem;
       if (stem) {
@@ -2710,389 +2402,6 @@ export class VistazoView {
     return false;
   }
 }
-
-/** A small deterministic random, so a pattern is the same every time. */
-function seeded(seed: number) {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/**
- * A grey tile (256 px, two cells across) that repeats seamlessly, to tint
- * with the map's colour: brick courses ("stone"), irregular stones
- * ("rubble"), earth strata, or planks. Drawn once each (the stones take a
- * moment), a new texture on it each time.
- */
-function patternTexture(style: "stone" | "rubble" | "earth" | "wood"): THREE.CanvasTexture {
-  let canvas = patternCanvases.get(style);
-  if (!canvas) {
-    canvas = drawPattern(style);
-    patternCanvases.set(style, canvas);
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  return texture;
-}
-
-const patternCanvases = new Map<string, HTMLCanvasElement>();
-
-function drawPattern(style: "stone" | "rubble" | "earth" | "wood"): HTMLCanvasElement {
-  const size = 256;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const c = canvas.getContext("2d")!;
-  const random = seeded(style === "stone" ? 7 : style === "rubble" ? 5 : style === "earth" ? 11 : 13);
-  const grey = (v: number) => `rgb(${v},${v},${v})`;
-  if (style === "stone") {
-    // Four courses of blocks, each row offset, with dark mortar.
-    c.fillStyle = grey(120);
-    c.fillRect(0, 0, size, size);
-    const row = size / 4;
-    for (let r = 0; r < 4; r++) {
-      let x = -random() * 60;
-      while (x < size) {
-        const w = 70 + random() * 60;
-        const shade = 205 + random() * 40;
-        for (const dx of [0, size]) {
-          // Drawn twice, a tile apart, so blocks wrap around the edge.
-          c.fillStyle = grey(shade);
-          c.fillRect(x + dx - size + 3, r * row + 3, w - 6, row - 6);
-          c.fillRect(x + dx + 3, r * row + 3, w - 6, row - 6);
-        }
-        x += w;
-      }
-    }
-  } else if (style === "rubble") {
-    // Irregular stones: each pixel belongs to its nearest of some jittered points (across the tile's
-    // edges too, so it repeats), with mortar where two are about as near and a bevel toward it.
-    const cells = 6;
-    const seeds: { x: number; y: number; shade: number }[] = [];
-    for (let gy = 0; gy < cells; gy++) {
-      for (let gx = 0; gx < cells; gx++) {
-        seeds.push({ x: ((gx + 0.1 + random() * 0.8) * size) / cells, y: ((gy + 0.1 + random() * 0.8) * size) / cells, shade: 175 + random() * 65 });
-      }
-    }
-    const image = c.createImageData(size, size);
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        let d1 = Infinity;
-        let d2 = Infinity;
-        let shade = 0;
-        for (const seed of seeds) {
-          let dx = Math.abs(x - seed.x);
-          let dy = Math.abs(y - seed.y);
-          dx = Math.min(dx, size - dx);
-          dy = Math.min(dy, size - dy);
-          const d = dx * dx + dy * dy;
-          if (d < d1) {
-            d2 = d1;
-            d1 = d;
-            shade = seed.shade;
-          } else if (d < d2) {
-            d2 = d;
-          }
-        }
-        // How far from the edge with the next stone, px.
-        const edge = Math.sqrt(d2) - Math.sqrt(d1);
-        const v = edge < 2.5 ? 105 : shade * (edge < 9 ? 0.8 + ((edge - 2.5) / 6.5) * 0.2 : 1);
-        const i = (y * size + x) * 4;
-        image.data[i] = image.data[i + 1] = image.data[i + 2] = v;
-        image.data[i + 3] = 255;
-      }
-    }
-    c.putImageData(image, 0, 0);
-  } else if (style === "earth") {
-    // Wavy strata of different shades, with speckles.
-    let y = 0;
-    while (y < size) {
-      const h = 14 + random() * 30;
-      const shade = 170 + random() * 70;
-      const phase = random() * Math.PI * 2;
-      const amp = 2 + random() * 4;
-      c.fillStyle = grey(shade);
-      c.beginPath();
-      c.moveTo(0, size);
-      for (let x = 0; x <= size; x += 8) {
-        c.lineTo(x, y + Math.sin((x / size) * Math.PI * 4 + phase) * amp);
-      }
-      c.lineTo(size, size);
-      c.closePath();
-      c.fill();
-      y += h;
-    }
-    for (let i = 0; i < 900; i++) {
-      c.fillStyle = grey(random() < 0.5 ? 120 + random() * 40 : 235);
-      c.fillRect(random() * size, random() * size, 1 + random() * 2, 1 + random() * 2);
-    }
-  } else {
-    // Upright planks with grain and dark gaps.
-    c.fillStyle = grey(90);
-    c.fillRect(0, 0, size, size);
-    const widths: number[] = [];
-    let total = 0;
-    while (total < size - 40) {
-      const w = 28 + Math.round(random() * 16);
-      widths.push(w);
-      total += w;
-    }
-    widths.push(size - total);
-    let x = 0;
-    for (const w of widths) {
-      c.fillStyle = grey(200 + random() * 40);
-      c.fillRect(x + 2, 0, w - 4, size);
-      c.strokeStyle = "rgba(0,0,0,0.12)";
-      c.lineWidth = 1;
-      for (let g = 0; g < 4; g++) {
-        const gx = x + 6 + random() * (w - 12);
-        const phase = random() * Math.PI * 2;
-        c.beginPath();
-        for (let y = 0; y <= size; y += 8) {
-          c.lineTo(gx + Math.sin((y / size) * Math.PI * 2 + phase) * 2, y);
-        }
-        c.stroke();
-      }
-      x += w;
-    }
-  }
-  // A little noise over all of it.
-  const image = c.getImageData(0, 0, size, size);
-  for (let i = 0; i < image.data.length; i += 4) {
-    const n = (random() - 0.5) * 18;
-    image.data[i] += n;
-    image.data[i + 1] += n;
-    image.data[i + 2] += n;
-  }
-  c.putImageData(image, 0, 0);
-  return canvas;
-}
-
-/**
- * Where along a wall (0 to 1) the height n is on its face: its bottom runs
- * b0 to b1 and its top t0 to t1, both straight, so it's where b ≤ n ≤ t.
- */
-function within(b0: number, b1: number, t0: number, t1: number, n: number): [number, number] | null {
-  let lo = 0;
-  let hi = 1;
-  // f(s) = f0 + (f1 − f0)·s ≥ 0, narrowing [lo, hi].
-  const atLeast = (f0: number, f1: number) => {
-    if (Math.abs(f1 - f0) < 1e-9) {
-      if (f0 < 0) {
-        hi = -1;
-      }
-      return;
-    }
-    const s = -f0 / (f1 - f0);
-    if (f1 > f0) {
-      lo = Math.max(lo, s);
-    } else {
-      hi = Math.min(hi, s);
-    }
-  };
-  atLeast(n - b0, n - b1);
-  atLeast(t0 - n, t1 - n);
-  return hi - lo > 1e-6 ? [lo, hi] : null;
-}
-
-/** Whether an edge (its middle, its outward normal) is on an unfolded zone's base edge: facing its way, on its line. */
-function onBase(base: [[number, number], [number, number]], mx: number, my: number, nx: number, ny: number, out: [number, number], near: number): boolean {
-  if (nx * out[0] + ny * out[1] < 0.98) {
-    return false;
-  }
-  const [[ax, ay], [bx, by]] = base;
-  const length = Math.hypot(bx - ax, by - ay) || 1;
-  // Its distance from the base's line.
-  return Math.abs(((mx - ax) * (by - ay) - (my - ay) * (bx - ax)) / length) < near;
-}
-
-/** What the props are now, to tell when they've changed. */
-/** What of the props needs them drawn again when it changes (where they are, turned and raised, is moved in place). */
-function propsKey(props: VistazoScene["props"]): string {
-  return JSON.stringify(props.map((prop) => [prop.id, prop.size, prop.radius, prop.width, prop.height, prop.url, Math.sign(prop.own), prop.name]));
-}
-
-/**
- * An image's element: an <img>, or for a video (webm), a muted looping
- * <video> playing like Owlbear plays it. Readable by a canvas either way (CORS).
- */
-function mediaElement(url: string, video: boolean): HTMLImageElement | HTMLVideoElement {
-  if (!video) {
-    const img = document.createElement("img");
-    img.src = url;
-    img.alt = "";
-    img.draggable = false;
-    return img;
-  }
-  const element = document.createElement("video");
-  element.crossOrigin = "anonymous";
-  element.muted = true;
-  element.loop = true;
-  element.autoplay = true;
-  element.playsInline = true;
-  element.src = url;
-  void element.play().catch(() => {});
-  return element;
-}
-
-/** A prop as the token-like parts of its view read it (place, size, label). */
-function propToken(prop: Prop): Token {
-  return { id: prop.id, name: prop.name, url: prop.url, video: prop.video, item: prop.item, base: prop.base, radius: prop.radius, x: prop.x, y: prop.y, size: prop.size, terrain: prop.terrain, own: prop.own, rotation: prop.rotation, flipX: false, flipY: false, hidden: false } as Token;
-}
-
-/**
- * Where the part of a picture that shows is, from the middle of its square
- * of side `d` (px): fitted in it as the image is (contain), and turned and
- * flipped as it's drawn (rotate, then scale, in CSS).
- */
-function visibleOnScreen(box: VisibleBox, d: number, token: Token) {
-  const w = box.aspect >= 1 ? d : d * box.aspect;
-  const h = box.aspect >= 1 ? d / box.aspect : d;
-  const angle = (token.rotation * Math.PI) / 180;
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  const place = (bx: number, by: number) => {
-    const px = (bx - 0.5) * w * (token.flipX ? -1 : 1);
-    const py = (by - 0.5) * h * (token.flipY ? -1 : 1);
-    return { x: px * cos - py * sin, y: px * sin + py * cos };
-  };
-  const shown = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity, base: place(box.base, box.y1).x };
-  for (const [bx, by] of [
-    [box.x0, box.y0],
-    [box.x1, box.y0],
-    [box.x1, box.y1],
-    [box.x0, box.y1],
-  ]) {
-    const { x, y } = place(bx, by);
-    shown.x0 = Math.min(shown.x0, x);
-    shown.x1 = Math.max(shown.x1, x);
-    shown.y0 = Math.min(shown.y0, y);
-    shown.y1 = Math.max(shown.y1, y);
-  }
-  return shown;
-}
-
-/** What a token stands on, grid units: a bridge's top, or the terrain under it. */
-function floorOf(token: Token): number {
-  return token.bridge ?? token.terrain;
-}
-
-/** Whether a token is off what it stands on (flying, or sunk): then its line down (or up) is drawn. */
-function raised(token: Token): boolean {
-  return token.terrain + token.own !== floorOf(token);
-}
-
-/**
- * Where round a zone a point is, as a way across its picture (0 to 1): by
- * its angle about the zone's middle, there and back (a picture painted from
- * one side shows the front; going round, the back is its mirror, so the
- * seam doesn't show).
- */
-function skinAcross(skin: TerrainSkin, x: number, y: number): number {
-  const turn = (Math.atan2(y - skin.center.y, x - skin.center.x) / (2 * Math.PI) + 1) % 1;
-  return 1 - Math.abs(2 * turn - 1);
-}
-
-/** The scene point (px) of a skin's picture `across` (0–1) and `up` (0 at its foot, 1 at its far end). */
-function skinPoint(skin: TerrainSkin, across: number, up: number): [number, number] {
-  const lerp = (a: { x: number; y: number }, b: { x: number; y: number }, t: number) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
-  const foot = lerp(skin.base[0], skin.base[1], across);
-  const head = lerp(skin.top[0], skin.top[1], across);
-  const p = lerp(foot, head, up);
-  return [p.x, p.y];
-}
-
-const UNDER_VERTEX = /* glsl */ `
-  varying vec3 vAt;
-  void main() {
-    vec4 world = modelMatrix * vec4(position, 1.0);
-    vAt = world.xyz;
-    gl_Position = projectionMatrix * viewMatrix * world;
-  }
-`;
-
-const UNDER_FRAGMENT = /* glsl */ `
-  uniform sampler2D uMap;
-  uniform float uU;
-  uniform vec4 uTex;
-  uniform vec4 uFrame;
-  uniform vec4 uAcross;
-  uniform float uBelow;
-  varying vec3 vAt;
-  void main() {
-    // Only what's below the bridge's underside, inside its box.
-    if (vAt.z > uBelow) discard;
-    vec2 p = vAt.xy / uU;
-    vec2 d = p - uFrame.xy;
-    float a = dot(d, uFrame.zw);
-    float b = dot(d, uAcross.xy);
-    if (abs(a) > uAcross.z || abs(b) > uAcross.w) discard;
-    // The map mirrored across each long side (just past it, going out as it goes in), the two blended
-    // across its width: each side's own next to it, fading into the other's, so no seam in the middle.
-    vec2 base = uFrame.xy + uFrame.zw * a;
-    // On a wall (an upright face: its slope from the screen's derivatives), the deeper below the bridge
-    // the farther out the picture comes from, as a folded wall's: not one colour streaked down it.
-    vec3 normal = normalize(cross(dFdx(vAt), dFdy(vAt)));
-    float upright = 1.0 - smoothstep(0.3, 0.7, abs(normal.z));
-    float deep = upright * max(0.0, uBelow - vAt.z) / uU;
-    vec2 north = base + uAcross.xy * (2.0 * uAcross.w - b + 2.0 + deep);
-    vec2 south = base + uAcross.xy * (-2.0 * uAcross.w - b - 2.0 - deep);
-    vec2 scale = vec2(1.0 / uTex.z, -1.0 / uTex.w);
-    vec3 fromNorth = texture2D(uMap, (north - uTex.xy) * scale + vec2(0.0, 1.0)).rgb;
-    vec3 fromSouth = texture2D(uMap, (south - uTex.xy) * scale + vec2(0.0, 1.0)).rgb;
-    vec3 color = mix(fromSouth, fromNorth, smoothstep(0.0, 1.0, (b + uAcross.w) / (2.0 * uAcross.w)));
-    // Faded out toward its ends, into what the map has there (no straight cut across the walls).
-    float ends = 1.0 - smoothstep(uAcross.z - uAcross.w * 0.6, uAcross.z, abs(a));
-    // A little darker: in the bridge's shadow.
-    gl_FragColor = vec4(color * 0.82, ends);
-  }
-`;
-
-const WATER_VERTEX = /* glsl */ `
-  varying vec2 vAt;
-  void main() {
-    vec4 world = modelMatrix * vec4(position, 1.0);
-    vAt = world.xy;
-    gl_Position = projectionMatrix * viewMatrix * world;
-  }
-`;
-
-const WATER_FRAGMENT = /* glsl */ `
-  uniform float uTime;
-  uniform sampler2D uMap;
-  uniform float uU;
-  uniform float uCell;
-  uniform vec4 uTex;
-  uniform sampler2D uReach;
-  uniform vec4 uGrid;
-  uniform vec2 uGridSize;
-  varying vec2 vAt;
-  ${NOISE_2D}
-  void main() {
-    // Only where the water reaches (see buildWater): its zone, and what's connected to it below its level.
-    vec2 scene = vAt / uU;
-    vec2 cell = ((scene - uGrid.xy) / uGrid.z + 0.5) / uGridSize;
-    if (texture2D(uReach, cell).r < 0.5) discard;
-    // In cells, so the ripples are the same size on any map.
-    vec2 p = vAt / uU / uCell;
-    float a = noise(p * 1.6 + vec2(uTime * 0.25, uTime * 0.18));
-    float b = noise(p * 2.3 - vec2(uTime * 0.2, -uTime * 0.27));
-    // The map's picture there, wobbling a little (a few hundredths of a cell).
-    vec2 wobble = (vec2(a, b) - 0.5) * 0.06 * uCell;
-    vec2 q = vAt / uU + wobble;
-    vec3 under = texture2D(uMap, vec2((q.x - uTex.x) / uTex.z, 1.0 - (q.y - uTex.y) / uTex.w)).rgb;
-    // Glints where the two ripple patterns meet.
-    float glint = smoothstep(0.82, 0.95, 1.0 - abs(a - b) * 3.0) * 0.35;
-    vec3 color = under * vec3(0.82, 0.92, 1.0) + glint;
-    gl_FragColor = vec4(color, 0.72);
-  }
-`;
 
 /** The most points the heights grid has (see computeGrid). */
 const MAX_GRID_POINTS = 200_000;

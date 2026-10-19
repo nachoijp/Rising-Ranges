@@ -1,4 +1,5 @@
-import polygonClipping, { type MultiPolygon, type Polygon } from "polygon-clipping";
+import type { MultiPolygon, Polygon } from "polygon-clipping";
+import polygonClipping from "./clip";
 import type { TerrainShape } from "./terrain";
 
 // The terrain drawn as cut paper (see terrainView.ts): what of each zone

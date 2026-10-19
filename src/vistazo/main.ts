@@ -41,6 +41,7 @@ import {
 } from "./panel";
 import { clearOf, fogOver } from "./fog";
 import { DragPath } from "../util/dragPath";
+import { saveDraggedToken } from "../util/saveDrag";
 import "./vistazo.css";
 
 /**
@@ -509,7 +510,7 @@ async function start() {
   function enterFull() {
     handCamera();
     void OBR.modal.open({ id: FULL_MODAL_ID, url: "/vistazo.html?full", fullScreen: true });
-    void closeVistazoPanel();
+    void closeVistazoPanel(true);
   }
   /** Back from full screen: the panel opens again with its camera, and the modal closes. */
   function leaveFull() {
@@ -1227,6 +1228,7 @@ async function start() {
     view.setOptions(change);
     showOptions();
     if ("playerView" in change) {
+      watchLocal(options.playerView);
       refresh();
     }
     // The lines to the props come and go with these.
@@ -1531,13 +1533,13 @@ async function start() {
           token.position = snapped;
         });
         try {
-          // Along the way it was dragged, so the fog's walls don't stop it where it went around them (see dragPath.ts).
-          for (const step of move.path.steps(final.position, dpi * 0.3)) {
-            await OBR.scene.items.updateItems([final.id], (items) => {
-              for (const item of items) {
-                item.position = step;
-              }
-            });
+          // Along the way it was dragged, so the fog's walls don't stop it where it went around them, with
+          // its attachments, as the Medición saves it (see saveDraggedToken).
+          const landed = await saveDraggedToken(final, move.path);
+          if (!landed) {
+            // Not saved: ending the drag puts it back where it started (its height marker too, below).
+            move.position = move.item.position;
+            refresh();
           }
         } finally {
           stop();
@@ -1555,7 +1557,7 @@ async function start() {
   // The fog, for the player view: Owlbear's setting, and this client's local items (Smoke & Spectre's lights and walls).
   let fogFilled = await OBR.scene.fog.getFilled().catch(() => false);
   let fogColor = await OBR.scene.fog.getColor().catch(() => "#222222");
-  let localItems = await OBR.scene.local.getItems().catch(() => []);
+  let localItems = options.playerView ? await OBR.scene.local.getItems().catch(() => []) : [];
   /** What of the local items the fog depends on (lights and walls), so other local changes don't redo it. */
   const sightKey = (list: typeof localItems) =>
     JSON.stringify(list.filter((item) => item.type === "LIGHT" || item.type === "WALL").map((item) => [item.id, item.position, item.rotation, item.visible, (item as { points?: unknown }).points, (item as { attenuationRadius?: unknown }).attenuationRadius]));
@@ -1572,16 +1574,31 @@ async function start() {
     fogKey = "";
     later();
   });
-  OBR.scene.local.onChange((next) => {
-    localItems = next;
-    const key = sightKey(next);
-    if (key !== localSight) {
-      localSight = key;
-      if (options.playerView) {
+  // Followed only for the player view: every local item comes with each change, and the Medición
+  // redraws its own (the ruler, a free point's cells) on every move of the pointer.
+  let unwatchLocal: (() => void) | null = null;
+  const watchLocal = (on: boolean) => {
+    if (on && !unwatchLocal) {
+      unwatchLocal = OBR.scene.local.onChange((next) => {
+        localItems = next;
+        const key = sightKey(next);
+        if (key !== localSight) {
+          localSight = key;
+          later();
+        }
+      });
+      // What changed while it wasn't followed.
+      void OBR.scene.local.getItems().then((next) => {
+        localItems = next;
+        localSight = sightKey(next);
         later();
-      }
+      }, () => {});
+    } else if (!on && unwatchLocal) {
+      unwatchLocal();
+      unwatchLocal = null;
     }
-  });
+  };
+  watchLocal(options.playerView);
 
   const refresh = () => {
     try {

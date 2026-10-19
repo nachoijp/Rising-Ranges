@@ -1,5 +1,6 @@
 import { Command, isCurve, isPath, isShape, type Curve, type Item, type Vector2 } from "@owlbear-rodeo/sdk";
-import polygonClipping, { type Pair, type Polygon } from "polygon-clipping";
+import type { Pair, Polygon } from "polygon-clipping";
+import polygonClipping from "./clip";
 import { getPluginId } from "../util/getPluginId";
 
 // Terrain with a height: an ordinary Owlbear shape — rectangle, circle,
@@ -480,17 +481,22 @@ function buildTerrainZones(items: Item[]): TerrainZone[] {
     const contains = containsFor(item);
     const cloth = contains && clothSurface(item, solid, solidOutlines);
     if (cloth) {
-      // A little past its outline too (thin gaps to the shapes beside it closed); last of all, so
-      // where that overlaps any other zone, the zone wins.
+      // A little past its outline too (thin gaps to the shapes beside it closed). Where that overlaps
+      // another zone, the zone wins (a high one drawn over its edge gives that edge its height), but
+      // not the one it lies on: the smallest zone it's wholly inside (a plateau a tent stands on) it
+      // wins over, and every zone bigger than that.
+      const floor = solid.find((zone) => cloth.rings.every((ring) => ring.every((point) => zone.contains(point))));
       zones.push({
         id: item.id,
         height: cloth.height,
-        area: Number.MAX_VALUE,
+        area: floor ? floor.area * (1 - 1e-9) : Number.MAX_VALUE,
         contains: (point) => contains(toLocal(item, point)) || nearRings(cloth.rings, point, CLOTH_GAP),
         surface: cloth.at,
       });
     }
   }
+  // The cloths among the zones by what they win over (the same rule as the zones': see above).
+  zones.sort((a, b) => a.area - b.area || b.height - a.height);
   return zones;
 }
 
@@ -777,6 +783,11 @@ export function getTerrainCloth(item: Item): boolean {
   return item.metadata[CLOTH_KEY] === true;
 }
 
+/** Whether an item is tagged as terrain: with a height, or a cloth (which has none of its own). */
+export function isTerrainTagged(item: Item): boolean {
+  return getTerrainHeight(item) !== undefined || getTerrainCloth(item);
+}
+
 export function setTerrainCloth(item: Item, cloth: boolean) {
   if (cloth) {
     item.metadata[CLOTH_KEY] = true;
@@ -795,6 +806,9 @@ const CLOTH_SAMPLES = 160;
  * stretched to (twice that), past such a gap.
  */
 const CLOTH_GAP = 16;
+
+/** How much a cloth's rise from one support to the next curves into an S: 0 straight, 1 a full S (see clothSurface). */
+const CLOTH_CURVE = 0.6;
 
 /** Whether a point is within `reach` of some outline's sides. */
 function nearRings(rings: Vector2[][], point: Vector2, reach: number): boolean {
@@ -867,7 +881,12 @@ function clothSurface(item: Item, solid: TerrainZone[], solidOutlines: Pair[][] 
     const over = solidOutlines.filter((ring) => {
       const rx = ring.map(([x]) => x);
       const ry = ring.map(([, y]) => y);
-      return Math.min(...rx) <= x1 && Math.max(...rx) >= x0 && Math.min(...ry) <= y1 && Math.max(...ry) >= y0;
+      if (!(Math.min(...rx) <= x1 && Math.max(...rx) >= x0 && Math.min(...ry) <= y1 && Math.max(...ry) >= y0)) {
+        return false;
+      }
+      // Not one it lies wholly inside (what it stands on: it wins there, see terrainZones).
+      const outline = [ring.map(([x, y]) => ({ x, y }))];
+      return !rings.every((own) => own.every((point) => inPolygons(outline, point)));
     });
     if (over.length === 0) {
       return null;
@@ -924,22 +943,170 @@ function clothSurface(item: Item, solid: TerrainZone[], solidOutlines: Pair[][] 
   }
   const heights = samples.map((s) => s.h);
   const height = (Math.min(...heights) + Math.max(...heights)) / 2;
+  // What it lies on (the smallest zone it's wholly inside, or the ground): what's higher round it holds
+  // it up, taut over it as a tent's cloth over its poles (the upper hull of those heights: straight from
+  // one support to the next, its free edges hanging between them); what's lower it falls into, as a
+  // slope down a bank (weighted by how near: see idw).
+  const floor = solid.find((zone) => rings.every((ring) => ring.every((point) => zone.contains(point))));
+  const baseAt = (point: Vector2) => (floor ? terrainAt([floor], point) : 0);
+  const above = samples.map((s) => ({ x: s.x, y: s.y, h: Math.max(0, s.h - baseAt(s)) }));
+  const below = samples.map((s) => ({ x: s.x, y: s.y, h: Math.min(0, s.h - baseAt(s)) }));
+  const taut = above.some((s) => s.h > 1e-6) ? upperHull(above) : null;
+  const highest = Math.max(...above.map((s) => s.h));
+  const sags = below.some((s) => s.h < -1e-6);
   return {
     height,
     rings,
     at: (point) => {
-      let sum = 0;
-      let weight = 0;
-      for (const s of samples) {
-        const d2 = (point.x - s.x) ** 2 + (point.y - s.y) ** 2;
-        if (d2 < 1e-6) {
-          return s.h;
-        }
-        const w = 1 / (d2 * Math.sqrt(d2));
-        sum += w * s.h;
-        weight += w;
+      let up = 0;
+      if (taut) {
+        // Straight from support to support, eased into an S (as a cloth leaves one and comes to the next).
+        const straight = taut(point) ?? idw(above, point);
+        const t = Math.max(0, Math.min(1, straight / highest));
+        const s = t * t * (3 - 2 * t);
+        up = highest * (t + (s - t) * CLOTH_CURVE);
       }
-      return sum / weight;
+      return baseAt(point) + up + (sags ? idw(below, point) : 0);
     },
   };
+}
+
+/** Heights at points weighted by how near each is (1/d³: the nearest rules), at a point. */
+function idw(samples: { x: number; y: number; h: number }[], point: Vector2): number {
+  let sum = 0;
+  let weight = 0;
+  for (const s of samples) {
+    const d2 = (point.x - s.x) ** 2 + (point.y - s.y) ** 2;
+    if (d2 < 1e-6) {
+      return s.h;
+    }
+    const w = 1 / (d2 * Math.sqrt(d2));
+    sum += w * s.h;
+    weight += w;
+  }
+  return sum / weight;
+}
+
+/**
+ * The surface stretched tight over heights at points (all 0 or more): the
+ * top of their convex hull, as a sheet laid over them would be. Undefined
+ * at a point outside what they span.
+ */
+function upperHull(samples: { x: number; y: number; h: number }[]): (point: Vector2) => number | undefined {
+  // In px across and a hundredth of a level up, with a copy of each point below them all, so it's a
+  // solid even when the heights lie in one plane.
+  const scale = 100;
+  const points: [number, number, number][] = samples.flatMap((s): [number, number, number][] => [[s.x, s.y, s.h * scale], [s.x, s.y, -scale]]);
+  const triangles: { ax: number; ay: number; ah: number; bx: number; by: number; bh: number; cx: number; cy: number; ch: number; x0: number; y0: number; x1: number; y1: number }[] = [];
+  for (const [a, b, c] of hull3d(points)) {
+    // Its top faces only (facing up).
+    const n = cross(sub(b, a), sub(c, a));
+    if (n[2] <= 1e-9 * Math.hypot(...n)) {
+      continue;
+    }
+    triangles.push({
+      ax: a[0], ay: a[1], ah: a[2] / scale, bx: b[0], by: b[1], bh: b[2] / scale, cx: c[0], cy: c[1], ch: c[2] / scale,
+      x0: Math.min(a[0], b[0], c[0]) - 0.5, y0: Math.min(a[1], b[1], c[1]) - 0.5, x1: Math.max(a[0], b[0], c[0]) + 0.5, y1: Math.max(a[1], b[1], c[1]) + 0.5,
+    });
+  }
+  return (point) => {
+    let best: number | undefined;
+    for (const t of triangles) {
+      if (point.x < t.x0 || point.x > t.x1 || point.y < t.y0 || point.y > t.y1) {
+        continue;
+      }
+      const d = (t.by - t.cy) * (t.ax - t.cx) + (t.cx - t.bx) * (t.ay - t.cy);
+      if (Math.abs(d) < 1e-9) {
+        continue;
+      }
+      const u = ((t.by - t.cy) * (point.x - t.cx) + (t.cx - t.bx) * (point.y - t.cy)) / d;
+      const v = ((t.cy - t.ay) * (point.x - t.cx) + (t.ax - t.cx) * (point.y - t.cy)) / d;
+      const w = 1 - u - v;
+      if (u < -1e-6 || v < -1e-6 || w < -1e-6) {
+        continue;
+      }
+      const h = u * t.ah + v * t.bh + w * t.ch;
+      best = best === undefined ? h : Math.max(best, h);
+    }
+    return best;
+  };
+}
+
+type Point3 = [number, number, number];
+const sub = (a: Point3, b: Point3): Point3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const cross = (a: Point3, b: Point3): Point3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const dot = (a: Point3, b: Point3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+/**
+ * The faces (triangles, turned outward) of the convex hull of points in
+ * space, built a point at a time: the faces a new point sees are taken
+ * away, and the hole's rim joined to it. Points on a face, or as good as
+ * (within a millionth of the points' extent), are left out. None if the
+ * points don't make a solid.
+ */
+function hull3d(points: Point3[]): [Point3, Point3, Point3][] {
+  if (points.length < 4) {
+    return [];
+  }
+  const extent = Math.max(...points.flatMap((p) => p.map(Math.abs)), 1);
+  const eps = extent * 1e-6;
+  // A first solid: two far apart points, the one farthest from their line, the one farthest from their plane.
+  let i0 = 0;
+  points.forEach((p, i) => {
+    if (p[0] < points[i0][0]) {
+      i0 = i;
+    }
+  });
+  const farthest = (score: (p: Point3) => number) => points.reduce((best, p, i) => (score(p) > score(points[best]) ? i : best), 0);
+  const i1 = farthest((p) => Math.hypot(...sub(p, points[i0])));
+  const line = sub(points[i1], points[i0]);
+  const i2 = farthest((p) => Math.hypot(...cross(line, sub(p, points[i0]))));
+  const normal = cross(line, sub(points[i2], points[i0]));
+  const i3 = farthest((p) => Math.abs(dot(normal, sub(p, points[i0]))));
+  if (Math.abs(dot(normal, sub(points[i3], points[i0]))) / (Math.hypot(...normal) || 1) < eps) {
+    return [];
+  }
+  type Face = { v: [number, number, number]; n: Point3; d: number; alive: boolean };
+  const faces: Face[] = [];
+  const middle = [i0, i1, i2, i3].reduce<Point3>((m, i) => [m[0] + points[i][0] / 4, m[1] + points[i][1] / 4, m[2] + points[i][2] / 4], [0, 0, 0]);
+  const add = (a: number, b: number, c: number) => {
+    let n = cross(sub(points[b], points[a]), sub(points[c], points[a]));
+    const length = Math.hypot(...n) || 1;
+    n = [n[0] / length, n[1] / length, n[2] / length];
+    // Outward: away from the first solid's middle (always inside).
+    if (dot(n, sub(middle, points[a])) > 0) {
+      faces.push({ v: [a, c, b], n: [-n[0], -n[1], -n[2]], d: -dot(n, points[a]), alive: true });
+    } else {
+      faces.push({ v: [a, b, c], n, d: dot(n, points[a]), alive: true });
+    }
+  };
+  add(i0, i1, i2);
+  add(i0, i1, i3);
+  add(i0, i2, i3);
+  add(i1, i2, i3);
+  const first = new Set([i0, i1, i2, i3]);
+  for (let i = 0; i < points.length; i++) {
+    if (first.has(i)) {
+      continue;
+    }
+    const p = points[i];
+    const seen = faces.filter((face) => face.alive && dot(face.n, p) - face.d > eps);
+    if (seen.length === 0) {
+      continue;
+    }
+    // The rim: the seen faces' edges whose other side is a face not seen.
+    const edges = new Set<string>();
+    for (const face of seen) {
+      const [a, b, c] = face.v;
+      edges.add(`${a},${b}`).add(`${b},${c}`).add(`${c},${a}`);
+      face.alive = false;
+    }
+    for (const edge of edges) {
+      const [a, b] = edge.split(",").map(Number);
+      if (!edges.has(`${b},${a}`)) {
+        add(a, b, i);
+      }
+    }
+  }
+  return faces.filter((face) => face.alive).map((face) => [points[face.v[0]], points[face.v[1]], points[face.v[2]]]);
 }
