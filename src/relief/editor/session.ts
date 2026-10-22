@@ -16,8 +16,8 @@ import { MapView } from "./view2d";
 // go) and saved on this device a moment after.
 
 const SETTINGS_KEY = "rising-ranges/relief-editor/settings";
-/** How long after the last change the relief is saved (ms). */
-const SAVE_AFTER = 500;
+/** How long after the last change the relief is saved (ms): it goes to every client, not at every stroke. */
+const SAVE_AFTER = 2000;
 /** The picture's size for the map view (px across): enough to trace on. */
 const PICTURE_WIDTH = 2048;
 

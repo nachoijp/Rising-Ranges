@@ -1,16 +1,17 @@
-import OBR from "@owlbear-rodeo/sdk";
+import OBR, { type Item } from "@owlbear-rodeo/sdk";
 import { getPluginId } from "../util/getPluginId";
 import { fromStored, toStored, type StoredRelief } from "./codec";
 import type { ReliefData } from "./types";
+import { ITEM_KEY, itemsOf, pack, partOf, partsOfText, reliefItemsKey, reliefsIn, unpack, versionId } from "./sceneItems";
 
-// Where reliefs are kept: on this device, not in the scene (its metadata is
-// 16 kB shared by every extension). One a map image, by room. The
-// background page owns them: it keeps them in its storage (always loaded
-// while the room is open; an extension's windows don't reliably share the
-// background's storage) and hands them to the other windows (the editor, the
+// Where reliefs are kept: in the scene, in hidden items of their own (see
+// sceneItems.ts; not the scene's metadata, 16 kB shared by every
+// extension), so every client has them. One a map image. The background
+// page reads them and hands them to the other windows (the editor, the
 // Vistazo, the panels) by local broadcast, in parts (a relief can be large);
-// the editor sends its changes back the same way. Players and other devices
-// don't have them yet.
+// the GM's editor sends its changes back the same way, and the GM's
+// background writes them. (An earlier version kept them on the device:
+// loadLocal and the like are left for moving those up.)
 
 const CHANNEL = getPluginId("relief");
 const PREFIX = "rising-ranges/relief/";
@@ -120,42 +121,238 @@ const send = (messages: ReliefMessage[]) => {
 // ---------- The background's side ----------
 
 /**
- * The background page's reliefs for the room: read from this device, handed
- * to every window that says hello, saved when a window sends one, and
- * `onChange` told each time (for the measuring done here).
+ * The background page's reliefs for the scene: read from its relief items
+ * (see sceneItems.ts) on every client, handed to every window that says
+ * hello (once they're read: before, a window would start from nothing),
+ * written when the GM's editor sends one, and `onChange` told each time
+ * (for the measuring done here). A relief kept on this device by an earlier
+ * version goes up to the scene the first time (the GM's).
  */
 export async function startReliefService(onChange: (image: string, data: ReliefData | null) => void) {
-  const roomId = OBR.room.id;
-  for (const image of keptImages(roomId)) {
-    onChange(image, fromStored(loadLocal(roomId, image)));
-  }
-  const handOut = (image: string) => {
-    const stored = loadLocal(roomId, image);
-    send(partsOf("relief", image, stored ? JSON.stringify(stored) : ""));
+  /** Each image's relief as handed out: its stored JSON. */
+  const texts = new Map<string, string>();
+  let ready = false;
+  let seen: string | null = null;
+  let role: "GM" | "PLAYER" = await OBR.player.getRole();
+  OBR.player.onChange((player) => {
+    role = player.role;
+  });
+  const handOut = (image: string) => send(partsOf("relief", image, texts.get(image) ?? ""));
+  /**
+   * What this GM last wrote of each image: Owlbear's own undo takes back
+   * changes to items (seen live), so a version older than this, or the
+   * items gone while the map's still there, is put back (the relief's undo
+   * is the editor's).
+   */
+  const mine = new Map<string, { v: string; text: string }>();
+
+  // Reading: one pass at a time, of the newest items.
+  let latest: Item[] | null = null;
+  let reading = false;
+  const read = async () => {
+    if (reading) {
+      return;
+    }
+    reading = true;
+    try {
+      while (latest) {
+        const items: Item[] = latest;
+        latest = null;
+        const key = reliefItemsKey(items);
+        if (key === seen) {
+          continue;
+        }
+        seen = key;
+        const found = reliefsIn(items);
+        for (const [image, own] of mine) {
+          const kept = found.get(image);
+          const undone = kept === undefined ? items.some((item) => item.id === image) : kept !== "partial" && kept.v < own.v;
+          if (undone && !toWrite.has(image)) {
+            toWrite.set(image, own.text);
+            void write();
+          }
+        }
+        for (const [image, kept] of found) {
+          if (kept === "partial") {
+            continue;
+          }
+          const own = mine.get(image);
+          if (own && kept.v < own.v) {
+            // Taken back by Owlbear's undo: being put back (above), not handed out.
+            continue;
+          }
+          let text: string;
+          try {
+            text = await unpack(kept.packed);
+            JSON.parse(text);
+          } catch (error) {
+            console.error("Rising Ranges: a relief in the scene couldn't be read", error);
+            continue;
+          }
+          if (texts.get(image) !== text) {
+            texts.set(image, text);
+            onChange(image, fromStored(JSON.parse(text)));
+            if (ready) {
+              handOut(image);
+            }
+          }
+        }
+        for (const image of [...texts.keys()]) {
+          if (!found.has(image)) {
+            texts.delete(image);
+            onChange(image, null);
+            if (ready) {
+              handOut(image);
+            }
+          }
+        }
+        if (!ready) {
+          ready = true;
+          void migrate(items);
+        }
+      }
+    } finally {
+      reading = false;
+    }
   };
-  const take = assembler((kind, image, text) => {
+  const take = (items: Item[]) => {
+    latest = items;
+    void read();
+  };
+
+  /** The scene's relief items for an image made `text` (empty: removed): in place, or the new ones added before the old go. */
+  const writeRelief = async (image: string, text: string) => {
+    const old = await OBR.scene.items.getItems((item) => item.attachedTo === image && partOf(item) !== undefined);
+    if (!text) {
+      mine.delete(image);
+      if (old.length > 0) {
+        await OBR.scene.items.deleteItems(old.map((item) => item.id));
+      }
+      return;
+    }
+    const [map] = await OBR.scene.items.getItems([image]);
+    if (!map) {
+      return;
+    }
+    const parts = partsOfText(await pack(text), versionId());
+    if (old.length === parts.length) {
+      const order = [...old].sort((a, b) => partOf(a)!.index - partOf(b)!.index).map((item) => item.id);
+      await OBR.scene.items.updateItems(order, (drafts) => {
+        for (const draft of drafts) {
+          draft.metadata[ITEM_KEY] = parts[order.indexOf(draft.id)];
+        }
+      });
+      // Only once it's there (a write refused isn't put back over and over).
+      mine.set(image, { v: parts[0].v, text });
+      return;
+    }
+    await OBR.scene.items.addItems(itemsOf(map, parts));
+    mine.set(image, { v: parts[0].v, text });
+    if (old.length > 0) {
+      await OBR.scene.items.deleteItems(old.map((item) => item.id));
+    }
+  };
+  // Writing (the GM's): one at a time, the newest for each image.
+  const toWrite = new Map<string, string>();
+  let writing = false;
+  const write = async () => {
+    if (writing) {
+      return;
+    }
+    writing = true;
+    try {
+      while (toWrite.size > 0) {
+        const [image, text] = toWrite.entries().next().value as [string, string];
+        toWrite.delete(image);
+        try {
+          await writeRelief(image, text);
+          // Taken as it is now, without waiting to hear back from the scene (nor counting on it: the
+          // same text, or a change of this client's own maybe not told back to it): the editor's told it's kept.
+          if ((texts.get(image) ?? "") !== text) {
+            if (text) {
+              texts.set(image, text);
+            } else {
+              texts.delete(image);
+            }
+            onChange(image, text ? fromStored(JSON.parse(text)) : null);
+          }
+          handOut(image);
+        } catch (error) {
+          console.error("Rising Ranges: the relief couldn't be kept in the scene", error);
+          // What's there handed out again: the editor's told it wasn't kept.
+          handOut(image);
+        }
+      }
+    } finally {
+      writing = false;
+    }
+  };
+  const saved = assembler((kind, image, text) => {
     if (kind !== "save") {
       return;
     }
-    const stored = text ? (JSON.parse(text) as StoredRelief) : null;
-    if (!saveLocal(roomId, image, stored)) {
-      console.error("Rising Ranges: the relief couldn't be kept on this device (storage full?)");
+    if (role !== "GM") {
+      handOut(image);
+      return;
     }
-    onChange(image, stored ? fromStored(stored) : null);
-    handOut(image);
+    toWrite.set(image, text);
+    void write();
   });
+
+  /** Reliefs this device kept (an earlier version's way) for maps of this scene with none in it: up to the scene, then forgotten here. */
+  const migrate = async (items: Item[]) => {
+    if (role !== "GM") {
+      return;
+    }
+    const roomId = OBR.room.id;
+    for (const image of keptImages(roomId)) {
+      const stored = loadLocal(roomId, image);
+      if (!stored || texts.has(image) || !items.some((item) => item.id === image)) {
+        continue;
+      }
+      try {
+        await writeRelief(image, JSON.stringify(stored));
+        saveLocal(roomId, image, null);
+      } catch (error) {
+        console.error("Rising Ranges: a relief kept on this device couldn't go up to the scene", error);
+      }
+    }
+  };
+
   OBR.broadcast.onMessage(CHANNEL, (event) => {
     const message = event.data as ReliefMessage;
     if (message?.kind === "hello") {
-      const images = keptImages(roomId);
+      if (!ready) {
+        // Not read yet: the window asks again.
+        return;
+      }
+      const images = [...texts.keys()];
       send([{ kind: "index", images }]);
       for (const image of images) {
         handOut(image);
       }
     } else if (message?.kind === "save") {
-      take(message);
+      saved(message);
     }
   });
+  OBR.scene.items.onChange(take);
+  OBR.scene.onReadyChange((sceneReady) => {
+    if (sceneReady) {
+      OBR.scene.items.getItems().then(take, (error) => console.error("Rising Ranges: the scene's reliefs couldn't be read", error));
+      return;
+    }
+    // Another scene: none of these.
+    ready = false;
+    seen = null;
+    mine.clear();
+    for (const image of [...texts.keys()]) {
+      texts.delete(image);
+      onChange(image, null);
+    }
+  });
+  if (await OBR.scene.isReady()) {
+    take(await OBR.scene.items.getItems());
+  }
 }
 
 // ---------- A window's side ----------
