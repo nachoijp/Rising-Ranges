@@ -11,6 +11,7 @@ import OBR, {
 import { axonometryOf } from "../engine/axonometry";
 import { isHexShape, onGrid, snapToOrigin } from "../engine/hex";
 import { isTerrainTagged, terrainAt, terrainZones, type TerrainZone } from "../terrain/terrain";
+import { withReliefs } from "../relief/live";
 import measureIcon from "../assets/range.svg";
 import { canUpdateItem } from "./permission";
 import {
@@ -613,7 +614,7 @@ async function startFixedDrag(event: ToolEvent) {
     activeDpi = dpi;
     activeAxonometry = axonometry;
     activeTerrainOn = terrainOn(activeSettings, gridType);
-    activeTerrain = activeTerrainOn ? terrainZones(markersAndTerrain) : [];
+    activeTerrain = activeTerrainOn ? withReliefs(terrainZones(markersAndTerrain)) : [];
     if (activeAltitudeEnabled) {
       const marker = heightMarkers.find((m) => m.attachedTo === target.id);
       originHeight = (marker && getTokenHeight(marker, activeBandSet)) || 0;
@@ -652,7 +653,7 @@ function followScene(items: Item[]) {
   }
   if (activeAltitudeEnabled && activeBandSet) {
     activeTokenHeights = tokenHeightsFromMarkers(items.filter(isTokenHeightMarker), activeBandSet);
-    activeTerrain = activeTerrainOn ? terrainZones(items) : [];
+    activeTerrain = activeTerrainOn ? withReliefs(terrainZones(items)) : [];
   }
   measureView.moveTokens(scene);
   refreshLecturas();
@@ -777,7 +778,7 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
         secretMedicion = target?.type === "IMAGE" && !target.visible;
         activeTokenHeights = tokenHeightsFromMarkers(heightMarkers, bandSet);
         activeTerrainOn = terrainOn(activeSettings, gridType);
-        activeTerrain = activeTerrainOn ? terrainZones(tokensAndTerrain) : [];
+        activeTerrain = activeTerrainOn ? withReliefs(terrainZones(tokensAndTerrain)) : [];
 
         // A Medición started on a token with a height marker starts at that
         // height.

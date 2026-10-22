@@ -25,6 +25,7 @@ import { BandSet, IconPosition } from "../engine/types";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
 import { fixedGround, globalSettingsFromMetadata, liftsTokens, terrainOn } from "../settings/globalSettings";
 import { terrainAt, terrainZones } from "../terrain/terrain";
+import { onReliefsChange, withReliefs } from "../relief/live";
 import { computeIconAnchor, getTokenBounds, getTokenRadius } from "../render/iconAnchor";
 import { getTokenFootprint } from "../tokenHeight/footprint";
 import { buildFloorShape } from "../render/floorShape";
@@ -419,7 +420,7 @@ function computeWanted(): Map<string, Wanted> {
   const bandSet = bandSetFromMetadata(metadata);
   const lifting = liftsTokens(settings, gridType);
   const fixed = fixedGround(settings);
-  const terrain = fixed && terrainOn(settings, gridType) ? terrainZones(items) : [];
+  const terrain = fixed && terrainOn(settings, gridType) ? withReliefs(terrainZones(items)) : [];
   const markers = new Map<string, Path>();
   for (const item of items) {
     if (isTokenHeightMarker(item) && item.attachedTo && !markers.has(item.attachedTo)) {
@@ -657,6 +658,8 @@ export async function startHeightOverlays() {
     items = next;
     schedule();
   });
+  // A relief edited (or the map image it follows moved): its heights again.
+  onReliefsChange(schedule);
   OBR.scene.onMetadataChange((next) => {
     metadata = next;
     schedule();

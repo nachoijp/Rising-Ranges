@@ -158,6 +158,24 @@ export class VistazoView {
     new ResizeObserver(() => this.measure()).observe(stage);
   }
 
+  /** Drawn lightly (see setLite). */
+  private lite = false;
+
+  /**
+   * Lightly, while the relief editor drags something: the terrain alone, without
+   * its copies for the fog, the Banda tint, the cloud shadows and under bridges
+   * (the most of a rebuild). Off again, the next scene is drawn whole.
+   */
+  setLite(lite: boolean) {
+    if (this.lite === lite) {
+      return;
+    }
+    this.lite = lite;
+    if (!lite) {
+      this.terrainKey = "";
+    }
+  }
+
   /** Whether WebGL could start (without it there's nothing to draw the terrain with). */
   get ready(): boolean {
     return this.renderer !== null;
@@ -322,6 +340,9 @@ export class VistazoView {
 
   /** A copy of a flat piece, for the Banda tint (see buildReach): the same shape, its texture the heights grid's. */
   private fillCopy(geometry: THREE.BufferGeometry, z: number, group = this.fillGroup, texture = this.reachTexture, order = 3) {
+    if (this.lite) {
+      return;
+    }
     const { x0, y0, step, w, h } = this.grid;
     const position = geometry.getAttribute("position") as THREE.BufferAttribute;
     const uv = new Float32Array(position.count * 2);
@@ -436,6 +457,9 @@ export class VistazoView {
    * picture laid from above (so a wall takes the fog at its foot).
    */
   private fogCopy(geometry: THREE.BufferGeometry, z = 0, group: THREE.Group = this.fogGroup) {
+    if (this.lite) {
+      return;
+    }
     const scene = this.scene!;
     const { x0, y0, x1, y1 } = scene.bounds;
     const position = geometry.getAttribute("position") as THREE.BufferAttribute;
@@ -1508,6 +1532,26 @@ export class VistazoView {
     this.terrainGroup.add(top);
     this.fogCopy(geometry, z);
 
+    if (piece.card) {
+      // A relief's own picture (see relief/vistazo.ts): its corners where it has them, its picture from the map.
+      const positions = new Float32Array(piece.card.length * 3);
+      const uvs = new Float32Array(piece.card.length * 2);
+      piece.card.forEach(([x, y, h, mx, my], i) => {
+        positions.set([x * u, y * u, h * k], i * 3);
+        uvs.set(this.texture ? this.uvAt(mx * u, my * u) : [0, 0], i * 2);
+      });
+      const card = new THREE.BufferGeometry();
+      card.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      card.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+      // Just in front of its walls (they're all kept): drawn toward the eye, not away as the pieces' are
+      // (that offset grows with how slanting a face is seen, and put the wall over the picture there).
+      const material = this.pieceMaterial(piece.height, true);
+      material.polygonOffsetFactor = -1;
+      material.polygonOffsetUnits = -1;
+      this.terrainGroup.add(new THREE.Mesh(card, material));
+      this.fogCopy(card);
+      return;
+    }
     if (piece.unfold) {
       const unfolded = this.unfoldedCard(piece);
       this.terrainGroup.add(new THREE.Mesh(unfolded, this.pieceMaterial(piece.height, true)));

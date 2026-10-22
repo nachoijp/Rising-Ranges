@@ -1,0 +1,367 @@
+/* The relief editor inside the Vistazo 3D (its full screen): its panel and the map in 2D beside the 3D.
+   Only within .re-side and .re-map, in the Vistazo's own colours. */
+.app.editing .glass-inner {
+  grid-template-columns: 300px minmax(0, 1fr) minmax(0, 1fr);
+}
+.app.editing aside {
+  display: none;
+}
+.re-side {
+  --field: color-mix(in srgb, var(--fg) 8%, transparent);
+  --mark: #ffd54a;
+  --warn: #ffb74d;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 10px;
+  overflow: hidden;
+  border-right: 1px solid var(--line);
+  font-size: 13px;
+}
+.re-side button,
+.re-side select,
+.re-side input:not([type="checkbox"]):not([type="range"]) {
+  font: inherit;
+  color: var(--fg);
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+.re-side button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--fg) 35%, transparent);
+}
+.re-side button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.re-side button.primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+.re-side :focus-visible,
+.re-map canvas:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.re-side .muted {
+  color: var(--muted);
+}
+.re-side .warn {
+  color: var(--warn);
+}
+.re-side .grow {
+  flex: 1;
+}
+.re-side .check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.re-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.re-image {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+}
+.re-image select {
+  flex: 1;
+  min-width: 0;
+}
+.re-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.re-status,
+.re-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.re-status:empty {
+  display: none;
+}
+/* The tools: a row of icons a group. */
+.re-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.re-tools .tgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.re-tools .group {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.re-tools .tbtns {
+  display: flex;
+  gap: 3px;
+}
+.re-tools button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+.re-tools button.on {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+.re-hint {
+  color: var(--muted);
+}
+.re-hint b {
+  color: var(--fg);
+}
+.re-hint kbd {
+  font: 11px/1 system-ui, sans-serif;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 4px;
+  color: var(--fg);
+}
+.re-hint details {
+  margin-top: 4px;
+}
+.re-hint summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.re-hint dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+.re-hint dt {
+  color: var(--fg);
+  white-space: nowrap;
+}
+.re-hint dd {
+  margin: 0;
+}
+/* The properties: they scroll; the layers stay at the bottom. */
+.re-props {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-height: 80px;
+  overflow: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.re-props p {
+  margin: 0;
+}
+.re-side .field {
+  display: grid;
+  grid-template-columns: 78px 1fr;
+  align-items: center;
+  gap: 6px;
+}
+.re-side .flabel {
+  color: var(--muted);
+}
+.re-side .fbody {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.re-side .fbody input[type="number"] {
+  width: 64px;
+}
+.re-side .fbody input[type="range"] {
+  flex: 1;
+  min-width: 60px;
+}
+.re-side .fbody .val {
+  min-width: 34px;
+  color: var(--muted);
+}
+.re-side .seg {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.re-side .seg button {
+  border: 0;
+  border-radius: 0;
+  padding: 3px 7px;
+}
+.re-side .seg button.on {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.re-side .info {
+  cursor: help;
+  font-size: 11px;
+  border-radius: 50%;
+}
+.re-side .ptitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+.re-side .ptitle .name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  background: transparent;
+  border-color: transparent;
+}
+.re-side .ptitle .name:hover,
+.re-side .ptitle .name:focus {
+  border-color: var(--line);
+  background: var(--field);
+}
+.re-side .ptitle .del {
+  display: grid;
+  place-items: center;
+  padding: 3px;
+}
+.re-side .pgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.re-side .ops {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+.re-side .ops button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.re-layers {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 0 1 auto;
+  max-height: 38%;
+  min-height: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.re-layers .lhead {
+  margin: 0;
+  font-weight: 600;
+}
+.re-layers .lrows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+}
+.re-side .layer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.re-side .layer:hover {
+  background: var(--field);
+}
+.re-side .layer.on {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.re-side .layer.more {
+  border-color: var(--accent);
+}
+.re-side .layer.drop {
+  border-top-color: var(--accent);
+}
+.re-side .layer.dragging {
+  opacity: 0.4;
+}
+.re-side .layer.ground {
+  border: 1px dashed var(--line);
+  color: var(--muted);
+}
+.re-side .layer .licon {
+  display: grid;
+  opacity: 0.8;
+}
+.re-side .layer .lname {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.re-side .layer .lh {
+  opacity: 0.75;
+  font-size: 12px;
+}
+.re-side .layer button {
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 18px;
+  opacity: 0;
+}
+.re-side .layer:hover button,
+.re-side .layer:focus-within button,
+.re-side .layer.on button {
+  opacity: 1;
+}
+.re-side .layer.on button {
+  color: var(--fg);
+}
+/* The map in 2D. */
+.re-map {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  background: #111318;
+  border-right: 1px solid var(--line);
+}
+.re-map canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.re-tag {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #e1e8e6;
+  background: rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}

@@ -163,33 +163,49 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
 /**
  * This window's reliefs from the background: all of them now (asked with a
  * hello, again until the background answers: it may not be up yet), then
- * each change. `onIndex`: which images have one, once the background answers.
+ * each change. `onIndex`: which images have one, once the background has
+ * answered and every one of them has come (they follow the index, in parts:
+ * before that, an editor would start from nothing).
  */
 export function watchReliefs(onRelief: (image: string, data: ReliefData | null) => void, onIndex?: (images: string[]) => void): () => void {
-  let answered = false;
+  let known = false;
+  /** The images of the index not come yet. */
+  let waiting: Set<string> | null = null;
+  let listed: string[] = [];
+  const complete = () => {
+    if (!known && waiting && waiting.size === 0) {
+      known = true;
+      clearTimeout(retry);
+      onIndex?.(listed);
+    }
+  };
   const take = assembler((kind, image, text) => {
     if (kind === "relief") {
       onRelief(image, text ? fromStored(JSON.parse(text)) : null);
+      waiting?.delete(image);
+      complete();
     }
   });
   const stop = OBR.broadcast.onMessage(CHANNEL, (event) => {
     const message = event.data as ReliefMessage;
-    if (message?.kind === "index" && !answered) {
-      answered = true;
-      onIndex?.(message.images);
+    if (message?.kind === "index" && !known) {
+      listed = message.images;
+      waiting = new Set(message.images);
+      complete();
     } else if (message?.kind === "relief") {
       take(message);
     }
   });
   let tries = 0;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  // Again (everything sent again) until it's all come: a part may have been lost.
   const hello = () => {
-    if (answered || tries++ >= 20) {
+    if (known || tries++ >= 20) {
       return;
     }
     send([{ kind: "hello" }]);
-    retry = setTimeout(hello, 1000);
+    retry = setTimeout(hello, 1500);
   };
-  let retry: ReturnType<typeof setTimeout> | undefined;
   hello();
   return () => {
     clearTimeout(retry);

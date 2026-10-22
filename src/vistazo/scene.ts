@@ -26,6 +26,9 @@ import { weatherOf, type Weather } from "./weather";
 import { isTokenHeightMarker, tokenHeightsFromMarkers } from "../tokenHeight/markers";
 import { onFloor } from "../tokenHeight/lift";
 import { getTokenRadius } from "../render/iconAnchor";
+import { anchorOf } from "../relief/anchor";
+import type { Relief } from "../relief/relief";
+import { reliefTerrain } from "../relief/vistazo";
 
 // What the Vistazo draws, read from the scene: the map images where they
 // lie, the terrain as non-overlapping pieces (terrainLayers: where zones
@@ -71,6 +74,13 @@ export type Piece = {
   surface?: (point: { x: number; y: number }) => number;
   /** A ramp's slope: then `height` is its high end. */
   slope?: RampSlope;
+  /**
+   * A relief's standing shape's picture, made by the relief (see
+   * relief/vistazo.ts): [x, y, height, mapX, mapY] triangles (scene px, grid
+   * units, where on the map each corner's picture is). Drawn instead of the
+   * Vistazo's own card, in front of its walls (none taken away).
+   */
+  card?: [number, number, number, number, number][];
 };
 
 /** How high a piece is at a scene point: along its slope, if it's a ramp. */
@@ -278,7 +288,7 @@ function closed(ring: Pair[]): Pair[] {
 /** This extension's own metadata keys (terrain, ramps, standing zones, walls). */
 const OWN_PREFIX = "com.ignaciopedraza.risingranges/";
 
-function terrainKeyOf(items: Item[], tokenItems: Image[], dpi: number, terrainOff: boolean, sight: Sight | null): string {
+function terrainKeyOf(items: Item[], tokenItems: Image[], dpi: number, terrainOff: boolean, sight: Sight | null, reliefKey: string): string {
   const onMap = items.filter((item) => item.layer === "MAP");
   const sized = onMap.some((item) => isImage(item) && item.visible) ? [] : tokenItems.map((token) => token.position);
   // Only what draws the terrain: other extensions keep their own data on map items (Smoke & Spectre's
@@ -305,7 +315,7 @@ function terrainKeyOf(items: Item[], tokenItems: Image[], dpi: number, terrainOf
       ours(item.metadata),
     ];
   });
-  return JSON.stringify([dpi, terrainOff, mapItems, sized, sight?.key ?? null]);
+  return JSON.stringify([dpi, terrainOff, mapItems, sized, sight?.key ?? null, reliefKey]);
 }
 
 /**
@@ -321,15 +331,16 @@ export function buildScene(
   previous?: VistazoScene,
   hexCenter: { x: number; y: number } | null = null,
   playerView = false,
-  sight: Sight | null = null
+  sight: Sight | null = null,
+  reliefs: Reliefs = { byImage: new Map(), key: "" }
 ): VistazoScene {
   const settings = globalSettingsFromMetadata(metadata);
   const terrainOff = !terrainOn(settings, gridType);
   const altitude = settings.enableAltitude ?? true;
   // Characters, and mounts with them (a horse is a creature too).
   const tokenItems = items.filter((item): item is Image => isImage(item) && (item.layer === "CHARACTER" || item.layer === "MOUNT"));
-  const key = terrainKeyOf(items, tokenItems, dpi, terrainOff, sight);
-  const terrain = previous && previous.terrainKey === key ? previous : buildTerrain(key, items, tokenItems, dpi, terrainOff, sight);
+  const key = terrainKeyOf(items, tokenItems, dpi, terrainOff, sight, reliefs.key);
+  const terrain = previous && previous.terrainKey === key ? previous : buildTerrain(key, items, tokenItems, dpi, terrainOff, sight, reliefs.byImage);
   const { measuredAt } = terrain;
 
   const bandSet = onGrid(bandSetFromMetadata(metadata), gridType);
@@ -401,11 +412,90 @@ export function buildScene(
   };
 }
 
-function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dpi: number, terrainOff: boolean, sight: Sight | null): Terrain {
-  const maps = items
-    .filter((item): item is Image => isImage(item) && item.layer === "MAP" && item.visible)
-    .sort((a, b) => a.zIndex - b.zIndex)
-    .map((item) => mapImage(item, dpi));
+/** The reliefs the Vistazo draws: each map image's (by id), and a key that changes with any of them. */
+export type Reliefs = { byImage: Map<string, Relief>; key: string };
+
+/**
+ * The terrain of a scene whose map images have reliefs (see relief/vistazo.ts):
+ * each relief's pieces and bridges over its image; the rest of the map, ground at 0.
+ */
+function buildReliefTerrain(terrainKey: string, maps: MapImage[], withRelief: Image[], dpi: number, sight: Sight | null, reliefs: Map<string, Relief>): Terrain {
+  const outlines = maps.map((map): MultiPolygon => [[closed(map.corners)]]);
+  const world: MultiPolygon = outlines.length === 1 ? outlines[0] : polygonClipping.union(outlines[0], ...outlines.slice(1));
+  const clear = sight ? sight.clear(world) : null;
+  const parts = withRelief.map((item) => reliefTerrain(reliefs.get(item.id)!, anchorOf(item), dpi, clear));
+  const pieces: Piece[] = parts.flatMap((part) => part.pieces);
+  // The map round the reliefs: plain ground.
+  try {
+    const rest = polygonClipping.difference(world, ...parts.map((part) => part.area));
+    if (rest.length > 0) {
+      pieces.unshift({ height: 0, shape: rest });
+    }
+  } catch (error) {
+    console.error("Rising Ranges: Vistazo couldn't lay the ground round the reliefs", error);
+  }
+  const xs = world.flatMap((polygon) => polygon[0].map((p) => p[0]));
+  const ys = world.flatMap((polygon) => polygon[0].map((p) => p[1]));
+  const bounds = { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+  const inWorld = (x: number, y: number) => x >= bounds.x0 && x <= bounds.x1 && y >= bounds.y0 && y <= bounds.y1 && inShape(x, y, world);
+  const heightAt = (x: number, y: number): number | undefined => {
+    if (!inWorld(x, y)) {
+      return undefined;
+    }
+    // The top image's relief (the last drawn), if it's over the point.
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const h = parts[i].heightAt(x, y);
+      if (h !== undefined) {
+        return h;
+      }
+    }
+    return 0;
+  };
+  // For asking which piece a point is in: each with its box first.
+  const boxed = pieces.map((piece) => {
+    const outline = piece.shape.flatMap((polygon) => polygon[0]);
+    return {
+      piece,
+      x0: Math.min(...outline.map((p) => p[0])),
+      y0: Math.min(...outline.map((p) => p[1])),
+      x1: Math.max(...outline.map((p) => p[0])),
+      y1: Math.max(...outline.map((p) => p[1])),
+    };
+  });
+  const pieceAt = (x: number, y: number): Piece | undefined => {
+    if (!inWorld(x, y)) {
+      return undefined;
+    }
+    for (let i = boxed.length - 1; i >= 0; i--) {
+      const b = boxed[i];
+      if (x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1 && inShape(x, y, b.piece.shape)) {
+        return b.piece;
+      }
+    }
+    return undefined;
+  };
+  return {
+    terrainKey,
+    maps,
+    world,
+    bounds,
+    pieces,
+    heightAt,
+    pieceAt,
+    measuredAt: (x, y) => heightAt(x, y) ?? 0,
+    terrainOff: false,
+    bridges: parts.flatMap((part) => part.bridges),
+  };
+}
+
+function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dpi: number, terrainOff: boolean, sight: Sight | null, reliefs: Map<string, Relief> = new Map()): Terrain {
+  const mapItems = items.filter((item): item is Image => isImage(item) && item.layer === "MAP" && item.visible).sort((a, b) => a.zIndex - b.zIndex);
+  const maps = mapItems.map((item) => mapImage(item, dpi));
+  // A map image with a relief (the relief editor's): the terrain is the reliefs', not the zones'.
+  const withRelief = terrainOff ? [] : mapItems.filter((item) => reliefs.has(item.id));
+  if (withRelief.length > 0) {
+    return buildReliefTerrain(terrainKey, maps, withRelief, dpi, sight, reliefs);
+  }
 
   const shapes = terrainOff ? [] : terrainShapes(items);
   const zones: MultiPolygon = [];

@@ -34,7 +34,8 @@ export function computeWalls(scene: VistazoScene, base: number): Wall[] {
           }
           // A standing block's front is the picture itself: an unfolded one's, its base edge only (its
           // slanting sides, wider than the picture, keep their walls); a box's, whatever faces its way.
-          if (piece.unfold ? onBase(piece.unfold.base, mx, my, nx, ny, piece.unfold.out, probe * 3) : piece.stand && nx * FACING[piece.stand][0] + ny * FACING[piece.stand][1] > 0.5) {
+          // (A relief's picture stands just in front of its walls: they all stay.)
+          if (!piece.card && (piece.unfold ? onBase(piece.unfold.base, mx, my, nx, ny, piece.unfold.out, probe * 3) : piece.stand && nx * FACING[piece.stand][0] + ny * FACING[piece.stand][1] > 0.5)) {
             continue;
           }
           const lower = scene.pieceAt(mx + nx * probe, my + ny * probe);

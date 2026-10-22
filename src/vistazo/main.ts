@@ -10,7 +10,11 @@ import { onGrid } from "../engine/hex";
 import { computeDistanceRows } from "../distances/rows";
 import { getStoredTheme } from "../theme/themes";
 import { getColorString } from "../util/color";
-import { buildScene, propOf, type Token, type VistazoScene } from "./scene";
+import { buildScene, propOf, type Reliefs, type Token, type VistazoScene } from "./scene";
+import { Relief } from "../relief/relief";
+import { watchReliefs } from "../relief/store";
+import { startEditing, type EditSession } from "../relief/editor/session";
+import "../relief/editor/editor.css";
 import { FREE_POINT, TEMPLATE_HANDLE, VistazoView, type Camera, type DistanceLine, type Options } from "./render";
 import { templateReaches, type Template, type TemplateLook, type TemplateShape } from "./templates";
 import { LIVE_DRAG_CHANNEL, type LiveDrag } from "./live";
@@ -546,6 +550,7 @@ async function start() {
   fill();
 
   let scene: VistazoScene | null = null;
+  const reliefs: Reliefs = { byImage: new Map(), key: "" };
   const distance = (units: number) => (scene ? formatDistance(scene.scale, units) : String(units));
   const tokenText = (token: Token) => {
     const total = token.terrain + token.own;
@@ -1649,7 +1654,8 @@ async function start() {
         scene ?? undefined,
         hexCenter,
         options.playerView,
-        fogNow ? { key: sightFogKey, clear: (world) => clearOf(fogNow, world) } : null
+        fogNow ? { key: sightFogKey, clear: (world) => clearOf(fogNow, world) } : null,
+        reliefs
       );
       for (const [id, at] of live) {
         scene = placed(scene, id, at.position, at.own);
@@ -1678,6 +1684,114 @@ async function start() {
     clearTimeout(pending);
     pending = window.setTimeout(refresh, 150);
   };
+  // The reliefs kept on this device (the relief editor's), from the background page: where there's one,
+  // its map image's terrain is the relief's (see relief/vistazo.ts).
+  let reliefVersion = 0;
+  /** The background has answered: the reliefs kept here are all known (editing can't start before, or it'd start from nothing). */
+  let reliefsKnown = false;
+  watchReliefs(
+    (image, data) => {
+      // The one being edited is the editor's: what comes back is its own save.
+      if (session?.imageId === image) {
+        return;
+      }
+      if (data) {
+        reliefs.byImage.set(image, new Relief(data));
+      } else {
+        reliefs.byImage.delete(image);
+      }
+      reliefs.key = String(++reliefVersion);
+      later();
+    },
+    () => {
+      reliefsKnown = true;
+      if (editAsked) {
+        enterEdit();
+      }
+    }
+  );
+
+  // ---------- Editing the relief (the GM's, in full screen) ----------
+  let session: EditSession | null = null;
+  /** Opened to edit (from the panel's button): editing starts once the reliefs are known. */
+  let editAsked = FULL && new URLSearchParams(location.search).has("edit");
+  /** While editing, the scene drawn again a few times a second at most (not only once it's still). */
+  let soonTimer = 0;
+  const soon = () => {
+    if (!soonTimer) {
+      soonTimer = window.setTimeout(() => {
+        soonTimer = 0;
+        refresh();
+      }, 150);
+    }
+  };
+  /** The map images to edit, the largest (in the scene) first. */
+  const mapImages = () =>
+    items
+      .filter((item): item is Image => item.type === "IMAGE" && item.layer === "MAP" && item.visible)
+      .map((item) => ({ item, size: Math.abs((item as Image).image.width * (item as Image).image.height * item.scale.x * item.scale.y) / (item as Image).grid.dpi ** 2 }))
+      .sort((a, b) => b.size - a.size)
+      .map(({ item }) => item);
+  function enterEdit() {
+    editAsked = false;
+    if (!isGM || session || !reliefsKnown) {
+      return;
+    }
+    const images = mapImages();
+    if (images.length === 0) {
+      return;
+    }
+    $("app").classList.add("editing");
+    $("reSide").hidden = false;
+    $("reMap").hidden = false;
+    session = startEditing({
+      t,
+      images,
+      reliefs: reliefs.byImage,
+      side: $("reSide"),
+      map: $<HTMLCanvasElement>("reMapCanvas"),
+      onRelief: (image, relief, lite) => {
+        reliefs.byImage.set(image, relief);
+        reliefs.key = String(++reliefVersion);
+        view.setLite(lite);
+        soon();
+      },
+      scene: () => ({ items, dpi }),
+      onDone: leaveEdit,
+    });
+  }
+  function leaveEdit() {
+    session?.stop();
+    session = null;
+    $("app").classList.remove("editing");
+    $("reSide").hidden = true;
+    $("reMap").hidden = true;
+    view.setLite(false);
+    refresh();
+  }
+  const reliefButton = $("reliefEdit");
+  reliefButton.hidden = !isGM;
+  reliefButton.onclick = () => {
+    if (FULL) {
+      enterEdit();
+      return;
+    }
+    // From the panel: to full screen, editing there.
+    handCamera();
+    void OBR.modal.open({ id: FULL_MODAL_ID, url: "/vistazo.html?full&edit", fullScreen: true });
+    void closeVistazoPanel(true);
+  };
+  // While editing, the keys are the editor's first (Escape doesn't leave the full screen).
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (session && session.key(event)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    },
+    true
+  );
   OBR.scene.items.onChange((next) => {
     items = next;
     later();
@@ -1693,6 +1807,7 @@ async function start() {
     if (nextLanguage !== language) {
       language = nextLanguage;
       fill();
+      session?.retext();
       showOptions();
       // What isn't filled in by key: the camera's readings, the templates' list, the tokens' labels.
       showCameraTexts();

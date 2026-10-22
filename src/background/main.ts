@@ -9,6 +9,7 @@ import { registerToolbar, watchToolbar } from "./toolbar";
 import { prefetchPanels } from "./prefetchPanels";
 import { startTerrainStyle } from "./terrainStyle";
 import { startTerrainView } from "./terrainView";
+import { startReliefs } from "../relief/live";
 import { SYNC_CHANNEL, type SyncMessage } from "../vistazo/sync";
 import { isVistazoShown, openVistazoPanel, vistazoClosedAt, watchVistazoPanel } from "../vistazo/panel";
 import { globalSettingsFromMetadata, vistazoAccess } from "../settings/globalSettings";
@@ -64,6 +65,8 @@ async function init() {
   await waitUntilOBRReady();
   syncSettings();
   startMeasureMirrorReceiver();
+  // The reliefs kept on this device: handed to the relief editor and the other windows that ask.
+  startReliefs();
 
   // The toolbar follows the scene's settings (see toolbar.ts); with no scene
   // yet, it starts from the defaults.

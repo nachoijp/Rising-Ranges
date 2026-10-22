@@ -19,6 +19,7 @@ import {
 } from "../settings/globalSettings";
 import { terrainItemsKey, terrainShapes, type RampSlope, type TerrainShape } from "../terrain/terrain";
 import { terrainLayers } from "../terrain/terrainLayers";
+import { onRelief, onReliefsChange, reliefShapes, reliefsVersion } from "../relief/live";
 import { markerBaseColor, markerLookFromMetadata } from "../tokenHeight/markers";
 import { followMap, LABEL_FONT_SIZE } from "../render/lecturaItems";
 import { getStoredTheme, THEME_STORAGE_KEYS, type Color, type Theme } from "../theme/themes";
@@ -36,6 +37,11 @@ import { getGridType } from "../util/gridAxonometry";
 // Client-local, on every client, in its own color theme, and only where
 // the terrain's visibility lets this client see it (terrainVisibility):
 // nobody, the GM, or everyone. Redrawn when the zones or the look change.
+//
+// A map image with a relief (made in the Vistazo, see relief/live.ts) has
+// its shapes drawn instead of the zones on it, in either look: they aren't
+// items of the scene, so their outlines are drawn here too. They follow
+// the image when it's dragged.
 
 const ITEM_KEY = getPluginId("terrainView");
 /** How far a layer's shadow falls, in cells. */
@@ -135,9 +141,12 @@ function layerColor(height: number, look: TerrainLook, range: [number, number], 
  */
 const FOLLOW_POSITION_ONLY: Item["disableAttachmentBehavior"] = ["ROTATION", "SCALE", "VISIBLE", "LOCKED", "COPY"];
 
+/** A relief's shapes follow its map image (see wanted). */
+let follows = new Map<string, string>();
+
 function attach<T extends Item>(item: T, zoneId: string | undefined): T {
   if (zoneId) {
-    item.attachedTo = zoneId;
+    item.attachedTo = follows.get(zoneId) ?? zoneId;
     item.disableAttachmentBehavior = FOLLOW_POSITION_ONLY;
   }
   return item;
@@ -167,10 +176,17 @@ function wanted(): { items: Item[]; signature: string } {
   const look = resolveTerrainLook(settings);
   const mode = terrainVisibility(settings);
   const seen = mode === "everyone" || (mode === "gm" && role === "GM");
-  if (!sceneReady || !dpi || !terrainOn(settings, gridType) || look.style !== "layers" || !seen) {
+  if (!sceneReady || !dpi || !terrainOn(settings, gridType) || !seen) {
     return { items: [], signature: "" };
   }
-  const shapes = terrainShapes(items);
+  const relief = reliefShapes();
+  follows = new Map(relief.map((shape) => [shape.id, shape.follow]));
+  // Outlined, the zones are drawn by being styled themselves (terrainStyle.ts): only the reliefs' here.
+  const layered = look.style === "layers";
+  if (!layered && relief.length === 0) {
+    return { items: [], signature: "" };
+  }
+  const shapes = layered ? [...relief, ...terrainShapes(items).filter((shape) => !onRelief({ x: shape.rings[0][0][0], y: shape.rings[0][0][1] }))] : relief;
   if (shapes.length === 0) {
     return { items: [], signature: "" };
   }
@@ -183,7 +199,7 @@ function wanted(): { items: Item[]; signature: string } {
   const fillOpacity = look.opacity / 100;
   const out: Item[] = [];
   let z = 0;
-  const layers = terrainLayers(shapes);
+  const layers = layered ? terrainLayers(shapes) : [];
   // Each height's layers together: a layer's shadow doesn't fall on another at its height.
   const atHeight = new Map<number, MultiPolygon>();
   for (const layer of layers.filter((l) => !l.rim)) {
@@ -227,7 +243,7 @@ function wanted(): { items: Item[]; signature: string } {
     }
     out.push(attach(path(rampArrow(slope, dpi), "#000000", 0.35, z++), layer.zoneId));
   }
-  if (look.outline) {
+  if (look.outline || !layered) {
     for (const shape of shapes) {
       const color = getColorString(layerColor(shape.height, { ...look, color: "height" }, range, theme));
       const outline = path(commandsOf(shape.rings.map((ring) => [ring])), "#000000", 0, z++);
@@ -296,6 +312,7 @@ async function redraw() {
     gridType,
     gridScale?.raw,
     terrainItemsKey(items),
+    reliefsVersion(),
     JSON.stringify(globalSettingsFromMetadata(metadata)),
     JSON.stringify(markerLookFromMetadata(metadata)),
     JSON.stringify(bandSetFromMetadata(metadata)),
@@ -386,6 +403,7 @@ export async function startTerrainView() {
     items = next;
     schedule();
   });
+  onReliefsChange(schedule);
   OBR.scene.onMetadataChange((next) => {
     metadata = next;
     schedule();

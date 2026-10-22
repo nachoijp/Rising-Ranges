@@ -1,6 +1,7 @@
 import OBR, { isImage, isLabel, type GridScale, type GridType, type Image, type Item, type Vector2 } from "@owlbear-rodeo/sdk";
 import unpinIcon from "../assets/unpin.svg";
 import { terrainAt, terrainZones } from "../terrain/terrain";
+import { onReliefsChange, withReliefs } from "../relief/live";
 import { getPluginId } from "../util/getPluginId";
 import { getMetadata } from "../util/getMetadata";
 import { isPoint } from "../util/isPoint";
@@ -380,7 +381,7 @@ async function reconcile() {
     const ctx: LecturaContext = { bandSet, theme, dpi, axonometry, language, gridScale, showDistance, display };
     const origin: LecturaOrigin = { center: fixed.center, height: altitude ? fixed.height : 0, radius: fixed.radius };
     // Heights are kept above the ground each one stands on; the terrain there is added here.
-    const terrain = terrainOn(settings, gridType) ? terrainZones(items) : [];
+    const terrain = terrainOn(settings, gridType) ? withReliefs(terrainZones(items)) : [];
     const measuredFrom: LecturaOrigin = { ...origin, height: origin.height + terrainAt(terrain, origin.center) };
     // Its label: above its own ground, or above the fixed one (GlobalSettings.groundLevel).
     const shownHeight = fixedGround(settings) ? measuredFrom.height : origin.height;
@@ -608,6 +609,8 @@ export async function startFixedMedicion() {
       schedule();
     }
   });
+  // A relief edited (or the map image it follows moved): its heights again.
+  onReliefsChange(schedule);
   OBR.scene.onMetadataChange((next) => {
     metadata = next;
     schedule();

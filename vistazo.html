@@ -18,6 +18,11 @@
     </div>
     <div class="app" id="app">
       <div class="glass-inner">
+      <div class="re-side" id="reSide" hidden></div>
+      <div class="re-map" id="reMap" hidden>
+        <canvas id="reMapCanvas" tabindex="0"></canvas>
+        <span class="re-tag" data-t="relief.view2d"></span>
+      </div>
       <div class="stage" id="stage" tabindex="0">
         <div class="hud">
           <span id="status"></span>
@@ -56,6 +61,7 @@
         <div class="buttons">
           <button class="primary" id="toggle" type="button"></button>
           <button class="ghost sync" id="sync" type="button" aria-pressed="false" data-title="vistazo.syncHint" data-t="vistazo.sync"></button>
+          <button class="ghost" id="reliefEdit" type="button" data-title="vistazo.editReliefHint" data-t="vistazo.editRelief" hidden></button>
         </div>
 
         <fieldset data-section="interface">

@@ -178,6 +178,16 @@ export class ReliefEditor {
     this.host.showProps();
   }
 
+  /** Another relief in place of this one (imported, or cleared): a step to undo. */
+  replace(data: ReliefData) {
+    this.pushUndo();
+    this.relief = new Relief(data);
+    this.sel = null;
+    this.drawing = null;
+    this.changed();
+    this.host.showProps();
+  }
+
   // ---------- Tools ----------
 
   /** Another tool in hand: what's picked stays picked (to cut only it, or paint onto it); an outline half drawn is dropped. */

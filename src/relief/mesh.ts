@@ -383,6 +383,11 @@ export class ReliefMesh {
     }
   }
 
+  /** A standing shape's picture, as the Vistazo draws it with its own block (see relief/vistazo.ts). */
+  standingCard(layer: Layer): V5[] {
+    return this.card(layer);
+  }
+
   /** A standing shape's picture turned up on its edge, from the ground just past it. */
   private card(layer: Layer): V5[] {
     const r = this.relief;

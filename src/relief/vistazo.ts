@@ -1,0 +1,172 @@
+import type { MultiPolygon, Pair } from "polygon-clipping";
+import clip from "../terrain/clip";
+import { frameOf } from "../terrain/terrain";
+import { inShape as inScene, type Bridge, type Piece, type StandEdge } from "../vistazo/scene";
+import { cellToScene, sceneToCell, type Anchor } from "./anchor";
+import { centroid, closed, inBox, open } from "./geom";
+import { ReliefMesh } from "./mesh";
+import type { Relief } from "./relief";
+import type { Pt, Skin } from "./types";
+
+// A relief as the Vistazo 3D draws terrain: pieces (each shape's visible part,
+// a step of a stair each, and the bare ground round them), every one at the
+// relief's own heights (its surface asks the relief), so the Vistazo's walls,
+// wall looks, water, tint, fog and rings work on it as they do on zones; its
+// slabs as bridges; its standing shapes with the relief's own pictures. In the
+// scene's pixels, through the map image the relief follows.
+
+export type ReliefTerrain = {
+  pieces: Piece[];
+  bridges: Bridge[];
+  /** Where the relief is: its map image's outline (scene px). */
+  area: MultiPolygon;
+  /** The height at a scene point, as drawn and measured (undefined off its image; 0 under the fog). */
+  heightAt: (x: number, y: number) => number | undefined;
+};
+
+/**
+ * `clear`: in the player view, what of the map the fog leaves clear (scene
+ * px); under the fog the terrain's flat (its heights would give it away).
+ */
+export function reliefTerrain(relief: Relief, anchor: Anchor, dpi: number, clear: MultiPolygon | null = null): ReliefTerrain {
+  const { w, h } = relief.data;
+  const toScene = ([x, y]: Pt): Pair => {
+    const p = cellToScene(anchor, dpi, x, y);
+    return [p.x, p.y];
+  };
+  const sceneOf = (multi: Pt[][][]): MultiPolygon => multi.map((polygon) => polygon.map((ring) => closed(open(ring).map(toScene))));
+  const rect: Pt[] = [[0, 0], [w, 0], [w, h], [0, h]];
+  const area = sceneOf([[rect]]);
+  const visible = (x: number, y: number) => !clear || inScene(x, y, clear);
+  const heightAt = (x: number, y: number): number | undefined => {
+    const [cx, cy] = sceneToCell(anchor, dpi, x, y);
+    if (cx < 0 || cy < 0 || cx > w || cy > h) {
+      return undefined;
+    }
+    return visible(x, y) ? relief.evaluate(cx, cy) : 0;
+  };
+  const surface = (p: { x: number; y: number }) => heightAt(p.x, p.y) ?? 0;
+  const mesh = new ReliefMesh(relief);
+  const pieces: Piece[] = [];
+  // From the top down: each layer's pieces less what's over them, within the map.
+  let above: Pt[][][] = [];
+  for (let li = relief.layers.length - 1; li >= 0; li--) {
+    const layer = relief.layers[li];
+    const shape = relief.data.shapes[layer.si];
+    // Its heights the same everywhere: flat, nothing painted on it, no soft edge over it from above.
+    const flat =
+      shape.kind === "flat" &&
+      !(layer.detail && layer.detail.v.size > 0) &&
+      !relief.layers.slice(li + 1).some((o) => o.soft > 0 && o.outer.x0 <= layer.box.x1 && o.outer.x1 >= layer.box.x0 && o.outer.y0 <= layer.box.y1 && o.outer.y1 >= layer.box.y0);
+    const side = layer.stand ? mesh.side(layer) : null;
+    const card = layer.stand ? mesh.standingCard(layer).map(([x, y, z, mx, my]): [number, number, number, number, number] => [...toScene([x, y]), z, ...toScene([mx, my])]) : undefined;
+    for (const piece of layer.pieces) {
+      let parts: Pt[][][] = [[closed(piece.ring), ...piece.holes.map(closed)]];
+      try {
+        parts = clip.intersection(parts, [closed(rect)]) as Pt[][][];
+        if (above.length > 0) {
+          parts = clip.difference(parts, above) as Pt[][][];
+        }
+      } catch (error) {
+        console.error("Rising Ranges: Vistazo left out a part of the relief", error);
+        continue;
+      }
+      if (parts.length === 0) {
+        continue;
+      }
+      const sceneShape = sceneOf(parts);
+      const [cx, cy] = centroid(piece.ring);
+      const at = piece.h ?? relief.surface(layer, cx, cy);
+      const drawn: Piece = {
+        height: flat && piece.h !== undefined ? piece.h : at,
+        shape: sceneShape,
+        surface: flat && piece.h !== undefined ? undefined : surface,
+        walls: shape.wall,
+        skin: shape.skin ? skinOf(shape.skin, toScene) : undefined,
+        water: shape.water,
+      };
+      if (shape.water) {
+        // The water's floor: its lowest point (the Vistazo fills from there up to the level).
+        drawn.height = Math.min(at, ...piece.ring.map(([x, y]) => (inBox(layer.box, x, y) ? relief.surface(layer, x, y) : at)));
+      }
+      if (side && card) {
+        drawn.stand = (side.edge ?? standFacing(side.out)) as StandEdge;
+        drawn.card = card;
+      }
+      pieces.push(drawn);
+    }
+    try {
+      const own = [closed(layer.ring), ...layer.holes.map(closed)];
+      above = above.length > 0 ? (clip.union(above, [own]) as Pt[][][]) : [own];
+    } catch (error) {
+      console.error("Rising Ranges: Vistazo couldn't stack a part of the relief", error);
+    }
+  }
+  pieces.reverse();
+  // The ground: what no shape covers, at the painted ground's heights.
+  let ground: Pt[][][] = [[closed(rect)]];
+  try {
+    if (above.length > 0) {
+      ground = clip.difference(ground, above) as Pt[][][];
+    }
+  } catch (error) {
+    console.error("Rising Ranges: Vistazo couldn't cut the relief's ground", error);
+  }
+  const plainGround = relief.data.ground.every((v) => v === 0) && !relief.layers.some((layer) => layer.soft > 0);
+  // Under the fog: each shape's piece cut to what's clear, the ground taking the rest, flat there.
+  let groundScene = sceneOf(ground);
+  if (clear) {
+    for (let i = pieces.length - 1; i >= 0; i--) {
+      try {
+        const kept = clip.intersection(pieces[i].shape, clear);
+        if (kept.length > 0) {
+          pieces[i].shape = kept;
+        } else {
+          pieces.splice(i, 1);
+        }
+      } catch (error) {
+        console.error("Rising Ranges: Vistazo couldn't cut a part of the relief to the fog", error);
+      }
+    }
+    try {
+      const taken = pieces.map((piece) => piece.shape);
+      groundScene = taken.length > 0 ? clip.difference(area, ...taken) : area;
+    } catch (error) {
+      console.error("Rising Ranges: Vistazo couldn't cut the relief's ground to the fog", error);
+    }
+  }
+  if (groundScene.length > 0) {
+    pieces.unshift({ height: 0, shape: groundScene, surface: plainGround && !clear ? undefined : surface });
+  }
+  // Slabs: bridges over the terrain (a slab's top as its middle has it).
+  const bridges: Bridge[] = relief.slabLayers.map((layer) => {
+    const shape = relief.data.shapes[layer.si];
+    const [cx, cy] = centroid(layer.ring);
+    const top = relief.surface(layer, cx, cy);
+    const outline = sceneOf([[closed(layer.ring), ...layer.holes.map(closed)]]);
+    return {
+      id: `relief-${layer.si}`,
+      shape: outline,
+      top,
+      bottom: top - layer.thick,
+      walls: shape.wall === "stretch" || shape.wall === "fold" ? undefined : shape.wall,
+      skin: shape.skin ? skinOf(shape.skin, toScene) : undefined,
+      frame: frameOf(layer.ring.map(toScene).map(([x, y]) => ({ x, y }))),
+    };
+  });
+  return { pieces, bridges, area, heightAt };
+}
+
+/** A picture's points in the scene, as the Vistazo has them. */
+function skinOf(skin: Skin, toScene: (p: Pt) => Pair) {
+  const v = (p: Pt) => {
+    const [x, y] = toScene(p);
+    return { x, y };
+  };
+  return { base: [v(skin.base[0]), v(skin.base[1])] as [{ x: number; y: number }, { x: number; y: number }], top: [v(skin.top[0]), v(skin.top[1])] as [{ x: number; y: number }, { x: number; y: number }], center: v(skin.center) };
+}
+
+/** The box edge a front faces most (an unfolded standing shape's, slanting). */
+function standFacing([x, y]: Pt): StandEdge {
+  return Math.abs(y) >= Math.abs(x) ? (y >= 0 ? "bottom" : "top") : x >= 0 ? "right" : "left";
+}

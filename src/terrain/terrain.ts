@@ -605,12 +605,18 @@ export type TerrainBridge = { id: string; top: number; bottom: number; rings: [n
  * length is its longer side.
  */
 function bridgeFrame(item: Item): BridgeFrame {
-  const points = localRings(item)
-    .flat()
-    .map((p) => {
-      const [x, y] = toScene(item, p);
-      return { x, y };
-    });
+  return frameOf(
+    localRings(item)
+      .flat()
+      .map((p) => {
+        const [x, y] = toScene(item, p);
+        return { x, y };
+      })
+  );
+}
+
+/** The tightest box round some scene points, at whatever angle (see bridgeFrame). */
+export function frameOf(points: Vector2[]): BridgeFrame {
   const hull = convexHull(points);
   let best: BridgeFrame | null = null;
   let bestArea = Infinity;
