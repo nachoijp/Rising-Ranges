@@ -4,17 +4,18 @@ import { defineConfig } from "vite";
 import glsl from "vite-plugin-glsl";
 import react from "@vitejs/plugin-react";
 
-// The dev server's extension is "Rising Ranges (dev)", version "…-dev", so
-// it can't be mistaken in Owlbear for the released one or the beta (see
-// scripts/beta-manifest.mjs).
+// The dev server's extension is "Rising Ranges (3D)", version "…-3d" (this
+// branch: the new terrain editor and its Vistazo, tried locally), so it can't
+// be mistaken in Owlbear for the released one, the beta (see
+// scripts/beta-manifest.mjs) or the dev branch's "(dev)".
 function devManifest() {
   return {
     name: "dev-manifest",
     configureServer(server) {
       server.middlewares.use("/manifest.json", (_req, res) => {
         const manifest = JSON.parse(readFileSync(resolve(__dirname, "public/manifest.json"), "utf8"));
-        manifest.name = `${manifest.name} (dev)`;
-        manifest.version = `${manifest.version}-dev`;
+        manifest.name = `${manifest.name} (3D)`;
+        manifest.version = `${manifest.version}-3d`;
         res.setHeader("Content-Type", "application/json");
         res.end(JSON.stringify(manifest, null, 2));
       });
