@@ -1759,7 +1759,6 @@ async function start() {
       return;
     }
     $("app").classList.add("editing");
-    $("reSide").hidden = false;
     $("reMap").hidden = false;
     // Every piece with its surface while it's edited: a brush's heights move them where they are.
     reliefs.surfaced = true;
@@ -1767,8 +1766,9 @@ async function start() {
       t,
       images,
       reliefs: reliefs.byImage,
-      side: $("reSide"),
+      root: $("reMap"),
       map: $<HTMLCanvasElement>("reMapCanvas"),
+      unit: (h) => formatDistance(scale, Math.abs(h)),
       onRelief: (image, relief, lite, heights) => {
         reliefs.byImage.set(image, relief);
         view.setLite(lite);
@@ -1804,7 +1804,6 @@ async function start() {
     session?.stop();
     session = null;
     $("app").classList.remove("editing");
-    $("reSide").hidden = true;
     $("reMap").hidden = true;
     reliefs.surfaced = false;
     heightsOnly = null;

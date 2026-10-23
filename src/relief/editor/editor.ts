@@ -60,7 +60,14 @@ export interface EditorHost {
   saveSettings(): void;
 }
 
+/**
+ * What Elegir picks: whole shapes (moved, sized, turned), or their vertices
+ * and height points; "both" as it was before the modes (the tests' own).
+ */
+export type PickMode = "shapes" | "points" | "both";
+
 export type Settings = {
+  pickMode: PickMode;
   radius: number;
   strength: number;
   level: number;
@@ -71,7 +78,7 @@ export type Settings = {
   brushMode: BrushKind;
 };
 
-export const DEFAULT_SETTINGS: Settings = { radius: 1.5, strength: 0.5, level: 1, lastSoft: 0, groundOnly: false, shapeRadius: 1, brushMode: "raise" };
+export const DEFAULT_SETTINGS: Settings = { pickMode: "shapes", radius: 1.5, strength: 0.5, level: 1, lastSoft: 0, groundOnly: false, shapeRadius: 1, brushMode: "raise" };
 
 /** An ellipse's points. */
 const SHAPE_POINTS = 24;
@@ -123,6 +130,7 @@ export class ReliefEditor {
   notice: "nothingShared" | "nothingLeft" | null = null;
 
   private undoStack: string[] = [];
+  private redoStack: string[] = [];
 
   constructor(data: ReliefData, host: EditorHost, settings: Partial<Settings> = {}) {
     this.relief = new Relief(data);
@@ -198,23 +206,39 @@ export class ReliefEditor {
 
   // ---------- Undo ----------
 
+  /** The relief as it is now, a step to undo (and nothing to redo any more: a new change). */
   pushUndo() {
     this.undoStack.push(JSON.stringify(toStored(this.data)));
     if (this.undoStack.length > UNDO_STEPS) {
       this.undoStack.shift();
     }
+    this.redoStack = [];
   }
 
   get canUndo(): boolean {
     return this.undoStack.length > 0;
   }
 
+  get canRedo(): boolean {
+    return this.redoStack.length > 0;
+  }
+
   undo() {
-    const last = this.undoStack.pop();
+    this.step(this.undoStack, this.redoStack);
+  }
+
+  redo() {
+    this.step(this.redoStack, this.undoStack);
+  }
+
+  /** Back (or forward again) a step: the one taken from `from`, the relief as it was kept on `to`. */
+  private step(from: string[], to: string[]) {
+    const last = from.pop();
     const data = last ? fromStored(JSON.parse(last)) : null;
     if (!data) {
       return;
     }
+    to.push(JSON.stringify(toStored(this.data)));
     this.relief = new Relief(data);
     this.sel = null;
     this.drawing = null;
@@ -306,8 +330,8 @@ export class ReliefEditor {
     if (this.tool === "edit" && !this.drawing && this.editDown(p, mods)) {
       return;
     }
-    // On what's picked: its handles (size, turn), or inside it (move). Not while drawing an outline.
-    if (!this.drawing && this.tool !== "polygon" && this.startTransform(p)) {
+    // On what's picked: its handles (size, turn), or inside it (move). Not while drawing an outline, nor picking vertices.
+    if (!this.drawing && this.tool !== "polygon" && !(this.tool === "edit" && this.settings.pickMode === "points") && this.startTransform(p)) {
       return;
     }
     if (this.tool === "polygon") {
@@ -336,10 +360,12 @@ export class ReliefEditor {
       return;
     }
     // Edit: a vertex, a point, the shape under it; or, on nothing, a box to pick vertices with.
+    // Picking shapes only: no vertex nor point, and on nothing, nothing picked.
+    const shapesOnly = this.settings.pickMode === "shapes";
     const reach = this.host.snapReach();
     const used = new Set(this.data.shapes.flatMap(vertsOf));
-    const vi = this.data.verts.findIndex((v, i) => used.has(i) && Math.hypot(v.x - p.x, v.y - p.y) < reach);
-    const pi = this.data.points.findIndex((q) => Math.hypot(q.x - p.x, q.y - p.y) < reach);
+    const vi = shapesOnly ? -1 : this.data.verts.findIndex((v, i) => used.has(i) && Math.hypot(v.x - p.x, v.y - p.y) < reach);
+    const pi = shapesOnly ? -1 : this.data.points.findIndex((q) => Math.hypot(q.x - p.x, q.y - p.y) < reach);
     const sel = this.sel;
     if (vi >= 0 || pi >= 0) {
       this.pushUndo();
@@ -351,7 +377,9 @@ export class ReliefEditor {
         this.sel = picked;
         this.drag = picked;
       }
-    } else if (mods.alt || mods.shift || this.shapeAt(p.x, p.y) < 0) {
+    } else if (shapesOnly && this.shapeAt(p.x, p.y) < 0) {
+      this.sel = null;
+    } else if (!shapesOnly && (mods.alt || mods.shift || this.shapeAt(p.x, p.y) < 0)) {
       this.box = { start: p, end: p, add: !!mods.shift };
     } else {
       this.sel = { kind: "shape", i: this.shapeAt(p.x, p.y) };
@@ -368,6 +396,10 @@ export class ReliefEditor {
       this.pushUndo();
       this.arrowEnd = end;
       return true;
+    }
+    // Vertices and points: not while picking shapes only.
+    if (this.settings.pickMode === "shapes") {
+      return false;
     }
     const reach = this.host.snapReach();
     const data = this.data;
@@ -617,6 +649,29 @@ export class ReliefEditor {
       }
     }
     return null;
+  }
+
+  /**
+   * A shape's soft edge changed while it's being slid: only heights, and only
+   * within `reach` (the wider of the edges, before and now) of the shape.
+   */
+  softened(si: number, reach: number) {
+    const s = this.data.shapes[si];
+    if (!s) {
+      return;
+    }
+    const box = bbox(this.relief.coordsOf(s)[0]);
+    const r = reach + 1;
+    const d = this.dirty;
+    this.dirty = {
+      x0: Math.min(d?.x0 ?? Infinity, box.x0 - r),
+      y0: Math.min(d?.y0 ?? Infinity, box.y0 - r),
+      x1: Math.max(d?.x1 ?? -Infinity, box.x1 + r),
+      y1: Math.max(d?.y1 ?? -Infinity, box.y1 + r),
+    };
+    this.heightsOnly = true;
+    this.changed();
+    this.heightsOnly = false;
   }
 
   /** A dab of the brush at `p` (see brush.ts), as the settings have it. */

@@ -37,6 +37,8 @@ export class MapView {
   oy = 0;
   /** Told when the pointer's let go on the map (after the editor). */
   onUp: () => void = () => {};
+  /** A right click (pressed and let go without moving): its menu, at (sx, sy) on the canvas. */
+  onMenu: (sx: number, sy: number, at: { x: number; y: number }) => void = () => {};
   private ctx: CanvasRenderingContext2D;
   private frame = 0;
   private fitted = false;
@@ -105,7 +107,7 @@ export class MapView {
       return [event.clientX - rect.left, event.clientY - rect.top];
     };
     const mods = (event: PointerEvent, clicks = 1): Mods => ({ shift: event.shiftKey, alt: event.altKey, ctrl: event.ctrlKey || event.metaKey, clicks });
-    let pan: { sx: number; sy: number; ox: number; oy: number } | null = null;
+    let pan: { sx: number; sy: number; ox: number; oy: number; right: boolean; moved: boolean } | null = null;
     let held = false;
     let last = { at: 0, sx: 0, sy: 0 };
     canvas.addEventListener("contextmenu", (event) => event.preventDefault(), { signal });
@@ -115,7 +117,7 @@ export class MapView {
       canvas.focus();
       const [sx, sy] = local(event);
       if (event.button !== 0) {
-        pan = { sx, sy, ox: this.ox, oy: this.oy };
+        pan = { sx, sy, ox: this.ox, oy: this.oy, right: event.button === 2, moved: false };
         return;
       }
       // A double click: our own count (a pointer event's detail isn't one everywhere).
@@ -128,6 +130,7 @@ export class MapView {
     canvas.addEventListener("pointermove", (event) => {
       const [sx, sy] = local(event);
       if (pan) {
+        pan.moved ||= Math.hypot(sx - pan.sx, sy - pan.sy) > 4;
         this.ox = pan.ox + sx - pan.sx;
         this.oy = pan.oy + sy - pan.sy;
         this.redraw();
@@ -136,6 +139,9 @@ export class MapView {
       this.editor.move(this.toWorld(sx, sy), mods(event), held);
     }, { signal });
     const end = () => {
+      if (pan?.right && !pan.moved) {
+        this.onMenu(pan.sx, pan.sy, this.toWorld(pan.sx, pan.sy));
+      }
       pan = null;
       if (held) {
         held = false;
