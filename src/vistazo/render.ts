@@ -50,6 +50,12 @@ export class VistazoView {
   private readonly renderer: THREE.WebGLRenderer | null;
   private readonly world = new THREE.Scene();
   private readonly terrainGroup = new THREE.Group();
+  /** A relief's shapes being dragged: their pieces, walls and pictures, moved whole (see moveShapes). */
+  private readonly movingGroup = new THREE.Group();
+  /** Which shapes are in it (their indexes, as a key). */
+  private movingKey = "";
+  /** What's under the shapes being dragged, where they were (see fillUnder). */
+  private readonly underGroup = new THREE.Group();
   private readonly edgeGroup = new THREE.Group();
   private readonly tokenGroup = new THREE.Group();
   private readonly ringGroup = new THREE.Group();
@@ -147,7 +153,8 @@ export class VistazoView {
     }
     this.renderer = renderer;
     this.glCamera.matrixAutoUpdate = false;
-    this.world.add(this.terrainGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup, this.fogGroup, this.weatherGroup, this.cloudShadowGroup, this.underBridgeGroup, this.waterGroup, this.templateGroup);
+    this.movingGroup.matrixAutoUpdate = false;
+    this.world.add(this.terrainGroup, this.underGroup, this.movingGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup, this.fogGroup, this.weatherGroup, this.cloudShadowGroup, this.underBridgeGroup, this.waterGroup, this.templateGroup);
     this.overlay = document.createElement("div");
     this.overlay.className = "ov";
     this.lines = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -187,9 +194,25 @@ export class VistazoView {
     const [x0, y0, x1, y1] = [region.x0 * u, region.y0 * u, region.x1 * u, region.y1 * u];
     for (const mesh of pieces) {
       const piece = mesh.userData.piece as Piece;
-      const geometry = mesh.geometry;
+      let geometry = mesh.geometry;
       if (!geometry.boundingBox) {
         geometry.computeBoundingBox();
+      }
+      const near = geometry.boundingBox!;
+      // Drawn by its outline alone, and now its heights vary inside it (painted on, a soft edge over it):
+      // cut small, there and then.
+      if (!mesh.userData.fine && !(near.max.x < x0 || near.min.x > x1 || near.max.y < y0 || near.min.y > y1) && piece.fine?.()) {
+        const fine = this.fineGeometry(piece);
+        const position = fine.getAttribute("position") as THREE.BufferAttribute;
+        fine.setAttribute("uv", new THREE.BufferAttribute(this.uvs(position.array, position.count), 2));
+        for (let i = 0; i < position.count; i++) {
+          position.setZ(i, pieceHeight(piece, position.getX(i) / u, position.getY(i) / u) * k);
+        }
+        fine.computeBoundingBox();
+        mesh.geometry.dispose();
+        mesh.geometry = fine;
+        mesh.userData.fine = true;
+        geometry = fine;
       }
       const box = geometry.boundingBox!;
       if (box.max.x < x0 || box.min.x > x1 || box.max.y < y0 || box.min.y > y1) {
@@ -227,6 +250,129 @@ export class VistazoView {
     this.buildWallShadows();
     this.requestApply();
     return true;
+  }
+
+  /**
+   * A relief's shapes dragged whole (moved, turned, sized): their pieces,
+   * walls and pictures taken into a group of their own the first time, and
+   * that moved by `map` (scene px, [a, b, c, d, e, f]: (x, y) → (a·x + c·y + e,
+   * b·x + d·y + f)) from where they were drawn; nothing worked out again.
+   * "started" the first time (what's under them is to be drawn where they
+   * were: see fillUnder), "moved" after, false if
+   * there's nothing of them to move. Their picture is the map's where they
+   * are now, as they'll have it once let go. The next whole build ends it.
+   */
+  moveShapes(shapes: number[], map: [number, number, number, number, number, number]): "started" | "moved" | false {
+    let started = false;
+    const scene = this.scene;
+    if (!scene) {
+      return false;
+    }
+    const key = [...shapes].sort((a, b) => a - b).join(",");
+    if (key !== this.movingKey) {
+      if (this.movingKey) {
+        // Others than before: drawn again whole first (their walls back where they were).
+        return false;
+      }
+      const picked = new Set(shapes);
+      const theirs = this.terrainGroup.children.filter((child) => child.userData.si !== undefined && picked.has(child.userData.si));
+      if (theirs.length === 0) {
+        return false;
+      }
+      this.movingKey = key;
+      started = true;
+      for (const child of theirs) {
+        this.terrainGroup.remove(child);
+        this.movingGroup.add(child);
+      }
+      // Their walls with them; the others built again without them, and the shadows at their feet.
+      const pieceOf = (wall: Wall) => scene.pieces[Number(wall.seg.split(":")[0])];
+      const mine = this.walls.filter((wall) => picked.has(pieceOf(wall)?.si ?? -1));
+      const others = this.walls.filter((wall) => !picked.has(pieceOf(wall)?.si ?? -1));
+      for (const group of [this.terrainGroup, this.edgeGroup]) {
+        for (const child of group.children.filter((c) => c.userData.wall)) {
+          group.remove(child);
+          const mesh = child as THREE.Mesh;
+          mesh.geometry.dispose();
+          for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+            this.pieceMaterials = this.pieceMaterials.filter((m) => m !== material);
+            material.dispose();
+          }
+        }
+      }
+      this.buildWalls(others);
+      this.buildWallShadows(others);
+      this.buildWalls(mine, this.movingGroup);
+    }
+    const u = this.u;
+    const [a, b, c, d, e, f] = map;
+    // In view units (the scene's px times u): the same turn and scale, the shift times u.
+    this.movingGroup.matrix.set(a, c, 0, e * u, b, d, 0, f * u, 0, 0, 1, 0, 0, 0, 0, 1);
+    this.movingGroup.matrixWorldNeedsUpdate = true;
+    // Their tops (and standing pictures) take the map's picture where they are now, not where they started.
+    if (this.texture) {
+      const moved = (xs: ArrayLike<number>) => {
+        const out = new Float32Array(xs.length);
+        for (let i = 0; i < xs.length; i += 3) {
+          out[i] = a * xs[i] + c * xs[i + 1] + e * u;
+          out[i + 1] = b * xs[i] + d * xs[i + 1] + f * u;
+        }
+        return out;
+      };
+      for (const child of this.movingGroup.children) {
+        const mesh = child as THREE.Mesh;
+        const cardMap = child.userData.cardMap as Float32Array | undefined;
+        if (!child.userData.piece && !cardMap) {
+          continue;
+        }
+        const position = mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
+        const from = cardMap ?? (position.array as Float32Array);
+        mesh.geometry.setAttribute("uv", new THREE.BufferAttribute(this.uvs(moved(from), position.count), 2));
+      }
+    }
+    this.requestApply();
+    return started ? "started" : "moved";
+  }
+
+  /**
+   * What's under shapes being dragged, where they were: `pieces` (the relief
+   * there without them, see reliefTerrain's `within`), drawn with their walls
+   * in a group of their own till the next whole build.
+   */
+  fillUnder(pieces: Piece[]) {
+    const scene = this.scene;
+    if (!scene || pieces.length === 0) {
+      return;
+    }
+    const from = this.terrainGroup.children.length;
+    for (const piece of pieces) {
+      this.buildPiece(piece);
+    }
+    for (const child of this.terrainGroup.children.slice(from)) {
+      this.terrainGroup.remove(child);
+      this.underGroup.add(child);
+    }
+    // Their walls: beside them, the heights there as they are (the hole's edge meets the rest, no wall);
+    // inside, theirs.
+    const pieceAt = (x: number, y: number) => {
+      for (let i = pieces.length - 1; i >= 0; i--) {
+        if (inShape(x, y, pieces[i].shape)) {
+          return pieces[i];
+        }
+      }
+      return undefined;
+    };
+    const under: VistazoScene = {
+      ...scene,
+      pieces,
+      pieceAt: (x, y) => pieceAt(x, y) ?? scene.pieceAt(x, y),
+      heightAt: (x, y) => {
+        const piece = pieceAt(x, y);
+        return piece ? pieceHeight(piece, x, y) : scene.heightAt(x, y);
+      },
+    };
+    this.buildWalls(computeWalls(under, this.base), this.underGroup);
+    this.requestApply();
   }
 
   setLite(lite: boolean) {
@@ -1014,6 +1160,22 @@ export class VistazoView {
   }
 
   /** A piece's outline as a flat shape, in view units. */
+  /**
+   * A surface that isn't flat: its outline's triangles cut small, to half a
+   * cell (the painted ground's own step), however big it is.
+   */
+  private fineGeometry(piece: Piece): THREE.BufferGeometry {
+    const target = VIEW_CELL / 2;
+    const flat = this.shapeGeometry(piece.shape);
+    flat.computeBoundingBox();
+    const box = flat.boundingBox!;
+    const span = Math.hypot(box.max.x - box.min.x, box.max.y - box.min.y);
+    // Each pass cuts every triangle in two across its longest side (two passes halve them all): as many
+    // as it takes to get them down to the target.
+    const passes = Math.max(1, Math.min(28, 2 * Math.ceil(Math.log2(Math.max(1, span / target))) + 2));
+    return new TessellateModifier(target, passes).modify(flat.toNonIndexed());
+  }
+
   private shapeGeometry(shape: MultiPolygon): THREE.ShapeGeometry {
     const u = this.u;
     const shapes = shape.map((polygon) => {
@@ -1066,7 +1228,8 @@ export class VistazoView {
    * wall style has them (their zone's, or the Vistazo's), and level lines
    * at every whole cell of height.
    */
-  private buildWalls() {
+  /** The walls (all of them, or those given), each style one mesh, in the terrain (or `into`). */
+  private buildWalls(list: Wall[] = this.walls, into: THREE.Group | null = null) {
     const u = this.u;
     const k = this.k;
     // The fold's strip: how far into the map it reaches, in view units.
@@ -1074,9 +1237,9 @@ export class VistazoView {
     // One mesh for each style, inside and at the map's edge (which can be hidden).
     // A wall with a picture from the map's rectangle goes in its own mesh ("skin"), textured with the map.
     const styleOf = (wall: Wall): WallStyle | "skin" => (wall.skin && this.texture ? "skin" : (wall.style ?? this.options.wallStyle));
-    const styles = new Set(this.walls.map(styleOf));
+    const styles = new Set(list.map(styleOf));
     for (const [edge, style] of [false, true].flatMap((e) => [...styles].map((st) => [e, st] as const))) {
-      const walls = this.walls.filter((wall) => wall.edge === edge && styleOf(wall) === style);
+      const walls = list.filter((wall) => wall.edge === edge && styleOf(wall) === style);
       if (walls.length === 0) {
         continue;
       }
@@ -1190,7 +1353,7 @@ export class VistazoView {
       geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
       geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(colors), 3));
       geometry.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uvs), 2));
-      const group = edge ? this.edgeGroup : this.terrainGroup;
+      const group = into ?? (edge ? this.edgeGroup : this.terrainGroup);
       const material = new THREE.MeshBasicMaterial({
         vertexColors: true,
         side: THREE.DoubleSide,
@@ -1214,13 +1377,13 @@ export class VistazoView {
     }
   }
 
-  /** A soft shadow on the ground at the foot of each wall, fading out from it. */
-  private buildWallShadows() {
+  /** A soft shadow on the ground at the foot of each wall (all of them, or those given), fading out from it. */
+  private buildWallShadows(list: Wall[] = this.walls) {
     const scene = this.scene!;
     const u = this.u;
     const k = this.k;
     if (this.options.relief > 0) {
-      const inside = this.walls.filter((wall) => !wall.edge);
+      const inside = list.filter((wall) => !wall.edge);
       const positions = new Float32Array(inside.length * 18);
       const colors = new Float32Array(inside.length * 24);
       const reach = VIEW_CELL * 0.45;
@@ -1284,6 +1447,10 @@ export class VistazoView {
       return;
     }
     this.clear(this.terrainGroup);
+    this.clear(this.movingGroup);
+    this.clear(this.underGroup);
+    this.movingKey = "";
+    this.movingGroup.matrix.identity();
     this.clear(this.edgeGroup);
     this.clear(this.fillGroup);
     this.reachTexture?.dispose();
@@ -1292,11 +1459,21 @@ export class VistazoView {
     this.pieceMaterials = [];
     this.k = VIEW_CELL * this.options.heightScale;
 
+    // Each one's meshes marked with the relief shape it's of (for moving it whole).
+    const mark = (from: number, si: number | undefined) => {
+      for (const child of this.terrainGroup.children.slice(from)) {
+        child.userData.si = si;
+      }
+    };
     for (const piece of scene.pieces) {
+      const from = this.terrainGroup.children.length;
       this.buildPiece(piece);
+      mark(from, piece.si);
     }
     for (const bridge of scene.bridges) {
+      const from = this.terrainGroup.children.length;
       this.buildBridge(bridge);
+      mark(from, bridge.si);
     }
     this.computeSlabs();
     this.buildWater();
@@ -1305,7 +1482,10 @@ export class VistazoView {
 
     this.buildWalls();
 
-    this.buildWallShadows();
+    // Not while something's being dragged (drawn lightly): the shadows at the walls' feet come back as it's let go.
+    if (!this.lite) {
+      this.buildWallShadows();
+    }
     this.fogTexture?.dispose();
     this.fogTexture = null;
     this.drawFog();
@@ -1315,7 +1495,10 @@ export class VistazoView {
     // The terrain's built again: so are the cloud shadows on it.
     this.weatherKey = "";
     this.updateWeather();
-    this.measure();
+    // Its size (it reads the page's layout, which costs): not while something's being dragged, it hasn't changed.
+    if (!this.lite) {
+      this.measure();
+    }
   }
 
   /**
@@ -1506,8 +1689,8 @@ export class VistazoView {
     const u = this.u;
     const k = this.k;
     const z = piece.height * k;
-    // A surface that isn't flat: its outline's triangles cut small (about a third of a cell) to follow it.
-    const geometry = piece.surface ? new TessellateModifier(VIEW_CELL / 3, 8).modify(this.shapeGeometry(piece.shape).toNonIndexed()) : this.shapeGeometry(piece.shape);
+    const fine = !!piece.surface && !(piece.coarse && !piece.fine?.());
+    const geometry = fine ? this.fineGeometry(piece) : this.shapeGeometry(piece.shape);
     const position = geometry.getAttribute("position") as THREE.BufferAttribute;
     if (!piece.stand) {
       geometry.setAttribute("uv", new THREE.BufferAttribute(this.uvs(position.array, position.count), 2));
@@ -1523,6 +1706,7 @@ export class VistazoView {
       }
       // Its corners can be moved up or down where they are (see reheight).
       mesh.userData.piece = piece;
+      mesh.userData.fine = fine;
       this.terrainGroup.add(mesh);
       this.fillCopy(geometry, piece.surface ? 0 : z);
       this.fogCopy(geometry, piece.surface ? 0 : z);
@@ -1578,7 +1762,10 @@ export class VistazoView {
       const material = this.pieceMaterial(piece.height, true);
       material.polygonOffsetFactor = -1;
       material.polygonOffsetUnits = -1;
-      this.terrainGroup.add(new THREE.Mesh(card, material));
+      const cardMesh = new THREE.Mesh(card, material);
+      // Where on the map each corner's picture is (view units), for it to follow a drag (see moveShapes).
+      cardMesh.userData.cardMap = Float32Array.from(piece.card.flatMap(([, , , mx, my]) => [mx * u, my * u, 0]));
+      this.terrainGroup.add(cardMesh);
       this.fogCopy(card);
     }
   }

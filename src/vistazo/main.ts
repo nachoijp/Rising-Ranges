@@ -10,9 +10,14 @@ import { onGrid } from "../engine/hex";
 import { computeDistanceRows } from "../distances/rows";
 import { getStoredTheme } from "../theme/themes";
 import { getColorString } from "../util/color";
-import { buildScene, propOf, type Reliefs, type Token, type VistazoScene } from "./scene";
+import { buildScene, propOf, type Piece, type Reliefs, type Token, type VistazoScene } from "./scene";
 import type { Region } from "./view/walls";
-import { anchorOf, cellToScene } from "../relief/anchor";
+import { anchorOf, cellToScene, type Anchor } from "../relief/anchor";
+import { reliefTerrain } from "../relief/vistazo";
+import clip from "../terrain/clip";
+import type { Moving } from "../relief/editor/session";
+import { compose, inverse } from "../relief/relief";
+import type { Affine } from "../relief/types";
 import { Relief } from "../relief/relief";
 import { watchReliefs } from "../relief/store";
 import { startEditing, type EditSession } from "../relief/editor/session";
@@ -102,6 +107,39 @@ function saveOptions(options: Options) {
   } catch {
     // Only a convenience.
   }
+}
+
+/**
+ * What's under shapes being dragged, where they were (their outlines taken
+ * back by the drag's map): the relief there without them, as pieces.
+ */
+function underShapes(relief: Relief, anchor: Anchor, dpi: number, moving: Moving): Piece[] {
+  const back = inverse(moving.map);
+  const at = ([x, y]: [number, number]): [number, number] => [back[0] * x + back[2] * y + back[4], back[1] * x + back[3] * y + back[5]];
+  const closedRing = (ring: [number, number][]) => [...ring.map(at), at(ring[0])];
+  const where = relief.layers.filter((layer) => moving.shapes.includes(layer.si)).map((layer) => [closedRing(layer.ring), ...layer.holes.map(closedRing)]);
+  if (where.length === 0) {
+    return [];
+  }
+  try {
+    const within = (where.length === 1 ? where : clip.union(where[0], ...where.slice(1))) as [number, number][][][];
+    return reliefTerrain(relief, anchor, dpi, null, true, new Set(moving.shapes), within).pieces;
+  } catch (error) {
+    console.error("Rising Ranges: Vistazo couldn't work out what's under the shapes dragged", error);
+    return [];
+  }
+}
+
+/**
+ * A map of a relief's cells (see ReliefEditor.xfMap) as one of the scene's px:
+ * through the image the relief follows (cells to the scene, the map, and back).
+ */
+function sceneMap(anchor: Anchor, dpi: number, map: Affine): Affine {
+  const o = cellToScene(anchor, dpi, 0, 0);
+  const ex = cellToScene(anchor, dpi, 1, 0);
+  const ey = cellToScene(anchor, dpi, 0, 1);
+  const toScene: Affine = [ex.x - o.x, ex.y - o.y, ey.x - o.x, ey.y - o.y, o.x, o.y];
+  return compose(toScene, compose(map, inverse(toScene)));
 }
 
 function applyTheme(theme: Theme) {
@@ -1611,6 +1649,8 @@ async function start() {
   let heightsOnly: Region | null = null;
   /** The reliefs' key the scene was last built with: a change of shapes since, and it's built again whatever. */
   let builtWith = "";
+  /** Shapes being dragged whole (see VistazoView.moveShapes): till they're let go. */
+  let dragging = false;
   const refresh = () => {
     try {
       // A brush's dab: the heights moved where they are, nothing built again (or all of it, if that can't be).
@@ -1769,10 +1809,24 @@ async function start() {
       root: $("reMap"),
       map: $<HTMLCanvasElement>("reMapCanvas"),
       unit: (h) => formatDistance(scale, Math.abs(h)),
-      onRelief: (image, relief, lite, heights) => {
+      onRelief: (image, relief, lite, heights, moving) => {
         reliefs.byImage.set(image, relief);
         view.setLite(lite);
         const map = items.find((item): item is Image => item.id === image && item.type === "IMAGE");
+        // Shapes dragged whole: their meshes moved as they are; the first time, what's under them (where
+        // they were) drawn, only there. Let go, all of it is built again.
+        if (lite && moving && map && scene && (dragging || builtWith === `${reliefs.key}${reliefs.surfaced}`)) {
+          const anchor = anchorOf(map);
+          const moved = view.moveShapes(moving.shapes, sceneMap(anchor, dpi, moving.map));
+          if (moved === "started") {
+            dragging = true;
+            view.fillUnder(underShapes(relief, anchor, dpi, moving));
+          }
+          if (moved) {
+            return;
+          }
+        }
+        dragging = false;
         if (lite && heights && map) {
           // The same pieces (their surfaces read the relief as it is): only their heights moved, there.
           const anchor = anchorOf(map);

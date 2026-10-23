@@ -4,7 +4,7 @@ import { emptyRelief, fromStored, toStored } from "../codec";
 import type { Box } from "../geom";
 import { Relief } from "../relief";
 import { saveRelief, watchReliefs } from "../store";
-import type { ReliefData } from "../types";
+import type { Affine, ReliefData } from "../types";
 import { withZones } from "../zones";
 import { DEFAULT_SETTINGS, ReliefEditor, type Settings, type ToolId } from "./editor";
 import { icon } from "./icons";
@@ -55,6 +55,9 @@ export type EditSession = {
   stop(): void;
 };
 
+/** Shapes being dragged whole (moved, turned, sized): which, and the map of the relief's cells from where they started. */
+export type Moving = { shapes: number[]; map: Affine };
+
 export type SessionOptions = {
   t: T;
   /** The scene's map images, the largest first. */
@@ -70,7 +73,7 @@ export type SessionOptions = {
    * The relief of an image changed: drawn again (`lite`: something's being
    * dragged; `heights`: only its heights changed, within that box of cells).
    */
-  onRelief: (imageId: string, relief: Relief, lite: boolean, heights?: Box | null) => void;
+  onRelief: (imageId: string, relief: Relief, lite: boolean, heights?: Box | null, moving?: Moving | null) => void;
   /** The scene's items and its dpi now (for its old terrain zones). */
   scene: () => { items: Item[]; dpi: number };
   /** "Done" (or the X): editing over. */
@@ -262,7 +265,10 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
         map.redraw();
         list();
         save();
-        o.onRelief(image.id, editor.relief, busy() || editor.heightsOnly, editor.heightsOnly ? editor.takeDirty() : null);
+        const sel = editor.sel;
+        // A whole shape (or those picked) dragged: moved as it is, nothing worked out again till it's let go.
+        const moving = editor.xf && editor.xfMap && sel?.kind === "shape" ? { shapes: [sel.i, ...(sel.more ?? [])], map: editor.xfMap } : null;
+        o.onRelief(image.id, editor.relief, busy() || editor.heightsOnly, editor.heightsOnly ? editor.takeDirty() : null, moving);
       },
       showProps: () => {
         panel();

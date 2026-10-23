@@ -3,7 +3,7 @@ import clip from "../terrain/clip";
 import { frameOf } from "../terrain/terrain";
 import { inShape as inScene, type Bridge, type Piece, type StandEdge } from "../vistazo/scene";
 import { cellToScene, sceneToCell, type Anchor } from "./anchor";
-import { centroid, closed, inBox, open } from "./geom";
+import { bbox, centroid, closed, inBox, open } from "./geom";
 import { ReliefMesh } from "./mesh";
 import type { Layer, Piece as ReliefPiece, Relief } from "./relief";
 import type { Pt, Skin } from "./types";
@@ -29,9 +29,19 @@ export type ReliefTerrain = {
  * px); under the fog the terrain's flat (its heights would give it away).
  * `surfaced`: every piece with its surface, flat ones too (while it's being
  * edited: a brush's heights then move its corners where they are, see
- * VistazoView.reheight).
+ * VistazoView.reheight). `skip`: shapes left out; `within`: only what's
+ * inside that (cells) — with both, what's under shapes being dragged (see
+ * VistazoView.fillUnder), quick: the shapes away from it aren't cut at all.
  */
-export function reliefTerrain(relief: Relief, anchor: Anchor, dpi: number, clear: MultiPolygon | null = null, surfaced = false): ReliefTerrain {
+export function reliefTerrain(
+  relief: Relief,
+  anchor: Anchor,
+  dpi: number,
+  clear: MultiPolygon | null = null,
+  surfaced = false,
+  skip: Set<number> | null = null,
+  within: Pt[][][] | null = null
+): ReliefTerrain {
   const { w, h } = relief.data;
   const toScene = ([x, y]: Pt): Pair => {
     const p = cellToScene(anchor, dpi, x, y);
@@ -40,6 +50,10 @@ export function reliefTerrain(relief: Relief, anchor: Anchor, dpi: number, clear
   const sceneOf = (multi: Pt[][][]): MultiPolygon => multi.map((polygon) => polygon.map((ring) => closed(open(ring).map(toScene))));
   const rect: Pt[] = [[0, 0], [w, 0], [w, h], [0, h]];
   const area = sceneOf([[rect]]);
+  /** What it's cut to: the map, or the part asked for. */
+  const bounds: Pt[][][] = within ?? [[closed(rect)]];
+  const box = within ? bbox(within.flatMap((polygon) => polygon[0])) : null;
+  const near = (b: { x0: number; y0: number; x1: number; y1: number }) => !box || (b.x0 <= box.x1 && b.x1 >= box.x0 && b.y0 <= box.y1 && b.y1 >= box.y0);
   const visible = (x: number, y: number) => !clear || inScene(x, y, clear);
   const heightAt = (x: number, y: number): number | undefined => {
     const [cx, cy] = sceneToCell(anchor, dpi, x, y);
@@ -62,6 +76,9 @@ export function reliefTerrain(relief: Relief, anchor: Anchor, dpi: number, clear
   let above: Pt[][][] = [];
   for (let li = relief.layers.length - 1; li >= 0; li--) {
     const layer = relief.layers[li];
+    if (skip?.has(layer.si) || !near(layer.outer)) {
+      continue;
+    }
     const shape = relief.data.shapes[layer.si];
     // Its heights the same everywhere: flat, nothing painted on it, no soft edge over it from above.
     const flat =
@@ -73,7 +90,7 @@ export function reliefTerrain(relief: Relief, anchor: Anchor, dpi: number, clear
     for (const piece of layer.pieces) {
       let parts: Pt[][][] = [[closed(piece.ring), ...piece.holes.map(closed)]];
       try {
-        parts = clip.intersection(parts, [closed(rect)]) as Pt[][][];
+        parts = clip.intersection(parts, bounds) as Pt[][][];
         if (above.length > 0) {
           parts = clip.difference(parts, above) as Pt[][][];
         }
@@ -87,14 +104,29 @@ export function reliefTerrain(relief: Relief, anchor: Anchor, dpi: number, clear
       const sceneShape = sceneOf(parts);
       const [cx, cy] = centroid(piece.ring);
       const at = piece.h ?? relief.surface(layer, cx, cy);
+      const flatNow = flat && piece.h !== undefined;
       const drawn: Piece = {
-        height: flat && piece.h !== undefined ? piece.h : at,
+        height: flatNow ? piece.h! : at,
         shape: sceneShape,
-        surface: flat && piece.h !== undefined && !surfaced ? undefined : surfaceOf(layer, piece),
+        surface: flatNow && !surfaced ? undefined : surfaceOf(layer, piece),
         walls: shape.wall,
         skin: shape.skin ? skinOf(shape.skin, toScene) : undefined,
         water: shape.water,
+        si: layer.si,
       };
+      if (flatNow && surfaced) {
+        // Flat while it's edited: its outline is enough, until something makes its heights vary inside it.
+        const si = layer.si;
+        drawn.coarse = true;
+        drawn.fine = () => {
+          const own = relief.data.shapes[si];
+          const box = relief.layers.find((l) => l.si === si)?.box;
+          return (
+            !!(own?.detail && own.detail.v.size > 0) ||
+            (!!box && relief.layers.some((o) => o.si > si && o.soft > 0 && o.outer.x0 <= box.x1 && o.outer.x1 >= box.x0 && o.outer.y0 <= box.y1 && o.outer.y1 >= box.y0))
+          );
+        };
+      }
       if (shape.water) {
         // The water's floor: its lowest point (the Vistazo fills from there up to the level).
         drawn.height = Math.min(at, ...piece.ring.map(([x, y]) => (inBox(layer.box, x, y) ? relief.surface(layer, x, y) : at)));
@@ -114,7 +146,7 @@ export function reliefTerrain(relief: Relief, anchor: Anchor, dpi: number, clear
   }
   pieces.reverse();
   // The ground: what no shape covers, at the painted ground's heights.
-  let ground: Pt[][][] = [[closed(rect)]];
+  let ground: Pt[][][] = bounds;
   try {
     if (above.length > 0) {
       ground = clip.difference(ground, above) as Pt[][][];
@@ -149,7 +181,7 @@ export function reliefTerrain(relief: Relief, anchor: Anchor, dpi: number, clear
     pieces.unshift({ height: 0, shape: groundScene, surface: plainGround && !clear && !surfaced ? undefined : surfaceOf(null) });
   }
   // Slabs: bridges over the terrain (a slab's top as its middle has it).
-  const bridges: Bridge[] = relief.slabLayers.map((layer) => {
+  const bridges: Bridge[] = (within ? [] : relief.slabLayers.filter((layer) => !skip?.has(layer.si))).map((layer) => {
     const shape = relief.data.shapes[layer.si];
     const [cx, cy] = centroid(layer.ring);
     const top = relief.surface(layer, cx, cy);
@@ -162,6 +194,7 @@ export function reliefTerrain(relief: Relief, anchor: Anchor, dpi: number, clear
       walls: shape.wall === "stretch" || shape.wall === "fold" ? undefined : shape.wall,
       skin: shape.skin ? skinOf(shape.skin, toScene) : undefined,
       frame: frameOf(layer.ring.map(toScene).map(([x, y]) => ({ x, y }))),
+      si: layer.si,
     };
   });
   return { pieces, bridges, area, heightAt };

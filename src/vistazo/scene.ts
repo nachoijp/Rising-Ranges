@@ -45,6 +45,15 @@ export type Piece = {
   /** Its surface, where it isn't flat: its height at a scene point. */
   surface?: (point: { x: number; y: number }) => number;
   /**
+   * With a surface, but flat now (being edited: every piece has one, see
+   * Reliefs.surfaced): drawn by its outline alone, not cut small, until
+   * `fine` says its heights vary inside it (painted on, a soft edge over it).
+   */
+  coarse?: boolean;
+  fine?: () => boolean;
+  /** The relief's shape it's of (its index), for moving it whole while it's dragged (see VistazoView.moveShapes). */
+  si?: number;
+  /**
    * A standing shape's picture, made by the relief: [x, y, height, mapX,
    * mapY] triangles (scene px, grid units, where on the map each corner's
    * picture is), in front of its walls (none taken away).
@@ -158,7 +167,7 @@ type Terrain = {
 };
 
 /** A bridge or balcony drawn: its outline (scene px), top and underside (grid units), its wall style. */
-export type Bridge = { id: string; shape: MultiPolygon; top: number; bottom: number; walls?: TerrainWallStyle; skin?: TerrainSkin; frame: BridgeFrame };
+export type Bridge = { id: string; shape: MultiPolygon; top: number; bottom: number; walls?: TerrainWallStyle; skin?: TerrainSkin; frame: BridgeFrame; si?: number };
 
 /**
  * The player view's sight: what of the map the fog leaves clear (worked out
@@ -349,7 +358,16 @@ export type Reliefs = {
  * each one's pieces and bridges over its image, and the rest of the map
  * plain ground at 0. With no map image, ground in a box round the tokens.
  */
-function buildTerrain(terrainKey: string, items: Item[], tokenItems: Image[], dpi: number, terrainOff: boolean, sight: Sight | null, reliefs: Map<string, Relief>, surfaced: boolean): Terrain {
+function buildTerrain(
+  terrainKey: string,
+  items: Item[],
+  tokenItems: Image[],
+  dpi: number,
+  terrainOff: boolean,
+  sight: Sight | null,
+  reliefs: Map<string, Relief>,
+  surfaced: boolean
+): Terrain {
   const mapItems = items.filter((item): item is Image => isImage(item) && item.layer === "MAP" && item.visible).sort((a, b) => a.zIndex - b.zIndex);
   const maps = mapItems.map((item) => mapImage(item, dpi));
   // Where the map is. With no map image, a box around the tokens, a few cells wide.

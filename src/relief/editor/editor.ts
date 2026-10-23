@@ -110,6 +110,8 @@ export class ReliefEditor {
   box: { start: { x: number; y: number }; end: { x: number; y: number }; add: boolean } | null = null;
   drag: { kind: "vertex" | "point"; i: number } | { group: number[]; from: { x: number; y: number }; start: Pt[] } | null = null;
   xf: Transform | null = null;
+  /** The drag in hand as a map of the relief's cells (from where it started), while it lasts. */
+  xfMap: Affine | null = null;
   knife: { a: Pt; b: Pt; only: number | null } | null = null;
   stroke: { pts: Pt[]; erase: boolean } | null = null;
   /** Taking a wall picture for this shape: the next drag (a rectangle) or click (another shape). */
@@ -580,6 +582,7 @@ export class ReliefEditor {
     }
     if (this.xf) {
       this.xf = null;
+      this.xfMap = null;
       this.host.showProps();
     }
     if (this.shape) {
@@ -945,6 +948,7 @@ export class ReliefEditor {
     if (xf.kind === "move") {
       const [dx, dy] = [p.x - xf.from.x, p.y - xf.from.y];
       f = (x, y) => [x + dx, y + dy];
+      this.xfMap = [1, 0, 0, 1, dx, dy];
     } else if (xf.kind === "rotate") {
       const [cx, cy] = xf.center;
       let angle = Math.atan2(p.y - cy, p.x - cx) - Math.atan2(xf.from.y - cy, xf.from.x - cx);
@@ -954,6 +958,7 @@ export class ReliefEditor {
       }
       const [cos, sin] = [Math.cos(angle), Math.sin(angle)];
       f = (x, y) => [cx + (x - cx) * cos - (y - cy) * sin, cy + (x - cx) * sin + (y - cy) * cos];
+      this.xfMap = [cos, sin, -sin, cos, cx - cx * cos + cy * sin, cy - cx * sin - cy * cos];
     } else {
       const { h } = xf;
       const handle = xf.handle!;
@@ -968,6 +973,7 @@ export class ReliefEditor {
         sx = sy = Math.max(Math.abs(sx), Math.abs(sy)) * Math.sign(sx || 1);
       }
       f = (x, y) => [ax + (x - ax) * sx, ay + (y - ay) * sy];
+      this.xfMap = [sx, 0, 0, sy, ax - ax * sx, ay - ay * sy];
     }
     xf.idx.forEach((i, k) => {
       [this.data.verts[i].x, this.data.verts[i].y] = f(...xf.start[k]);
