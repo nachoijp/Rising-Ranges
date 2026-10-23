@@ -7,7 +7,7 @@ import { getGridType } from "../util/gridAxonometry";
 import { createMeasureTool } from "./createMeasureTool";
 import { createThemeAction } from "./createThemeAction";
 import { createSettingsAction } from "./createSettingsAction";
-import { createTerrainMenu, createTokenFootprintMenu, createTokenHeightMenu, removeTokenMenu, type BaseShown } from "./createTokenHeightMenu";
+import { createTokenFootprintMenu, createTokenHeightMenu, removeTokenMenu, type BaseShown } from "./createTokenHeightMenu";
 import { createTerrainVisibilityAction } from "./createTerrainVisibilityAction";
 import { createDistancesAction } from "./createDistancesAction";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
@@ -54,6 +54,11 @@ export function registerToolbar(metadata: Record<string, unknown>) {
   }
   const firstTime = lastSignature === null;
   lastSignature = signature;
+  if (firstTime) {
+    // The old shapes' terrain menu (gone: the terrain is made in the Vistazo now), as Owlbear may still
+    // have it from an earlier version of this page.
+    OBR.contextMenu.remove(getPluginId("menu/terrain")).catch(() => {});
+  }
 
   createMeasureTool(language, settings);
   createThemeAction(language);
@@ -82,12 +87,11 @@ export function registerToolbar(metadata: Record<string, unknown>) {
       removeTokenMenu(getPluginId("menu/tokenHeight"));
     }
   }
-  // Terrain is part of heights: off with them, or turned off, or on an axonometric grid.
+  // Terrain is part of heights: off with them, or turned off, or on an axonometric grid. (Its shapes
+  // are made in the Vistazo now: see relief/; the old shapes' own terrain menu is gone.)
   if (terrain) {
-    createTerrainMenu(language, vistazo !== "off");
     createTerrainVisibilityAction(language, terrainMode);
   } else if (!firstTime) {
-    OBR.contextMenu.remove(getPluginId("menu/terrain"));
     OBR.tool.removeAction(getPluginId("action/terrainVisibility"));
   }
 }

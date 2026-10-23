@@ -11,6 +11,8 @@ import { computeDistanceRows } from "../distances/rows";
 import { getStoredTheme } from "../theme/themes";
 import { getColorString } from "../util/color";
 import { buildScene, propOf, type Reliefs, type Token, type VistazoScene } from "./scene";
+import type { Region } from "./view/walls";
+import { anchorOf, cellToScene } from "../relief/anchor";
 import { Relief } from "../relief/relief";
 import { watchReliefs } from "../relief/store";
 import { startEditing, type EditSession } from "../relief/editor/session";
@@ -1605,8 +1607,21 @@ async function start() {
   };
   watchLocal(options.playerView);
 
+  /** Only the relief's heights changed since it was drawn (a brush), within this box (scene px): moved where they are (see VistazoView.reheight). */
+  let heightsOnly: Region | null = null;
+  /** The reliefs' key the scene was last built with: a change of shapes since, and it's built again whatever. */
+  let builtWith = "";
   const refresh = () => {
     try {
+      // A brush's dab: the heights moved where they are, nothing built again (or all of it, if that can't be).
+      if (heightsOnly && scene && builtWith === `${reliefs.key}${reliefs.surfaced}`) {
+        const region = heightsOnly;
+        heightsOnly = null;
+        if (view.reheight(scene, region)) {
+          return;
+        }
+        reliefs.key = String(++reliefVersion);
+      }
       // The player view's fog, worked out again only when what it depends on changed (not on every token move).
       if (options.playerView) {
         const key = JSON.stringify([fogFilled, sightKey(items), localSight, items.filter((item) => item.layer === "FOG").map((item) => [item.id, item.visible, item.position, item.rotation, item.scale, item.lastModified])]);
@@ -1657,6 +1672,8 @@ async function start() {
         fogNow ? { key: sightFogKey, clear: (world) => clearOf(fogNow, world) } : null,
         reliefs
       );
+      builtWith = `${reliefs.key}${reliefs.surfaced}`;
+      heightsOnly = null;
       for (const [id, at] of live) {
         scene = placed(scene, id, at.position, at.own);
       }
@@ -1717,12 +1734,12 @@ async function start() {
   let editAsked = FULL && new URLSearchParams(location.search).has("edit");
   /** While editing, the scene drawn again a few times a second at most (not only once it's still). */
   let soonTimer = 0;
-  const soon = () => {
+  const soon = (ms = 150) => {
     if (!soonTimer) {
       soonTimer = window.setTimeout(() => {
         soonTimer = 0;
         refresh();
-      }, 150);
+      }, ms);
     }
   };
   /** The map images to edit, the largest (in the scene) first. */
@@ -1744,16 +1761,39 @@ async function start() {
     $("app").classList.add("editing");
     $("reSide").hidden = false;
     $("reMap").hidden = false;
+    // Every piece with its surface while it's edited: a brush's heights move them where they are.
+    reliefs.surfaced = true;
     session = startEditing({
       t,
       images,
       reliefs: reliefs.byImage,
       side: $("reSide"),
       map: $<HTMLCanvasElement>("reMapCanvas"),
-      onRelief: (image, relief, lite) => {
+      onRelief: (image, relief, lite, heights) => {
         reliefs.byImage.set(image, relief);
-        reliefs.key = String(++reliefVersion);
         view.setLite(lite);
+        const map = items.find((item): item is Image => item.id === image && item.type === "IMAGE");
+        if (lite && heights && map) {
+          // The same pieces (their surfaces read the relief as it is): only their heights moved, there.
+          const anchor = anchorOf(map);
+          const corners = [
+            [heights.x0, heights.y0],
+            [heights.x1, heights.y0],
+            [heights.x1, heights.y1],
+            [heights.x0, heights.y1],
+          ].map(([x, y]) => cellToScene(anchor, dpi, x, y));
+          const before = heightsOnly;
+          heightsOnly = {
+            x0: Math.min(before?.x0 ?? Infinity, ...corners.map((p) => p.x)),
+            y0: Math.min(before?.y0 ?? Infinity, ...corners.map((p) => p.y)),
+            x1: Math.max(before?.x1 ?? -Infinity, ...corners.map((p) => p.x)),
+            y1: Math.max(before?.y1 ?? -Infinity, ...corners.map((p) => p.y)),
+          };
+          soon(50);
+          return;
+        }
+        heightsOnly = null;
+        reliefs.key = String(++reliefVersion);
         soon();
       },
       scene: () => ({ items, dpi }),
@@ -1766,6 +1806,8 @@ async function start() {
     $("app").classList.remove("editing");
     $("reSide").hidden = true;
     $("reMap").hidden = true;
+    reliefs.surfaced = false;
+    heightsOnly = null;
     view.setLite(false);
     refresh();
   }
@@ -1781,11 +1823,22 @@ async function start() {
     void OBR.modal.open({ id: FULL_MODAL_ID, url: "/vistazo.html?full&edit", fullScreen: true });
     void closeVistazoPanel(true);
   };
-  // While editing, the keys are the editor's first (Escape doesn't leave the full screen).
+  // While editing, the keys are the editor's first. An Escape it had no use for is the Vistazo's
+  // (the free point, a template), but it never leaves the full screen.
   document.addEventListener(
     "keydown",
     (event) => {
-      if (session && session.key(event)) {
+      if (!session) {
+        return;
+      }
+      const taken = session.key(event);
+      if (!taken && event.key === "Escape" && (cancelMove || placing || aiming)) {
+        return;
+      }
+      if (taken || event.key === "Escape") {
+        if (!taken) {
+          clearPoint();
+        }
         event.preventDefault();
         event.stopImmediatePropagation();
       }

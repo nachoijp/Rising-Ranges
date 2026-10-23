@@ -7,7 +7,7 @@ import { startFixedMedicion } from "./fixedMedicion";
 import { startIsoLift } from "./isoLift";
 import { registerToolbar, watchToolbar } from "./toolbar";
 import { prefetchPanels } from "./prefetchPanels";
-import { startTerrainStyle } from "./terrainStyle";
+import { startZoneLooks } from "./zoneLooks";
 import { startTerrainView } from "./terrainView";
 import { startReliefs } from "../relief/live";
 import { SYNC_CHANNEL, type SyncMessage } from "../vistazo/sync";
@@ -83,8 +83,9 @@ async function init() {
   startHeightOverlays().catch((error) => {
     console.error("Rising Ranges: failed to start height extras", error);
   });
-  startTerrainStyle().catch((error) => {
-    console.error("Rising Ranges: failed to start terrain styling", error);
+  // The old terrain zones' shapes, as they were before they were restyled as terrain.
+  startZoneLooks().catch((error) => {
+    console.error("Rising Ranges: failed to put the old terrain zones back as they were", error);
   });
   startTerrainView().catch((error) => {
     console.error("Rising Ranges: failed to start the terrain view", error);

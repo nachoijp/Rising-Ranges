@@ -2,7 +2,6 @@ import OBR, { type ContextMenuIconFilter } from "@owlbear-rodeo/sdk";
 import { getPluginId } from "../util/getPluginId";
 import heightIcon from "../assets/height.svg";
 import footprintIcon from "../assets/footprint.svg";
-import terrainIcon from "../assets/terrain.svg";
 import { type Language } from "../i18n/language";
 import { translate } from "../i18n/translate";
 import type { HeightStep } from "../engine/types";
@@ -60,39 +59,6 @@ export function createTokenFootprintMenu(language: Language, tall: boolean, base
   }));
 }
 
-/** Item types that can't be terrain (see canBeTerrain). */
-
-const NOT_TERRAIN_TYPES = ["IMAGE", "TEXT", "LABEL", "LINE", "RULER", "POINTER", "WALL", "LIGHT", "EFFECT", "GRID"];
-
-/**
- * A shape's "Terrain height" (see terrain.ts), for the GM: how high the
- * ground is inside it, on the same page as the height picker.
- */
-export function createTerrainMenu(language: Language, vistazo: boolean) {
-  OBR.contextMenu.create({
-    id: getPluginId("menu/terrain"),
-    icons: [
-      {
-        icon: terrainIcon,
-        label: translate(language, "terrain.label"),
-        filter: {
-          roles: ["GM"],
-          // Terrain is part of the map (see terrain.ts): its shapes, curves
-          // and paths. Written as "on the Map and none of the other types":
-          // with "||" between the types, a curve or path on any layer got in.
-          every: [
-            { key: "layer", value: "MAP" },
-            ...NOT_TERRAIN_TYPES.map((type) => ({ key: "type", value: type, operator: "!=" as const })),
-          ],
-        },
-      },
-    ],
-    // The height's, the underside's, the cloth's and the ramp's rows, the Vistazo 3D's title and its four
-    // rows, plus padding; without the Vistazo (off), its title and rows left out.
-    embed: { url: `/token-height.html?view=terrain${vistazo ? "" : "&vistazo=0"}`, height: vistazo ? 368 : 174 },
-  });
-}
-
 /**
  * The token's elevation — a table of Bandas, or one row to step cell by
  * cell — with its footprint, its own height and its base in the Vistazo
@@ -101,7 +67,8 @@ export function createTerrainMenu(language: Language, vistazo: boolean) {
  * height is drawn too (the Vistazo raises it), but only characters are
  * measured (the Medición and the Distancias panel). The filter is written as
  * "an image, on none of the other layers": with "||" between the layers, how
- * Owlbear groups it with the "&&" isn't sure (see the terrain menu's filter).
+ * Owlbear groups it with the "&&" isn't sure (a curve or path on any layer
+ * got into the old terrain menu that way).
  */
 export function createTokenHeightMenu(language: Language, heightStep: HeightStep, tall: boolean, base: BaseShown) {
   createWithBase(getPluginId("menu/tokenHeight"), heightIcon, translate(language, "toolbar.altura"), base, (withBase) => ({

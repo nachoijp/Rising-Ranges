@@ -5,7 +5,7 @@ import { inShape as inScene, type Bridge, type Piece, type StandEdge } from "../
 import { cellToScene, sceneToCell, type Anchor } from "./anchor";
 import { centroid, closed, inBox, open } from "./geom";
 import { ReliefMesh } from "./mesh";
-import type { Relief } from "./relief";
+import type { Layer, Piece as ReliefPiece, Relief } from "./relief";
 import type { Pt, Skin } from "./types";
 
 // A relief as the Vistazo 3D draws terrain: pieces (each shape's visible part,
@@ -27,8 +27,11 @@ export type ReliefTerrain = {
 /**
  * `clear`: in the player view, what of the map the fog leaves clear (scene
  * px); under the fog the terrain's flat (its heights would give it away).
+ * `surfaced`: every piece with its surface, flat ones too (while it's being
+ * edited: a brush's heights then move its corners where they are, see
+ * VistazoView.reheight).
  */
-export function reliefTerrain(relief: Relief, anchor: Anchor, dpi: number, clear: MultiPolygon | null = null): ReliefTerrain {
+export function reliefTerrain(relief: Relief, anchor: Anchor, dpi: number, clear: MultiPolygon | null = null, surfaced = false): ReliefTerrain {
   const { w, h } = relief.data;
   const toScene = ([x, y]: Pt): Pair => {
     const p = cellToScene(anchor, dpi, x, y);
@@ -45,7 +48,14 @@ export function reliefTerrain(relief: Relief, anchor: Anchor, dpi: number, clear
     }
     return visible(x, y) ? relief.evaluate(cx, cy) : 0;
   };
-  const surface = (p: { x: number; y: number }) => heightAt(p.x, p.y) ?? 0;
+  /** A piece's own surface (see Relief.evaluateOn): its edge's points at its height, not the next one's. */
+  const surfaceOf = (own: Layer | null, piece?: ReliefPiece) => (p: { x: number; y: number }) => {
+    if (!visible(p.x, p.y)) {
+      return 0;
+    }
+    const [cx, cy] = sceneToCell(anchor, dpi, p.x, p.y);
+    return relief.evaluateOn(own, cx, cy, piece);
+  };
   const mesh = new ReliefMesh(relief);
   const pieces: Piece[] = [];
   // From the top down: each layer's pieces less what's over them, within the map.
@@ -80,7 +90,7 @@ export function reliefTerrain(relief: Relief, anchor: Anchor, dpi: number, clear
       const drawn: Piece = {
         height: flat && piece.h !== undefined ? piece.h : at,
         shape: sceneShape,
-        surface: flat && piece.h !== undefined ? undefined : surface,
+        surface: flat && piece.h !== undefined && !surfaced ? undefined : surfaceOf(layer, piece),
         walls: shape.wall,
         skin: shape.skin ? skinOf(shape.skin, toScene) : undefined,
         water: shape.water,
@@ -136,7 +146,7 @@ export function reliefTerrain(relief: Relief, anchor: Anchor, dpi: number, clear
     }
   }
   if (groundScene.length > 0) {
-    pieces.unshift({ height: 0, shape: groundScene, surface: plainGround && !clear ? undefined : surface });
+    pieces.unshift({ height: 0, shape: groundScene, surface: plainGround && !clear && !surfaced ? undefined : surfaceOf(null) });
   }
   // Slabs: bridges over the terrain (a slab's top as its middle has it).
   const bridges: Bridge[] = relief.slabLayers.map((layer) => {

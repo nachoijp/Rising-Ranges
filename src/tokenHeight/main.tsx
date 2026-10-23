@@ -3,7 +3,6 @@ import ReactDOM from "react-dom/client";
 
 import { TokenHeightPicker } from "./TokenHeightPicker";
 import { ElevationPanel } from "./ElevationPanel";
-import { TerrainPicker } from "./TerrainPicker";
 import { PluginGate } from "../util/PluginGate";
 import { OBRContextProvider } from "../settings/OBRContext";
 
@@ -14,9 +13,6 @@ import { OBRContextProvider } from "../settings/OBRContext";
 // call and leave the embed showing nothing at all.
 
 function View({ name }: { name: string | null }) {
-  if (name === "terrain") {
-    return <TerrainPicker />;
-  }
   if (name === "elevation") {
     return <ElevationPanel />;
   }

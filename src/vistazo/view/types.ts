@@ -1,6 +1,6 @@
 import type * as THREE from "three";
 import type { TerrainSkin } from "../../terrain/terrain";
-import type { Prop, StandEdge, Token } from "../scene";
+import type { Prop, Token } from "../scene";
 import type { CloudStyle } from "../weather";
 import type { BaseSeat } from "./bases";
 
@@ -131,6 +131,8 @@ export type Wall = {
   style?: WallStyle;
   /** Its picture from a rectangle of the map (the zone's, as its style is): then that's its face. */
   skin?: TerrainSkin;
+  /** The piece's edge it's of (piece, polygon, ring, side): what's worked out again of a region (see computeWalls). */
+  seg: string;
 };
 
 export type TokenView = {
@@ -158,8 +160,6 @@ export type PropView = { data: Prop; flat: boolean; mesh: THREE.Mesh | null; sha
 
 export type Texture = { canvas: HTMLCanvasElement; x0: number; y0: number; w: number; h: number };
 
-/** Which way a standing block's front faces. */
-export const FACING: Record<StandEdge, [number, number]> = { bottom: [0, 1], top: [0, -1], right: [1, 0], left: [-1, 0] };
 
 /** Light from the north-west, for the walls' shading. */
 export const LIGHT: [number, number] = [-0.6, -0.8];

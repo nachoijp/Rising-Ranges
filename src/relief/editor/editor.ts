@@ -110,6 +110,10 @@ export class ReliefEditor {
   skinBox: { start: { x: number; y: number }; end: { x: number; y: number } } | null = null;
   arrowEnd: { s: Shape; end: "a" | "b" } | null = null;
   brushing = false;
+  /** While telling of a change: only heights changed (a brush's dab), not where anything is. */
+  heightsOnly = false;
+  /** Where the brush's dabs changed the heights since it was last asked (see takeDirty), cells. */
+  private dirty: Box | null = null;
   /** Ctrl held while brushing: raise and lower swapped. */
   flip = false;
   cursor: { x: number; y: number; snap?: Snap | null } | null = null;
@@ -134,6 +138,46 @@ export class ReliefEditor {
   changed() {
     this.relief.derive();
     this.host.changed();
+  }
+
+  /**
+   * Where the heights changed since it was last asked (cells), and none
+   * from then: the brush's dabs, and every shape over what's under it whose
+   * height is read there (a flat one's at its middle, a ramp's at its
+   * arrow's ends: then all of it moves), and so on up. A shape that follows
+   * what's under it point by point changes only where that did.
+   */
+  takeDirty(): Box | null {
+    const box = this.dirty;
+    this.dirty = null;
+    if (!box) {
+      return null;
+    }
+    const data = this.relief.data;
+    const samples = this.relief.layers.map((layer) => {
+      const s = data.shapes[layer.si];
+      if (!s?.rel) {
+        return [];
+      }
+      return s.kind === "flat" ? [centroid(layer.ring)] : s.kind === "ramp" && s.ramp ? [s.ramp.a, s.ramp.b] : [];
+    });
+    const taken = new Set<number>();
+    for (let grew = true; grew; ) {
+      grew = false;
+      this.relief.layers.forEach((layer, i) => {
+        if (taken.has(i) || !samples[i].some(([x, y]) => inBox(box, x, y))) {
+          return;
+        }
+        taken.add(i);
+        const o = layer.outer;
+        box.x0 = Math.min(box.x0, o.x0);
+        box.y0 = Math.min(box.y0, o.y0);
+        box.x1 = Math.max(box.x1, o.x1);
+        box.y1 = Math.max(box.y1, o.y1);
+        grew = true;
+      });
+    }
+    return box;
   }
 
   heightAt(x: number, y: number): number | undefined {
@@ -579,7 +623,18 @@ export class ReliefEditor {
   paint(p: { x: number; y: number }) {
     const { radius, strength, level, groundOnly } = this.settings;
     paintBrush(this.relief, p, { kind: this.brushKind, radius, strength, level, groundOnly });
+    // A flattening brush reaches a cell past its edge (see brush.ts); one more for the surfaces between points.
+    const reach = radius + 2;
+    const d = this.dirty;
+    this.dirty = {
+      x0: Math.min(d?.x0 ?? Infinity, p.x - reach),
+      y0: Math.min(d?.y0 ?? Infinity, p.y - reach),
+      x1: Math.max(d?.x1 ?? -Infinity, p.x + reach),
+      y1: Math.max(d?.y1 ?? -Infinity, p.y + reach),
+    };
+    this.heightsOnly = true;
     this.changed();
+    this.heightsOnly = false;
   }
 
   // ---------- Keys ----------
@@ -627,7 +682,8 @@ export class ReliefEditor {
     if (!sel) {
       return false;
     }
-    if (e.key === "Escape") {
+    // Nothing picked: not the editor's (the Vistazo's free point, say).
+    if (e.key === "Escape" && this.sel) {
       this.sel = null;
       this.host.showProps();
       this.host.redraw();

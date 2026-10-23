@@ -17,9 +17,9 @@ import {
   terrainVisibility,
   type TerrainLook,
 } from "../settings/globalSettings";
-import { terrainItemsKey, terrainShapes, type RampSlope, type TerrainShape } from "../terrain/terrain";
+import type { RampSlope, TerrainShape } from "../terrain/terrain";
 import { terrainLayers } from "../terrain/terrainLayers";
-import { onRelief, onReliefsChange, reliefShapes, reliefsVersion } from "../relief/live";
+import { onReliefsChange, reliefShapes, reliefsVersion } from "../relief/live";
 import { markerBaseColor, markerLookFromMetadata } from "../tokenHeight/markers";
 import { followMap, LABEL_FONT_SIZE } from "../render/lecturaItems";
 import { getStoredTheme, THEME_STORAGE_KEYS, type Color, type Theme } from "../theme/themes";
@@ -38,10 +38,10 @@ import { getGridType } from "../util/gridAxonometry";
 // the terrain's visibility lets this client see it (terrainVisibility):
 // nobody, the GM, or everyone. Redrawn when the zones or the look change.
 //
-// A map image with a relief (made in the Vistazo, see relief/live.ts) has
-// its shapes drawn instead of the zones on it, in either look: they aren't
-// items of the scene, so their outlines are drawn here too. They follow
-// the image when it's dragged.
+// What's drawn is the map images' reliefs' shapes (made in the Vistazo, see
+// relief/live.ts), in either look ("outline": just their outlines): they
+// aren't items of the scene, so it's all drawn here. They follow the image
+// when it's dragged.
 
 const ITEM_KEY = getPluginId("terrainView");
 /** How far a layer's shadow falls, in cells. */
@@ -55,7 +55,6 @@ const GREY_HIGH = 235;
 const REDRAW_DELAY_MS = 120;
 
 let metadata: Record<string, unknown> = {};
-let items: Item[] = [];
 let gridType: GridType = "SQUARE";
 let dpi = 0;
 let gridScale: GridScale | null = null;
@@ -179,14 +178,9 @@ function wanted(): { items: Item[]; signature: string } {
   if (!sceneReady || !dpi || !terrainOn(settings, gridType) || !seen) {
     return { items: [], signature: "" };
   }
-  const relief = reliefShapes();
-  follows = new Map(relief.map((shape) => [shape.id, shape.follow]));
-  // Outlined, the zones are drawn by being styled themselves (terrainStyle.ts): only the reliefs' here.
+  const shapes = reliefShapes();
+  follows = new Map(shapes.map((shape) => [shape.id, shape.follow]));
   const layered = look.style === "layers";
-  if (!layered && relief.length === 0) {
-    return { items: [], signature: "" };
-  }
-  const shapes = layered ? [...relief, ...terrainShapes(items).filter((shape) => !onRelief({ x: shape.rings[0][0][0], y: shape.rings[0][0][1] }))] : relief;
   if (shapes.length === 0) {
     return { items: [], signature: "" };
   }
@@ -311,7 +305,6 @@ async function redraw() {
     dpi,
     gridType,
     gridScale?.raw,
-    terrainItemsKey(items),
     reliefsVersion(),
     JSON.stringify(globalSettingsFromMetadata(metadata)),
     JSON.stringify(markerLookFromMetadata(metadata)),
@@ -367,15 +360,13 @@ function schedule() {
 }
 
 async function loadScene() {
-  const [nextMetadata, nextItems, nextGridType, nextDpi, nextScale] = await Promise.all([
+  const [nextMetadata, nextGridType, nextDpi, nextScale] = await Promise.all([
     OBR.scene.getMetadata(),
-    OBR.scene.items.getItems(),
     getGridType(),
     OBR.scene.grid.getDpi(),
     OBR.scene.grid.getScale(),
   ]);
   metadata = nextMetadata;
-  items = nextItems;
   gridType = nextGridType;
   dpi = nextDpi;
   gridScale = nextScale;
@@ -399,10 +390,7 @@ export async function startTerrainView() {
       loadScene().catch((error) => console.error("Rising Ranges: failed to load the terrain", error));
     }
   });
-  OBR.scene.items.onChange((next) => {
-    items = next;
-    schedule();
-  });
+  // The reliefs, or the map images they follow (see relief/live.ts).
   onReliefsChange(schedule);
   OBR.scene.onMetadataChange((next) => {
     metadata = next;

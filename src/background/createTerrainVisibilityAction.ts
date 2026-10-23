@@ -23,7 +23,7 @@ export const TERRAIN_VISIBILITY_LABELS: Record<TerrainVisibility, TranslationKey
   everyone: "terrain.visibilityEveryone",
 };
 
-/** The terrain's visibility for the scene (see terrainStyle.ts), for the GM: a button showing it, opening the choice. */
+/** The terrain's visibility for the scene (see terrainView.ts), for the GM: a button showing it, opening the choice. */
 export function createTerrainVisibilityAction(language: Language, mode: TerrainVisibility) {
   OBR.tool.createAction({
     id: getPluginId("action/terrainVisibility"),

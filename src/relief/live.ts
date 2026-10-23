@@ -1,6 +1,7 @@
-import OBR, { type Image, type Item } from "@owlbear-rodeo/sdk";
+import OBR, { type Item } from "@owlbear-rodeo/sdk";
 import type { RampSlope, TerrainShape, TerrainZone } from "../terrain/terrain";
-import { anchorOf, cellToScene, reliefSize, sceneToCell, type Anchor } from "./anchor";
+import { cellToScene, reliefSize, sceneToCell, type Anchor } from "./anchor";
+import { mapAnchors, reliefZones } from "./measure";
 import { area, inShape, type Box } from "./geom";
 import { Relief } from "./relief";
 import type { Pt } from "./types";
@@ -35,12 +36,7 @@ const changed = () => {
 export const reliefsVersion = () => version;
 
 function takeItems(items: Item[]) {
-  const next = new Map<string, Anchor>();
-  for (const item of items) {
-    if (item.type === "IMAGE" && item.layer === "MAP" && item.visible) {
-      next.set(item.id, anchorOf(item as Image));
-    }
-  }
+  const next = mapAnchors(items);
   const key = JSON.stringify([...next.values()]);
   if (key !== anchorsKey) {
     anchors = next;
@@ -49,35 +45,9 @@ function takeItems(items: Item[]) {
   }
 }
 
-/**
- * The terrain zones with the reliefs first: each map image that has one, all
- * of it, at the relief's heights (on a slab, its top); the zones still count
- * off those images.
- */
-export function withReliefs(zones: TerrainZone[]): TerrainZone[] {
-  const own: TerrainZone[] = [];
-  for (const [id, relief] of reliefs) {
-    const anchor = anchors.get(id);
-    if (!anchor) {
-      continue;
-    }
-    const [w, h] = reliefSize(anchor);
-    const at = (point: { x: number; y: number }) => sceneToCell(anchor, dpi, point.x, point.y);
-    own.push({
-      id: `relief:${id}`,
-      height: 0,
-      area: 0,
-      contains: (point) => {
-        const [x, y] = at(point);
-        return x >= 0 && y >= 0 && x <= w && y <= h;
-      },
-      surface: (point) => {
-        const [x, y] = at(point);
-        return relief.slabAt(x, y)?.top ?? relief.evaluate(x, y);
-      },
-    });
-  }
-  return own.length > 0 ? [...own, ...zones] : zones;
+/** The terrain measured here: the reliefs' (see measure.ts). */
+export function terrainNow(): TerrainZone[] {
+  return reliefZones(reliefs, anchors, dpi);
 }
 
 /** Whether a scene point is on a map image that has a relief (there, the zones don't count). */

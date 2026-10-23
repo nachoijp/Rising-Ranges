@@ -12,7 +12,9 @@ import { clampHeight, heightStepOf, stepHeight } from "../engine/heights";
 import { gridUnit } from "../util/flattenGridScale";
 import { watchTheme } from "./theme";
 import { fixedGround, globalSettingsFromMetadata, terrainOn } from "../settings/globalSettings";
-import { terrainAt, terrainZones } from "../terrain/terrain";
+import { terrainAt } from "../terrain/terrain";
+import { mapAnchors, reliefZones } from "../relief/measure";
+import { useReliefs } from "../relief/useReliefs";
 import { useTranslation } from "../i18n/useTranslation";
 import type { TranslationKey } from "../i18n/translate";
 
@@ -48,6 +50,7 @@ export function TokenHeightPicker() {
    * when heights are shown above one fixed ground (GlobalSettings.groundLevel); else 0.
    */
   const [below, setBelow] = useState<Map<string, number>>(new Map());
+  const reliefs = useReliefs();
 
   // Safe here (unlike at module load): this component only mounts once
   // OBRContextProvider above it has already made successful OBR calls of
@@ -66,8 +69,8 @@ export function TokenHeightPicker() {
       setHeights(new Map());
       return;
     }
-    Promise.all([getAllTokenHeightMarkers(), OBR.scene.getMetadata(), OBR.scene.items.getItems(), OBR.scene.grid.getType()]).then(
-      ([markers, metadata, items, gridType]) => {
+    Promise.all([getAllTokenHeightMarkers(), OBR.scene.getMetadata(), OBR.scene.items.getItems(), OBR.scene.grid.getType(), OBR.scene.grid.getDpi()]).then(
+      ([markers, metadata, items, gridType, dpi]) => {
         setHeights(
           new Map(
             selection.map((id) => {
@@ -77,7 +80,8 @@ export function TokenHeightPicker() {
           )
         );
         const settings = globalSettingsFromMetadata(metadata);
-        const terrain = fixedGround(settings) && terrainOn(settings, gridType) ? terrainZones(items) : [];
+        const terrain =
+          fixedGround(settings) && terrainOn(settings, gridType) ? reliefZones(reliefs, mapAnchors(items), dpi) : [];
         const positions = new Map(items.map((item) => [item.id, item.position]));
         setBelow(
           new Map(
@@ -89,7 +93,7 @@ export function TokenHeightPicker() {
         );
       }
     );
-  }, [selection, bandSet]);
+  }, [selection, bandSet, reliefs]);
 
   /** The selection's height as shown, or undefined if the selected tokens differ. */
   const values = selection.map((id) => (heights.get(id) ?? 0) + (below.get(id) ?? 0));

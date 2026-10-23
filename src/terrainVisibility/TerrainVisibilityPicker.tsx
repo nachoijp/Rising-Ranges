@@ -22,7 +22,7 @@ import { GLASS_FRAME } from "../util/glass";
 
 const MODES: TerrainVisibility[] = ["hidden", "gm", "everyone"];
 
-/** The toolbar's terrain visibility choice: one for the whole scene (see terrainStyle.ts), in the same glass popover as the others. */
+/** The toolbar's terrain visibility choice: one for the whole scene (see terrainView.ts), in the same glass popover as the others. */
 export function TerrainVisibilityPicker() {
   const t = useTranslation();
   const [current, setCurrent] = useState<TerrainVisibility | null>(null);

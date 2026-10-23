@@ -56,12 +56,12 @@ export type GlobalSettings = {
   groundLevel?: GroundLevel;
   /** Terrain with a height (see terrain.ts): its context menu, its toolbar button, and zones counting. Missing = true. */
   enableTerrain?: boolean;
-  /** How terrain zones are drawn (see terrainView.ts). Each field falls back on its own (resolveTerrainLook). */
+  /** How the terrain is drawn on the map (see terrainView.ts). Each field falls back on its own (resolveTerrainLook). */
   terrainLook?: Partial<TerrainLook>;
   /**
-   * Who sees the terrain zones (see terrainStyle.ts): "hidden" = nobody
-   * (drawn transparent, and not clickable), "gm" = only the GM (hidden in
-   * Owlbear), "everyone". Missing = "gm".
+   * Who sees the terrain drawn on the map (see terrainView.ts): "hidden" =
+   * nobody, "gm" = only the GM, "everyone". Missing = "gm". (It's measured
+   * the same for everyone either way.)
    */
   terrainVisibility?: TerrainVisibility;
 };
@@ -69,9 +69,9 @@ export type GlobalSettings = {
 export type GroundLevel = "terrain" | "fixed";
 
 /**
- * "outline": just each zone's outline in its height's color (see
- * terrainStyle.ts); "layers": zones filled like stacked cut paper, each
- * casting a shadow on what's lower (see terrainView.ts).
+ * "outline": just each relief shape's outline in its height's color;
+ * "layers": the shapes filled like stacked cut paper, each casting a shadow
+ * on what's lower (see terrainView.ts).
  */
 export type TerrainLook = {
   style: "outline" | "layers";

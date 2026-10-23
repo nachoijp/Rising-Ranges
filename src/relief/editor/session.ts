@@ -3,6 +3,7 @@ import { anchorOf, reliefSize } from "../anchor";
 import { emptyRelief, fromStored, toStored } from "../codec";
 import type { Relief } from "../relief";
 import { saveRelief, watchReliefs } from "../store";
+import type { Box } from "../geom";
 import type { ReliefData } from "../types";
 import { withZones } from "../zones";
 import { DEFAULT_SETTINGS, ReliefEditor, type Settings, type ToolId } from "./editor";
@@ -24,7 +25,7 @@ const PICTURE_WIDTH = 2048;
 export type EditSession = {
   /** The image being edited. */
   imageId: string;
-  /** A key pressed while editing: whether the editor took it (Escape always: it doesn't leave the full screen). */
+  /** A key pressed while editing: whether the editor took it (Escape only if it had something to drop). */
   key(event: KeyboardEvent): boolean;
   /** The language changed: texts again. */
   retext(): void;
@@ -40,8 +41,11 @@ export type SessionOptions = {
   reliefs: Map<string, Relief>;
   side: HTMLElement;
   map: HTMLCanvasElement;
-  /** The relief of an image changed: drawn again (`lite`: something's being dragged). */
-  onRelief: (imageId: string, relief: Relief, lite: boolean) => void;
+  /**
+   * The relief of an image changed: drawn again (`lite`: something's being
+   * dragged; `heights`: only its heights changed, within that box of cells).
+   */
+  onRelief: (imageId: string, relief: Relief, lite: boolean, heights?: Box | null) => void;
   /** The scene's items and its dpi now (for its old terrain zones). */
   scene: () => { items: Item[]; dpi: number };
   /** "Done": editing over. */
@@ -179,7 +183,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
         map.redraw();
         layers();
         save();
-        o.onRelief(image.id, editor.relief, busy());
+        o.onRelief(image.id, editor.relief, busy(), editor.heightsOnly ? editor.takeDirty() : null);
       },
       showProps: () => {
         panel();
@@ -298,7 +302,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
           return true;
         }
       }
-      return event.key === "Escape";
+      return false;
     },
     retext() {
       map.texts = texts();

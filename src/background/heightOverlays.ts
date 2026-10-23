@@ -24,8 +24,8 @@ import { getStoredTheme, THEME_STORAGE_KEYS } from "../theme/themes";
 import { BandSet, IconPosition } from "../engine/types";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
 import { fixedGround, globalSettingsFromMetadata, liftsTokens, terrainOn } from "../settings/globalSettings";
-import { terrainAt, terrainZones } from "../terrain/terrain";
-import { onReliefsChange, withReliefs } from "../relief/live";
+import { terrainAt } from "../terrain/terrain";
+import { onReliefsChange, terrainNow } from "../relief/live";
 import { computeIconAnchor, getTokenBounds, getTokenRadius } from "../render/iconAnchor";
 import { getTokenFootprint } from "../tokenHeight/footprint";
 import { buildFloorShape } from "../render/floorShape";
@@ -420,7 +420,7 @@ function computeWanted(): Map<string, Wanted> {
   const bandSet = bandSetFromMetadata(metadata);
   const lifting = liftsTokens(settings, gridType);
   const fixed = fixedGround(settings);
-  const terrain = fixed && terrainOn(settings, gridType) ? withReliefs(terrainZones(items)) : [];
+  const terrain = fixed && terrainOn(settings, gridType) ? terrainNow() : [];
   const markers = new Map<string, Path>();
   for (const item of items) {
     if (isTokenHeightMarker(item) && item.attachedTo && !markers.has(item.attachedTo)) {

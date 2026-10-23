@@ -3,27 +3,15 @@ import type { Pair, Polygon } from "polygon-clipping";
 import polygonClipping from "./clip";
 import { getPluginId } from "../util/getPluginId";
 
-// Terrain with a height: an ordinary Owlbear shape — rectangle, circle,
-// polygon or closed freehand drawing — tagged from its context menu with how
-// high the ground is there (cells, like a token's height; negative for a
-// pit). A token standing in it (its anchor, its feet once aligned) is that
-// much higher: every stored height stays above the ground it's on, and the
-// terrain is added where a distance is worked out (see terrainAt).
-//
-// Only shapes on the Map layer: terrain is part of the map, and a drawing
-// on any other layer is just a drawing (moved off the Map layer, a zone keeps
-// its height, ignored, until it's moved back).
-//
-// Where zones overlap, the smallest one wins: a pit, a courtyard or a
-// balcony inside something bigger is the ground there. Not the one drawn on
-// top — Owlbear puts whatever was moved last on top of its layer — and not
-// the highest. Two of the same size: the higher one.
-//
-// A zone can be a ramp: rising across its box (in its own frame, so a turned
-// rectangle rises along its own side) from the ground just past its low edge
-// up to its own height at the far edge. A point on it is as high as how far
-// up the slope it is (see rampOf); everything measured goes through
-// terrainAt, so a ramp measures everywhere at once.
+// The old terrain zones: Owlbear shapes on the Map layer tagged with a
+// height (and a ramp, bridge, standing, walls, picture, water) from a menu
+// that's gone. The terrain is the map images' reliefs now (see relief/): a
+// map made before brings its zones into its relief (relief/zones.ts), and
+// that's what reads them here, as they were measured — where zones overlap
+// the smallest wins (two of the same size: the higher); a ramp rises across
+// its own box from the ground just past its low edge. A cloth isn't read
+// (it has no counterpart). Also some outlines and heights the rest uses
+// (terrainAt, itemOutline, growRings, frameOf).
 
 const METADATA_KEY = getPluginId("terrain");
 
@@ -50,15 +38,6 @@ export function getTerrainHeight(item: Item): number | undefined {
   return typeof stored === "number" && Number.isFinite(stored) ? stored : undefined;
 }
 
-/** Tags a draft as terrain at `height` cells (undefined: it isn't terrain any more). */
-export function setTerrainHeight(item: Item, height: number | undefined) {
-  if (height === undefined) {
-    delete item.metadata[METADATA_KEY];
-  } else {
-    item.metadata[METADATA_KEY] = height;
-  }
-}
-
 const STAND_KEY = getPluginId("terrainStand");
 
 /** The edge a standing zone stands on in the Vistazo 3D, or "auto": the one facing the map's middle. */
@@ -80,16 +59,6 @@ export function getTerrainStand(item: Item): TerrainStandEdge | undefined {
   return STAND_EDGES.includes(stored as TerrainStandEdge) ? (stored as TerrainStandEdge) : undefined;
 }
 
-export function setTerrainStand(item: Item, stand: TerrainStandEdge | undefined) {
-  if (stand === "auto") {
-    item.metadata[STAND_KEY] = true;
-  } else if (stand) {
-    item.metadata[STAND_KEY] = stand;
-  } else {
-    delete item.metadata[STAND_KEY];
-  }
-}
-
 /** What a zone's walls show in the Vistazo 3D (see vistazo/render.ts WallStyle). */
 export type TerrainWallStyle = "flat" | "stretch" | "fold" | "stone" | "rubble" | "earth" | "wood";
 
@@ -100,14 +69,6 @@ const WALL_STYLES: readonly TerrainWallStyle[] = ["flat", "stretch", "fold", "st
 export function getTerrainWall(item: Item): TerrainWallStyle | undefined {
   const stored = item.metadata[WALL_KEY];
   return WALL_STYLES.includes(stored as TerrainWallStyle) ? (stored as TerrainWallStyle) : undefined;
-}
-
-export function setTerrainWall(item: Item, style: TerrainWallStyle | undefined) {
-  if (style) {
-    item.metadata[WALL_KEY] = style;
-  } else {
-    delete item.metadata[WALL_KEY];
-  }
 }
 
 // A bridge or a balcony: a zone with an underside (its height, cells: up
@@ -122,14 +83,6 @@ const UNDER_KEY = getPluginId("terrainUnder");
 export function getTerrainUnder(item: Item): number | undefined {
   const stored = item.metadata[UNDER_KEY];
   return typeof stored === "number" && Number.isFinite(stored) && stored !== 0 ? stored : undefined;
-}
-
-export function setTerrainUnder(item: Item, cells: number | undefined) {
-  if (cells !== undefined && cells !== 0) {
-    item.metadata[UNDER_KEY] = cells;
-  } else {
-    delete item.metadata[UNDER_KEY];
-  }
 }
 
 /** Whether a terrain item is a bridge: an underside of its own, below its top. */
@@ -149,14 +102,6 @@ export function getTerrainRamp(item: Item): TerrainRamp | undefined {
   return RAMPS.includes(stored as TerrainRamp) ? (stored as TerrainRamp) : undefined;
 }
 
-export function setTerrainRamp(item: Item, ramp: TerrainRamp | undefined) {
-  if (ramp) {
-    item.metadata[RAMP_KEY] = ramp;
-  } else {
-    delete item.metadata[RAMP_KEY];
-  }
-}
-
 /**
  * A ramp worked out: its low end (cells), and its slope in scene
  * coordinates — `origin` the middle of its low edge, `axis` from there to
@@ -174,7 +119,7 @@ export type TerrainZone = {
   contains: (point: Vector2) => boolean;
   /** A ramp's slope (its height then is the high end's). */
   slope?: RampSlope;
-  /** A cloth's surface (see clothSurface): its height at each point, from the terrain round it. */
+  /** Its height at each point, where it isn't flat (a relief's: see relief/measure.ts). */
   surface?: (point: Vector2) => number;
 };
 
@@ -394,47 +339,8 @@ function rampEnds(item: Item, ramp: TerrainRamp): { low: Vector2; high: Vector2;
   return { low, high, beyond };
 }
 
-/** This extension's own metadata keys' start (terrain heights, ramps, cloths, bridges...). */
-const OWN = getPluginId("");
-
-/**
- * What the terrain is built from, as a key: the shapes that are terrain (or
- * a cloth), their outline and their own metadata. The same key, the same
- * terrain: a token moving changes nothing of it.
- */
-export function terrainItemsKey(items: Item[]): string {
-  const parts: unknown[] = [];
-  for (const item of items) {
-    if (!canBeTerrain(item) || !Object.keys(item.metadata).some((key) => key.startsWith(OWN))) {
-      continue;
-    }
-    const own = Object.entries(item.metadata).filter(([key]) => key.startsWith(OWN));
-    const shape = item as Item & { width?: number; height?: number; points?: unknown; commands?: unknown; shapeType?: unknown; style?: { tension?: unknown; closed?: unknown } };
-    parts.push([item.id, item.type, shape.shapeType, shape.width, shape.height, item.position, item.rotation, item.scale, shape.points, shape.commands, shape.style?.tension, shape.style?.closed, own]);
-  }
-  return JSON.stringify(parts);
-}
-
-/** The last terrain worked out, by its key (see terrainZones). */
-let lastZones: { key: string; zones: TerrainZone[] } | null = null;
-
-/**
- * The scene's terrain zones, the one that wins first: smallest, then
- * highest. Worked out again only when the terrain changed (see
- * terrainItemsKey): every module asks on every change of the items, and a
- * cloth takes a while.
- */
+/** The scene's old terrain zones as they were measured, the one that wins first: smallest, then highest. */
 export function terrainZones(items: Item[]): TerrainZone[] {
-  const key = terrainItemsKey(items);
-  if (lastZones?.key === key) {
-    return lastZones.zones;
-  }
-  const zones = buildTerrainZones(items);
-  lastZones = { key, zones };
-  return zones;
-}
-
-function buildTerrainZones(items: Item[]): TerrainZone[] {
   const zones: TerrainZone[] = [];
   const ramps: { zone: TerrainZone; ends: NonNullable<ReturnType<typeof rampEnds>> }[] = [];
   for (const item of items) {
@@ -467,36 +373,6 @@ function buildTerrainZones(items: Item[]): TerrainZone[] {
     const others = zones.filter((other) => other !== zone);
     zone.slope = { low: terrainAt(others, ends.beyond), origin: ends.low, axis: { x: ends.high.x - ends.low.x, y: ends.high.y - ends.low.y } };
   }
-  // Cloths last: stretched over the terrain round them (which is read without them).
-  const solid = [...zones];
-  // The solid zones' outlines, for what of a cloth they cover (see clothSurface).
-  const solidIds = new Set(solid.map((zone) => zone.id));
-  const solidOutlines: Pair[][] = items
-    .filter((item) => solidIds.has(item.id))
-    .flatMap((item) => localRings(item).filter((ring) => ring.length >= 3).map((ring) => ring.map((p) => toScene(item, p) as Pair)));
-  for (const item of items) {
-    if (!getTerrainCloth(item) || !canBeTerrain(item)) {
-      continue;
-    }
-    const contains = containsFor(item);
-    const cloth = contains && clothSurface(item, solid, solidOutlines);
-    if (cloth) {
-      // A little past its outline too (thin gaps to the shapes beside it closed). Where that overlaps
-      // another zone, the zone wins (a high one drawn over its edge gives that edge its height), but
-      // not the one it lies on: the smallest zone it's wholly inside (a plateau a tent stands on) it
-      // wins over, and every zone bigger than that.
-      const floor = solid.find((zone) => cloth.rings.every((ring) => ring.every((point) => zone.contains(point))));
-      zones.push({
-        id: item.id,
-        height: cloth.height,
-        area: floor ? floor.area * (1 - 1e-9) : Number.MAX_VALUE,
-        contains: (point) => contains(toLocal(item, point)) || nearRings(cloth.rings, point, CLOTH_GAP),
-        surface: cloth.at,
-      });
-    }
-  }
-  // The cloths among the zones by what they win over (the same rule as the zones': see above).
-  zones.sort((a, b) => a.area - b.area || b.height - a.height);
   return zones;
 }
 
@@ -559,21 +435,7 @@ export function terrainShapes(items: Item[]): TerrainShape[] {
   const shapes: TerrainShape[] = [];
   const zones = terrainZones(items);
   const slopes = new Map(zones.filter((zone) => zone.slope).map((zone) => [zone.id, zone.slope]));
-  // A cloth: drawn with its surface (and, for what's coloured by height, the middle of its heights).
-  const cloths = new Map(zones.filter((zone) => zone.surface).map((zone) => [zone.id, zone]));
   for (const item of items) {
-    const cloth = cloths.get(item.id);
-    if (cloth) {
-      const rings = localRings(item)
-        .filter((ring) => ring.length >= 3)
-        .map((ring) => ring.map((p) => toScene(item, p)));
-      // Drawn a little past its outline too (see terrainZones), last of all.
-      const grown = growRings(rings, CLOTH_GAP);
-      if (grown.length > 0) {
-        shapes.push({ id: item.id, height: cloth.height, area: cloth.area, rings: grown, surface: cloth.surface });
-      }
-      continue;
-    }
     const height = getTerrainHeight(item);
     if (height === undefined || !canBeTerrain(item) || isBridge(item, height)) {
       continue;
@@ -702,14 +564,6 @@ export function getTerrainSkin(item: Item): string | undefined {
   return typeof stored === "string" && stored.length > 0 ? stored : undefined;
 }
 
-export function setTerrainSkin(item: Item, sourceId: string | undefined) {
-  if (sourceId) {
-    item.metadata[SKIN_KEY] = sourceId;
-  } else {
-    delete item.metadata[SKIN_KEY];
-  }
-}
-
 /**
  * Where a zone's picture is on the map (scene px): `base` the rectangle's
  * short edge nearest the zone (its foot), `top` the other, each listed
@@ -770,70 +624,6 @@ export function getTerrainWater(item: Item): number | undefined {
   return typeof stored === "number" && Number.isFinite(stored) && stored > 0 ? stored : undefined;
 }
 
-export function setTerrainWater(item: Item, cells: number | undefined) {
-  if (cells !== undefined && cells > 0) {
-    item.metadata[WATER_KEY] = cells;
-  } else {
-    delete item.metadata[WATER_KEY];
-  }
-}
-
-// A cloth: a shape with no height of its own, stretched between the terrain
-// round it like a cloth (a ravine's painted cliff between the rim and the
-// river). Each point of it is as high as the ground just past its outline,
-// the nearer parts of the outline counting far more. It's measured so too.
-
-const CLOTH_KEY = getPluginId("terrainCloth");
-
-export function getTerrainCloth(item: Item): boolean {
-  return item.metadata[CLOTH_KEY] === true;
-}
-
-/** Whether an item is tagged as terrain: with a height, or a cloth (which has none of its own). */
-export function isTerrainTagged(item: Item): boolean {
-  return getTerrainHeight(item) !== undefined || getTerrainCloth(item);
-}
-
-export function setTerrainCloth(item: Item, cloth: boolean) {
-  if (cloth) {
-    item.metadata[CLOTH_KEY] = true;
-  } else {
-    delete item.metadata[CLOTH_KEY];
-  }
-}
-
-/** The most points a cloth's outline is read at (spread along it). */
-const CLOTH_SAMPLES = 160;
-
-/**
- * How far past its outline a cloth reaches (scene px, about a tenth of a
- * cell on a usual map): thin gaps to the shapes beside it, drawn by hand,
- * are closed; and how far out its outline looks for the terrain it's
- * stretched to (twice that), past such a gap.
- */
-const CLOTH_GAP = 16;
-
-/** How much a cloth's rise from one support to the next curves into an S: 0 straight, 1 a full S (see clothSurface). */
-const CLOTH_CURVE = 0.6;
-
-/** Whether a point is within `reach` of some outline's sides. */
-function nearRings(rings: Vector2[][], point: Vector2, reach: number): boolean {
-  for (const ring of rings) {
-    for (let i = 0; i < ring.length; i++) {
-      const a = ring[i];
-      const b = ring[(i + 1) % ring.length];
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const length2 = dx * dx + dy * dy;
-      const t = length2 > 0 ? Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / length2)) : 0;
-      if (Math.hypot(point.x - (a.x + dx * t), point.y - (a.y + dy * t)) <= reach) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
 /** Outlines grown by `reach` on every side (each side widened to a band, joined), as outer rings. */
 export function growRings(rings: [number, number][][], reach: number): [number, number][][] {
   const parts: Polygon[] = rings.map((ring) => [ring as Pair[]]);
@@ -867,329 +657,4 @@ export function growRings(rings: [number, number][][], reach: number): [number, 
   } catch {
     return rings;
   }
-}
-
-/**
- * A cloth's surface: its outline read at points along it, each with the
- * height of the ground just outside there (`solid`: the terrain without
- * cloths); a point inside, those heights weighted by how near each is
- * (1/d³: the nearest part of the outline rules). Also the middle of its
- * heights (to sort and colour it by).
- */
-function clothSurface(item: Item, solid: TerrainZone[], solidOutlines: Pair[][] = []): { at: (point: Vector2) => number; height: number; rings: Vector2[][] } | null {
-  const contains = containsFor(item);
-  const rings = localRings(item)
-    .filter((ring) => ring.length >= 3)
-    .map((ring) => ring.map((p) => {
-      const [x, y] = toScene(item, p);
-      return { x, y };
-    }));
-  if (!contains || rings.length === 0) {
-    return null;
-  }
-  // What of it is left where other zones cover it (they win there): its outline is read along that,
-  // so a high zone drawn over its edge (a cliff's top) gives that edge its height.
-  const covered = (() => {
-    const xs = rings.flat().map((p) => p.x);
-    const ys = rings.flat().map((p) => p.y);
-    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
-    // Only the zones whose box meets its box.
-    const over = solidOutlines.filter((ring) => {
-      const rx = ring.map(([x]) => x);
-      const ry = ring.map(([, y]) => y);
-      if (!(Math.min(...rx) <= x1 && Math.max(...rx) >= x0 && Math.min(...ry) <= y1 && Math.max(...ry) >= y0)) {
-        return false;
-      }
-      // Not one it lies wholly inside (what it stands on: it wins there, see terrainZones).
-      const outline = [ring.map(([x, y]) => ({ x, y }))];
-      return !rings.every((own) => own.every((point) => inPolygons(outline, point)));
-    });
-    if (over.length === 0) {
-      return null;
-    }
-    try {
-      const own = rings.map((ring) => [ring.map((p) => [p.x, p.y] as Pair)]);
-      const left = polygonClipping.difference(own as Polygon[], ...over.map((ring) => [ring] as Polygon));
-      return left.flatMap((polygon) => polygon.map((ring) => ring.slice(0, -1).map(([x, y]) => ({ x, y }))));
-    } catch {
-      return null;
-    }
-  })();
-  const outline = covered && covered.length > 0 ? covered : rings;
-  const perimeter = outline.reduce((sum, ring) => sum + ring.reduce((s, p, i) => s + Math.hypot(ring[(i + 1) % ring.length].x - p.x, ring[(i + 1) % ring.length].y - p.y), 0), 0);
-  const step = Math.max(2, perimeter / CLOTH_SAMPLES);
-  // Inside what's left of it (even-odd over its outline's rings).
-  const inside = (p: Vector2) => inPolygons(outline, p);
-  // What it lies on: the smallest zone it's wholly inside, or the ground (see terrainZones).
-  const floor = solid.find((zone) => rings.every((ring) => ring.every((point) => zone.contains(point))));
-  const samples: { x: number; y: number; h: number; held: boolean; ring: number }[] = [];
-  let ringIndex = -1;
-  for (const ring of outline) {
-    ringIndex++;
-    for (let i = 0; i < ring.length; i++) {
-      const a = ring[i];
-      const b = ring[(i + 1) % ring.length];
-      const length = Math.hypot(b.x - a.x, b.y - a.y);
-      if (length < 1e-9) {
-        continue;
-      }
-      let [nx, ny] = [(b.y - a.y) / length, -(b.x - a.x) / length];
-      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-      // Pointing out of it.
-      if (inside({ x: mid.x + nx * 1.5, y: mid.y + ny * 1.5 })) {
-        [nx, ny] = [-nx, -ny];
-      }
-      const n = Math.max(1, Math.round(length / step));
-      for (let j = 0; j < n; j++) {
-        const t = (j + 0.5) / n;
-        const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
-        // Outward to the first zone (past a thin gap to it), or else the ground just past it: from right
-        // by its outline, in small steps, so a thin zone beside it (a cliff's narrow top) isn't stepped over.
-        let h = terrainAt(solid, { x: p.x + nx * 2, y: p.y + ny * 2 });
-        // Held to it where it meets a zone (not what it lies on, nor bare ground): it reaches that zone there.
-        let held = false;
-        for (let d = 1; d <= CLOTH_GAP * 2; d += 2) {
-          const out = { x: p.x + nx * d, y: p.y + ny * d };
-          const zone = solid.find((z) => z.contains(out));
-          if (zone) {
-            h = terrainAt([zone], out);
-            held = zone !== floor;
-            break;
-          }
-        }
-        samples.push({ x: p.x, y: p.y, h, held, ring: ringIndex });
-      }
-    }
-  }
-  if (samples.length === 0) {
-    return null;
-  }
-  const heights = samples.map((s) => s.h);
-  const height = (Math.min(...heights) + Math.max(...heights)) / 2;
-  // Over what it lies on, what's higher round it holds it up, taut over it as a tent's cloth over its
-  // poles (the upper hull of those heights: straight from one support to the next, its free edges hanging
-  // between them); what's lower it falls into, as a slope down a bank (weighted by how near: see idw).
-  // Where it meets a zone lower than that taut sheet (a step between two cliffs' tops) it's brought down
-  // to it, fading away from there (see `pull`).
-  const baseAt = (point: Vector2) => (floor ? terrainAt([floor], point) : 0);
-  const above = samples.map((s) => ({ x: s.x, y: s.y, h: Math.max(0, s.h - baseAt(s)) }));
-  const below = samples.map((s) => ({ x: s.x, y: s.y, h: Math.min(0, s.h - baseAt(s)) }));
-  const taut = above.some((s) => s.h > 1e-6) ? upperHull(above) : null;
-  const highest = Math.max(...above.map((s) => s.h));
-  const sags = below.some((s) => s.h < -1e-6);
-  // The sheet's height at each point of its outline (on it, or under it where it hangs).
-  const edge = taut ? above.map((s) => ({ x: s.x, y: s.y, h: taut(s) ?? s.h })) : above;
-  /** Straight from support to support, eased into an S (as a cloth leaves one and comes to the next). */
-  const sheet = (point: Vector2) => {
-    if (!taut) {
-      return 0;
-    }
-    // Past what its outline spans (the little it's grown by: see terrainZones), the sheet as it is along
-    // its outline, weighed by how near: not the heights round it, which would leave a step at its edge.
-    const straight = taut(point) ?? idw(edge, point);
-    const t = Math.max(0, Math.min(1, straight / highest));
-    const s = t * t * (3 - 2 * t);
-    return highest * (t + (s - t) * CLOTH_CURVE);
-  };
-  // Which stretches of its outline that meet no zone hang free: those held up at both ends (a tent's edge
-  // between two poles). One that ends against anything else (a lower zone, the ravine under a bank) lies
-  // on the ground it's over, as the cloth leaves the support behind.
-  const hangs = samples.map(() => false);
-  for (let r = 0; r <= ringIndex; r++) {
-    const ring = samples.map((_, i) => i).filter((i) => samples[i].ring === r);
-    const start = ring.findIndex((i) => samples[i].held);
-    if (start < 0) {
-      continue;
-    }
-    const supports = (i: number) => samples[i].held && above[i].h > 1e-6;
-    let run: number[] = [];
-    let before = ring[start];
-    for (let step = 1; step <= ring.length; step++) {
-      const i = ring[(start + step) % ring.length];
-      if (!samples[i].held) {
-        run.push(i);
-        continue;
-      }
-      if (supports(before) && supports(i)) {
-        for (const j of run) {
-          hangs[j] = true;
-        }
-      }
-      run = [];
-      before = i;
-    }
-  }
-  // How far below the sheet each zone it meets is, and the ground under each stretch that doesn't hang (0
-  // where it hangs free): weighed as the heights are, the sheet comes down to each where it meets it, and
-  // stays as it is away from them.
-  const pull = above.map((s, i) => ({ x: s.x, y: s.y, h: samples[i].held || !hangs[i] ? Math.min(0, s.h - sheet(s)) : 0 }));
-  const pulls = pull.some((s) => s.h < -1e-6);
-  return {
-    height,
-    rings,
-    at: (point) => baseAt(point) + sheet(point) + (pulls ? idw(pull, point) : 0) + (sags ? idw(below, point) : 0),
-  };
-}
-
-/** Heights at points weighted by how near each is (1/d³: the nearest rules), at a point. */
-function idw(samples: { x: number; y: number; h: number }[], point: Vector2): number {
-  let sum = 0;
-  let weight = 0;
-  for (const s of samples) {
-    const d2 = (point.x - s.x) ** 2 + (point.y - s.y) ** 2;
-    if (d2 < 1e-6) {
-      return s.h;
-    }
-    const w = 1 / (d2 * Math.sqrt(d2));
-    sum += w * s.h;
-    weight += w;
-  }
-  return sum / weight;
-}
-
-/**
- * The surface stretched tight over heights at points (all 0 or more): the
- * top of their convex hull, as a sheet laid over them would be. Undefined
- * at a point outside what they span.
- */
-function upperHull(samples: { x: number; y: number; h: number }[]): (point: Vector2) => number | undefined {
-  // In px across and a hundredth of a level up, with a copy of each point below them all, so it's a
-  // solid even when the heights lie in one plane.
-  const scale = 100;
-  const points: [number, number, number][] = samples.flatMap((s): [number, number, number][] => [[s.x, s.y, s.h * scale], [s.x, s.y, -scale]]);
-  const triangles: { ax: number; ay: number; ah: number; bx: number; by: number; bh: number; cx: number; cy: number; ch: number; x0: number; y0: number; x1: number; y1: number }[] = [];
-  for (const [a, b, c] of hull3d(points)) {
-    // Its top faces only (facing up).
-    const n = cross(sub(b, a), sub(c, a));
-    if (n[2] <= 1e-9 * Math.hypot(...n)) {
-      continue;
-    }
-    triangles.push({
-      ax: a[0], ay: a[1], ah: a[2] / scale, bx: b[0], by: b[1], bh: b[2] / scale, cx: c[0], cy: c[1], ch: c[2] / scale,
-      x0: Math.min(a[0], b[0], c[0]) - 0.5, y0: Math.min(a[1], b[1], c[1]) - 0.5, x1: Math.max(a[0], b[0], c[0]) + 0.5, y1: Math.max(a[1], b[1], c[1]) + 0.5,
-    });
-  }
-  return (point) => {
-    let best: number | undefined;
-    for (const t of triangles) {
-      if (point.x < t.x0 || point.x > t.x1 || point.y < t.y0 || point.y > t.y1) {
-        continue;
-      }
-      const d = (t.by - t.cy) * (t.ax - t.cx) + (t.cx - t.bx) * (t.ay - t.cy);
-      if (Math.abs(d) < 1e-9) {
-        continue;
-      }
-      const u = ((t.by - t.cy) * (point.x - t.cx) + (t.cx - t.bx) * (point.y - t.cy)) / d;
-      const v = ((t.cy - t.ay) * (point.x - t.cx) + (t.ax - t.cx) * (point.y - t.cy)) / d;
-      const w = 1 - u - v;
-      if (u < -1e-6 || v < -1e-6 || w < -1e-6) {
-        continue;
-      }
-      const h = u * t.ah + v * t.bh + w * t.ch;
-      best = best === undefined ? h : Math.max(best, h);
-    }
-    if (best !== undefined) {
-      return best;
-    }
-    // Just past what they span (on its edge, by rounding, or a little out): its height at the nearest
-    // point of its edge, so it goes on level from there rather than leaving a step.
-    let nearest = Infinity;
-    for (const t of triangles) {
-      for (const [ax, ay, ah, bx, by, bh] of [
-        [t.ax, t.ay, t.ah, t.bx, t.by, t.bh],
-        [t.bx, t.by, t.bh, t.cx, t.cy, t.ch],
-        [t.cx, t.cy, t.ch, t.ax, t.ay, t.ah],
-      ]) {
-        const length2 = (bx - ax) ** 2 + (by - ay) ** 2;
-        const along = length2 > 0 ? Math.max(0, Math.min(1, ((point.x - ax) * (bx - ax) + (point.y - ay) * (by - ay)) / length2)) : 0;
-        const d2 = (point.x - ax - (bx - ax) * along) ** 2 + (point.y - ay - (by - ay) * along) ** 2;
-        // Of two edges as near (the same edge, in two faces), the higher: the sheet's top.
-        const h = ah + (bh - ah) * along;
-        if (d2 < nearest - 1e-6 || (Math.abs(d2 - nearest) <= 1e-6 && h > (best ?? -Infinity))) {
-          nearest = d2;
-          best = h;
-        }
-      }
-    }
-    return best;
-  };
-}
-
-type Point3 = [number, number, number];
-const sub = (a: Point3, b: Point3): Point3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-const cross = (a: Point3, b: Point3): Point3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-const dot = (a: Point3, b: Point3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-
-/**
- * The faces (triangles, turned outward) of the convex hull of points in
- * space, built a point at a time: the faces a new point sees are taken
- * away, and the hole's rim joined to it. Points on a face, or as good as
- * (within a millionth of the points' extent), are left out. None if the
- * points don't make a solid.
- */
-function hull3d(points: Point3[]): [Point3, Point3, Point3][] {
-  if (points.length < 4) {
-    return [];
-  }
-  const extent = Math.max(...points.flatMap((p) => p.map(Math.abs)), 1);
-  const eps = extent * 1e-6;
-  // A first solid: two far apart points, the one farthest from their line, the one farthest from their plane.
-  let i0 = 0;
-  points.forEach((p, i) => {
-    if (p[0] < points[i0][0]) {
-      i0 = i;
-    }
-  });
-  const farthest = (score: (p: Point3) => number) => points.reduce((best, p, i) => (score(p) > score(points[best]) ? i : best), 0);
-  const i1 = farthest((p) => Math.hypot(...sub(p, points[i0])));
-  const line = sub(points[i1], points[i0]);
-  const i2 = farthest((p) => Math.hypot(...cross(line, sub(p, points[i0]))));
-  const normal = cross(line, sub(points[i2], points[i0]));
-  const i3 = farthest((p) => Math.abs(dot(normal, sub(p, points[i0]))));
-  if (Math.abs(dot(normal, sub(points[i3], points[i0]))) / (Math.hypot(...normal) || 1) < eps) {
-    return [];
-  }
-  type Face = { v: [number, number, number]; n: Point3; d: number; alive: boolean };
-  const faces: Face[] = [];
-  const middle = [i0, i1, i2, i3].reduce<Point3>((m, i) => [m[0] + points[i][0] / 4, m[1] + points[i][1] / 4, m[2] + points[i][2] / 4], [0, 0, 0]);
-  const add = (a: number, b: number, c: number) => {
-    let n = cross(sub(points[b], points[a]), sub(points[c], points[a]));
-    const length = Math.hypot(...n) || 1;
-    n = [n[0] / length, n[1] / length, n[2] / length];
-    // Outward: away from the first solid's middle (always inside).
-    if (dot(n, sub(middle, points[a])) > 0) {
-      faces.push({ v: [a, c, b], n: [-n[0], -n[1], -n[2]], d: -dot(n, points[a]), alive: true });
-    } else {
-      faces.push({ v: [a, b, c], n, d: dot(n, points[a]), alive: true });
-    }
-  };
-  add(i0, i1, i2);
-  add(i0, i1, i3);
-  add(i0, i2, i3);
-  add(i1, i2, i3);
-  const first = new Set([i0, i1, i2, i3]);
-  for (let i = 0; i < points.length; i++) {
-    if (first.has(i)) {
-      continue;
-    }
-    const p = points[i];
-    const seen = faces.filter((face) => face.alive && dot(face.n, p) - face.d > eps);
-    if (seen.length === 0) {
-      continue;
-    }
-    // The rim: the seen faces' edges whose other side is a face not seen.
-    const edges = new Set<string>();
-    for (const face of seen) {
-      const [a, b, c] = face.v;
-      edges.add(`${a},${b}`).add(`${b},${c}`).add(`${c},${a}`);
-      face.alive = false;
-    }
-    for (const edge of edges) {
-      const [a, b] = edge.split(",").map(Number);
-      if (!edges.has(`${b},${a}`)) {
-        add(a, b, i);
-      }
-    }
-  }
-  return faces.filter((face) => face.alive).map((face) => [points[face.v[0]], points[face.v[1]], points[face.v[2]]]);
 }

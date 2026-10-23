@@ -1,23 +1,38 @@
 import { inShape, pieceHeight, type VistazoScene } from "../scene";
-import { FACING, LIGHT, type Wall } from "./types";
+import { LIGHT, type Wall } from "./types";
+
+/** A box of the scene (px). */
+export type Region = { x0: number; y0: number; x1: number; y1: number };
 
 /**
  * The walls round every piece: each edge where the ground beside it is
  * lower (or there's none, the map's edge), from this piece's top down to
  * that, `base` (grid units) where there's nothing beside it.
+ *
+ * With `region`, only the edges that reach into it (the heights changed
+ * there: a brush); `done` gets each such edge (see Wall.seg), walls or not.
  */
-export function computeWalls(scene: VistazoScene, base: number): Wall[] {
+export function computeWalls(scene: VistazoScene, base: number, region?: Region, done?: Set<string>): Wall[] {
   const probe = scene.dpi * 0.03;
   const l = Math.hypot(...LIGHT);
-  // A ramp or a cloth about: its heights change along an edge.
-  const sloped = scene.pieces.some((piece) => piece.slope || piece.surface);
+  // A surface that isn't flat about: its heights change along an edge.
+  const sloped = scene.pieces.some((piece) => piece.surface);
   const walls: Wall[] = [];
-  for (const piece of scene.pieces) {
-    for (const polygon of piece.shape) {
-      for (const ring of polygon) {
+  const reach = probe * 2;
+  for (const [pi, piece] of scene.pieces.entries()) {
+    for (const [gi, polygon] of piece.shape.entries()) {
+      for (const [ri, ring] of polygon.entries()) {
         for (let i = 0; i < ring.length - 1; i++) {
           const [ax, ay] = ring[i];
           const [bx, by] = ring[i + 1];
+          if (
+            region &&
+            (Math.max(ax, bx) < region.x0 - reach || Math.min(ax, bx) > region.x1 + reach || Math.max(ay, by) < region.y0 - reach || Math.min(ay, by) > region.y1 + reach)
+          ) {
+            continue;
+          }
+          const seg = `${pi}:${gi}:${ri}:${i}`;
+          done?.add(seg);
           const dx = bx - ax;
           const dy = by - ay;
           const len = Math.hypot(dx, dy);
@@ -32,16 +47,10 @@ export function computeWalls(scene: VistazoScene, base: number): Wall[] {
             nx = -nx;
             ny = -ny;
           }
-          // A standing block's front is the picture itself: an unfolded one's, its base edge only (its
-          // slanting sides, wider than the picture, keep their walls); a box's, whatever faces its way.
-          // (A relief's picture stands just in front of its walls: they all stay.)
-          if (!piece.card && (piece.unfold ? onBase(piece.unfold.base, mx, my, nx, ny, piece.unfold.out, probe * 3) : piece.stand && nx * FACING[piece.stand][0] + ny * FACING[piece.stand][1] > 0.5)) {
-            continue;
-          }
+          // (A standing shape's picture stands just in front of its walls: they all stay.)
           const lower = scene.pieceAt(mx + nx * probe, my + ny * probe);
-          // With ramps about, every edge is cut in short steps: a ramp may meet it anywhere along
+          // With slopes about, every edge is cut in short steps: a slope may meet it anywhere along
           // it (not only at its middle), and the heights on either side change there.
-          // (A side already that short, a cloth's: see scene.ts, one step, at its own ends.)
           const steps = sloped ? Math.max(1, Math.ceil(len / (scene.dpi * 0.25) - 1e-6)) : 1;
           for (let j = 0; j < steps; j++) {
             const [px, py] = [ax + (dx * j) / steps, ay + (dy * j) / steps];
@@ -63,7 +72,7 @@ export function computeWalls(scene: VistazoScene, base: number): Wall[] {
             }
             const b0 = Math.min(t0, low0);
             const b1 = Math.min(t1, low1);
-            // Not a hair of wall (a cloth meets the ground beside it at about its height).
+            // Not a hair of wall (a soft edge meets the ground beside it at about its height).
             if (t0 - b0 < 0.02 && t1 - b1 < 0.02) {
               continue;
             }
@@ -73,6 +82,7 @@ export function computeWalls(scene: VistazoScene, base: number): Wall[] {
               ax: px, ay: py, bx: qx, by: qy, t0, t1, b0, b1, edge,
               mx: (px + qx) / 2 - nx * probe * 3, my: (py + qy) / 2 - ny * probe * 3, nx, ny,
               lit: Math.max(0, (nx * LIGHT[0] + ny * LIGHT[1]) / l),
+              seg,
             });
           }
         }
@@ -80,15 +90,4 @@ export function computeWalls(scene: VistazoScene, base: number): Wall[] {
     }
   }
   return walls;
-}
-
-/** Whether an edge (its middle, its outward normal) is on an unfolded zone's base edge: facing its way, on its line. */
-function onBase(base: [[number, number], [number, number]], mx: number, my: number, nx: number, ny: number, out: [number, number], near: number): boolean {
-  if (nx * out[0] + ny * out[1] < 0.98) {
-    return false;
-  }
-  const [[ax, ay], [bx, by]] = base;
-  const length = Math.hypot(bx - ax, by - ay) || 1;
-  // Its distance from the base's line.
-  return Math.abs(((mx - ax) * (by - ay) - (my - ay) * (bx - ax)) / length) < near;
 }

@@ -126,6 +126,29 @@ export class Relief {
     return h;
   }
 
+  /**
+   * The terrain at a point as a part of it has it (the Vistazo's pieces):
+   * `own`'s surface (`piece`'s, a stair's step, if given), or with none the
+   * painted ground, and the soft edges of the shapes over it reaching there;
+   * what covers the point is left out, so a point right on the part's edge
+   * keeps its own height (not the next shape's, or the ground's beside it).
+   */
+  evaluateOn(own: Layer | null, x: number, y: number, piece?: Piece): number {
+    let h = !own ? this.relief(x, y) : piece ? piece.fn(x, y) + (own.detail && own.detail.v.size > 0 ? detailAt(own.detail, x, y) : 0) : this.surface(own, x, y);
+    const near = !this.buckets ? this.layers : (this.buckets.get(bucketKey(x, y)) ?? []);
+    for (const layer of near) {
+      if ((own && layer.si <= own.si) || layer.soft <= 0 || !inBox(layer.outer, x, y) || covers(layer, x, y)) {
+        continue;
+      }
+      const edge = nearestOnLoops(layer.loops, x, y);
+      if (edge.d < layer.soft) {
+        const u = 1 - edge.d / layer.soft;
+        h += (this.surface(layer, edge.x, edge.y) - h) * u * u * (3 - 2 * u);
+      }
+    }
+    return h;
+  }
+
   /** A shape's own surface at a point (a stair's step there, or the nearest one), and its painted relief unless `bare`. */
   surface(layer: Layer | SlabLayer, x: number, y: number, bare = false): number {
     const detail = "detail" in layer ? layer.detail : null;

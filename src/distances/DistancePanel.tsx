@@ -29,7 +29,9 @@ import { getStoredTheme } from "../theme/themes";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
 import { globalSettingsFromMetadata, terrainOn } from "../settings/globalSettings";
 import { isTokenHeightMarker, tokenHeightsFromMarkers } from "../tokenHeight/markers";
-import { terrainAt, terrainZones } from "../terrain/terrain";
+import { terrainAt } from "../terrain/terrain";
+import { mapAnchors, reliefZones } from "../relief/measure";
+import { useReliefs } from "../relief/useReliefs";
 import { computeDistanceRows, tokenName } from "./rows";
 import { axonometryOf } from "../engine/axonometry";
 import { getGridType } from "../util/gridAxonometry";
@@ -126,6 +128,7 @@ export function DistancePanel() {
   const [metadata, setMetadata] = useState<Record<string, unknown> | null>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [grid, setGrid] = useState<Grid | null>(null);
+  const reliefs = useReliefs();
   const [role, setRole] = useState<"GM" | "PLAYER">("PLAYER");
   const [selection, setSelection] = useState<string[]>([]);
   const [originId, setOriginId] = useState<string | null>(null);
@@ -305,7 +308,7 @@ export function DistancePanel() {
     : new Map<string, number>();
   // Heights are kept above the ground each one stands on; the terrain there is added here.
   if (terrainOn(settings, grid.type)) {
-    const terrain = terrainZones(items);
+    const terrain = reliefZones(reliefs, mapAnchors(items), grid.dpi);
     for (const token of tokens) {
       heights.set(token.id, (heights.get(token.id) ?? 0) + terrainAt(terrain, token.position));
     }
