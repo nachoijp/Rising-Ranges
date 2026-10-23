@@ -21,6 +21,10 @@ const RASTER = 0.25;
 
 export const quarter = (h: number) => Math.round(h * 4) / 4;
 
+/** The highest (and, below 0, the deepest) a height goes, in cells: past it nothing's of use, and the maths would suffer. */
+export const HEIGHT_LIMIT = 100;
+export const clampHeight = (h: number) => Math.max(-HEIGHT_LIMIT, Math.min(HEIGHT_LIMIT, h));
+
 /** What a shape makes: one piece, or (stairs) one a step; each its outline, box and height. */
 export type Piece = { si: number; ring: Pt[]; holes: Pt[][]; box: Box; h?: number; fn: (x: number, y: number) => number };
 

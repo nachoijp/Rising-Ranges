@@ -1,4 +1,4 @@
-import { G, apply, cellKey, covers, inverse, nearestOnLoops, type Layer, type Relief } from "../relief";
+import { G, apply, cellKey, clampHeight, covers, inverse, nearestOnLoops, type Layer, type Relief } from "../relief";
 import type { Detail } from "../types";
 
 // The terrain brush: what's on top where it goes — the ground, or a terrain
@@ -189,10 +189,10 @@ export function paintBrush(relief: Relief, p: { x: number; y: number }, o: Brush
   });
   points.forEach((q, n) => {
     if (q.grid === ground) {
-      ground[q.k] += changes[n];
+      ground[q.k] = clampHeight(ground[q.k] + changes[n]);
     } else {
       const grid = q.grid as Map<number, number>;
-      const v = (grid.get(q.k) ?? 0) + changes[n];
+      const v = clampHeight((grid.get(q.k) ?? 0) + changes[n]);
       if (Math.abs(v) < 1e-4) {
         grid.delete(q.k);
       } else {

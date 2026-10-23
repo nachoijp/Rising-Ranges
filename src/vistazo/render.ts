@@ -56,6 +56,9 @@ export class VistazoView {
   private movingKey = "";
   /** What's under the shapes being dragged, where they were (see fillUnder). */
   private readonly underGroup = new THREE.Group();
+  /** The relief editor's picked shapes, a veil over their tops (see highlight). */
+  private readonly pickGroup = new THREE.Group();
+  private picked: { shapes: number[]; color: string } = { shapes: [], color: "#bb99ff" };
   private readonly edgeGroup = new THREE.Group();
   private readonly tokenGroup = new THREE.Group();
   private readonly ringGroup = new THREE.Group();
@@ -154,7 +157,7 @@ export class VistazoView {
     this.renderer = renderer;
     this.glCamera.matrixAutoUpdate = false;
     this.movingGroup.matrixAutoUpdate = false;
-    this.world.add(this.terrainGroup, this.underGroup, this.movingGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup, this.fogGroup, this.weatherGroup, this.cloudShadowGroup, this.underBridgeGroup, this.waterGroup, this.templateGroup);
+    this.world.add(this.terrainGroup, this.underGroup, this.movingGroup, this.pickGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup, this.fogGroup, this.weatherGroup, this.cloudShadowGroup, this.underBridgeGroup, this.waterGroup, this.templateGroup);
     this.overlay = document.createElement("div");
     this.overlay.className = "ov";
     this.lines = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -192,6 +195,7 @@ export class VistazoView {
       return false;
     }
     const [x0, y0, x1, y1] = [region.x0 * u, region.y0 * u, region.x1 * u, region.y1 * u];
+    let refine = false;
     for (const mesh of pieces) {
       const piece = mesh.userData.piece as Piece;
       let geometry = mesh.geometry;
@@ -213,6 +217,7 @@ export class VistazoView {
         mesh.geometry = fine;
         mesh.userData.fine = true;
         geometry = fine;
+        refine = true;
       }
       const box = geometry.boundingBox!;
       if (box.max.x < x0 || box.min.x > x1 || box.max.y < y0 || box.min.y > y1) {
@@ -248,6 +253,9 @@ export class VistazoView {
     this.walls = [...this.walls.filter((wall) => !done.has(wall.seg)), ...fresh];
     this.buildWalls();
     this.buildWallShadows();
+    if (refine) {
+      this.highlight(this.picked.shapes);
+    }
     this.requestApply();
     return true;
   }
@@ -281,6 +289,9 @@ export class VistazoView {
       }
       this.movingKey = key;
       started = true;
+      // The veil stays where they were: gone till they're let go (and built again where they are).
+      this.highlight([]);
+      this.picked.shapes = shapes;
       for (const child of theirs) {
         this.terrainGroup.remove(child);
         this.movingGroup.add(child);
@@ -332,6 +343,39 @@ export class VistazoView {
     }
     this.requestApply();
     return started ? "started" : "moved";
+  }
+
+  /**
+   * The relief editor's picked shapes (their indexes), shown in the 3D: a
+   * veil of `color` over their tops, the same geometry as theirs (so it
+   * follows a brush's heights). Kept through builds till it's changed.
+   */
+  highlight(shapes: number[], color = this.picked.color) {
+    this.picked = { shapes, color };
+    // Their geometry is the pieces' own: only the veils' materials let go.
+    for (const child of [...this.pickGroup.children]) {
+      this.pickGroup.remove(child);
+      ((child as THREE.Mesh).material as THREE.Material).dispose();
+    }
+    if (shapes.length === 0) {
+      this.requestApply();
+      return;
+    }
+    const picked = new Set(shapes);
+    for (const child of this.terrainGroup.children) {
+      if (!child.userData.piece || !picked.has(child.userData.si)) {
+        continue;
+      }
+      const mesh = child as THREE.Mesh;
+      const veil = new THREE.Mesh(
+        mesh.geometry,
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.32, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
+      );
+      veil.position.copy(mesh.position);
+      veil.renderOrder = 3;
+      this.pickGroup.add(veil);
+    }
+    this.requestApply();
   }
 
   /**
@@ -1449,6 +1493,10 @@ export class VistazoView {
     this.clear(this.terrainGroup);
     this.clear(this.movingGroup);
     this.clear(this.underGroup);
+    for (const child of [...this.pickGroup.children]) {
+      this.pickGroup.remove(child);
+      ((child as THREE.Mesh).material as THREE.Material).dispose();
+    }
     this.movingKey = "";
     this.movingGroup.matrix.identity();
     this.clear(this.edgeGroup);
@@ -1495,6 +1543,7 @@ export class VistazoView {
     // The terrain's built again: so are the cloud shadows on it.
     this.weatherKey = "";
     this.updateWeather();
+    this.highlight(this.picked.shapes);
     // Its size (it reads the page's layout, which costs): not while something's being dragged, it hasn't changed.
     if (!this.lite) {
       this.measure();

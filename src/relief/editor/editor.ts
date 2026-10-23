@@ -1,5 +1,5 @@
 import { bbox, centroid, inBox, inShape, type Box } from "../geom";
-import { compose, inverse, quarter, Relief, type Layer } from "../relief";
+import { clampHeight, compose, inverse, quarter, Relief, type Layer } from "../relief";
 import { fromStored, toStored } from "../codec";
 import type { Affine, Pt, ReliefData, Shape } from "../types";
 import { BRUSHES, paintBrush, type BrushKind } from "./brush";
@@ -66,8 +66,14 @@ export interface EditorHost {
  */
 export type PickMode = "shapes" | "points" | "both";
 
+/** What the roller does: a new shape each stroke, the picked one grown (where the stroke touches it), or cut. */
+export type RollerMode = "new" | "grow" | "cut";
+
 export type Settings = {
   pickMode: PickMode;
+  rollerMode: RollerMode;
+  /** How smooth a lasso's outline is made: passes of rounding (0: as drawn). */
+  lassoSmooth: number;
   radius: number;
   strength: number;
   level: number;
@@ -78,7 +84,7 @@ export type Settings = {
   brushMode: BrushKind;
 };
 
-export const DEFAULT_SETTINGS: Settings = { pickMode: "shapes", radius: 1.5, strength: 0.5, level: 1, lastSoft: 0, groundOnly: false, shapeRadius: 1, brushMode: "raise" };
+export const DEFAULT_SETTINGS: Settings = { pickMode: "shapes", rollerMode: "new", lassoSmooth: 0, radius: 1.5, strength: 0.5, level: 1, lastSoft: 0, groundOnly: false, shapeRadius: 1, brushMode: "raise" };
 
 /** An ellipse's points. */
 const SHAPE_POINTS = 24;
@@ -119,6 +125,8 @@ export class ReliefEditor {
   skinBox: { start: { x: number; y: number }; end: { x: number; y: number } } | null = null;
   arrowEnd: { s: Shape; end: "a" | "b" } | null = null;
   brushing = false;
+  /** The next click takes the flattening brush's level from the map (the eyedropper; Alt+click too). */
+  levelPick = false;
   /** While telling of a change: only heights changed (a brush's dab), not where anything is. */
   heightsOnly = false;
   /** Where the brush's dabs changed the heights since it was last asked (see takeDirty), cells. */
@@ -195,10 +203,15 @@ export class ReliefEditor {
   }
 
   /** The shape on top at a point (-1: none). */
+  /** The topmost shape at a point that can be picked there (not hidden, nor locked, in the editor); -1: none. */
   shapeAt(x: number, y: number): number {
     const pieces = this.relief.pieces;
     for (let i = pieces.length - 1; i >= 0; i--) {
       const piece = pieces[i];
+      const s = this.data.shapes[piece.si];
+      if (s?.hidden || s?.locked) {
+        continue;
+      }
       if (inBox(piece.box, x, y) && inShape(x, y, piece.ring, piece.holes)) {
         return piece.si;
       }
@@ -297,14 +310,15 @@ export class ReliefEditor {
       return;
     }
     if (this.isBrush()) {
-      this.pushUndo();
-      this.flip = !!mods.ctrl;
-      if (this.brushKind === "flatten" && mods.alt) {
+      if (this.levelPick || (this.brushKind === "flatten" && mods.alt)) {
+        this.levelPick = false;
         this.settings.level = quarter(this.heightAt(p.x, p.y) ?? 0);
         this.host.saveSettings();
         this.host.showProps();
         return;
       }
+      this.pushUndo();
+      this.flip = !!mods.ctrl;
       this.brushing = true;
       this.paint(p);
       return;
@@ -324,6 +338,20 @@ export class ReliefEditor {
       if (si >= 0) {
         togglePick(this, si);
         this.notice = null;
+        this.host.showProps();
+        this.host.redraw();
+        return;
+      }
+    }
+    // Picking shapes, a double click on one: its vertices (as in most drawing programs).
+    if (this.tool === "edit" && this.settings.pickMode === "shapes" && mods.clicks === 2 && !mods.ctrl) {
+      const si = this.shapeAt(p.x, p.y);
+      if (si >= 0) {
+        this.xf = null;
+        this.xfMap = null;
+        this.settings.pickMode = "points";
+        this.sel = { kind: "shape", i: si };
+        this.host.saveSettings();
         this.host.showProps();
         this.host.redraw();
         return;
@@ -365,7 +393,7 @@ export class ReliefEditor {
     // Picking shapes only: no vertex nor point, and on nothing, nothing picked.
     const shapesOnly = this.settings.pickMode === "shapes";
     const reach = this.host.snapReach();
-    const used = new Set(this.data.shapes.flatMap(vertsOf));
+    const used = new Set(this.data.shapes.filter(free).flatMap(vertsOf));
     const vi = shapesOnly ? -1 : this.data.verts.findIndex((v, i) => used.has(i) && Math.hypot(v.x - p.x, v.y - p.y) < reach);
     const pi = shapesOnly ? -1 : this.data.points.findIndex((q) => Math.hypot(q.x - p.x, q.y - p.y) < reach);
     const sel = this.sel;
@@ -380,7 +408,11 @@ export class ReliefEditor {
         this.drag = picked;
       }
     } else if (shapesOnly && this.shapeAt(p.x, p.y) < 0) {
-      this.sel = null;
+      // On nothing: a box to pick the shapes wholly inside it with (Shift: more of them).
+      if (!mods.shift) {
+        this.sel = null;
+      }
+      this.box = { start: p, end: p, add: !!mods.shift };
     } else if (!shapesOnly && (mods.alt || mods.shift || this.shapeAt(p.x, p.y) < 0)) {
       this.box = { start: p, end: p, add: !!mods.shift };
     } else {
@@ -405,7 +437,7 @@ export class ReliefEditor {
     }
     const reach = this.host.snapReach();
     const data = this.data;
-    const used = new Set(data.shapes.flatMap(vertsOf));
+    const used = new Set(data.shapes.filter(free).flatMap(vertsOf));
     const vi = data.verts.findIndex((v, i) => used.has(i) && Math.hypot(v.x - p.x, v.y - p.y) < reach);
     const pi = data.points.findIndex((q) => Math.hypot(q.x - p.x, q.y - p.y) < reach);
     if (mods.alt && vi < 0 && pi >= 0) {
@@ -567,7 +599,9 @@ export class ReliefEditor {
     if (this.stroke) {
       const { pts, erase } = this.stroke;
       this.stroke = null;
-      paintShape(this, pts, erase);
+      // As its mode says (Alt: cut, whatever it is).
+      const mode = erase ? "cut" : this.settings.rollerMode;
+      paintShape(this, pts, mode === "cut", mode === "new");
       this.changed();
       this.host.showProps();
     }
@@ -596,7 +630,7 @@ export class ReliefEditor {
         const [cx, cy, rx, ry] = [(x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) / 2, (y1 - y0) / 2];
         addShape(this, Array.from({ length: SHAPE_POINTS }, (_, k): Pt => [cx + Math.cos((k / SHAPE_POINTS) * Math.PI * 2) * rx, cy + Math.sin((k / SHAPE_POINTS) * Math.PI * 2) * ry]));
       } else {
-        addShape(this, simplify(path, 0.15));
+        addShape(this, simplify(rounded(path, Math.round(this.settings.lassoSmooth)), 0.15));
       }
       this.changed();
       this.host.showProps();
@@ -606,8 +640,23 @@ export class ReliefEditor {
       this.box = null;
       const [x0, x1] = [Math.min(a.x, b.x), Math.max(a.x, b.x)];
       const [y0, y1] = [Math.min(a.y, b.y), Math.max(a.y, b.y)];
+      if (this.settings.pickMode === "shapes") {
+        // The shapes wholly inside it, the topmost first.
+        const inside = this.data.shapes
+          .map((s, i) => ({ i, b: bbox(this.relief.coordsOf(s)[0]) }))
+          .filter(({ i, b: r }) => free(this.data.shapes[i]) && r.x0 >= x0 && r.x1 <= x1 && r.y0 >= y0 && r.y1 <= y1)
+          .map(({ i }) => i)
+          .reverse();
+        const before = add && this.sel?.kind === "shape" ? [this.sel.i, ...(this.sel.more ?? [])] : [];
+        const list = [...new Set([...before, ...inside])];
+        this.sel = list.length > 0 ? { kind: "shape", i: list[0], ...(list.length > 1 ? { more: list.slice(1) } : {}) } : null;
+        this.host.showProps();
+        this.host.redraw();
+        this.drag = null;
+        return;
+      }
       const verts = this.data.verts;
-      const used = new Set(this.data.shapes.flatMap(vertsOf));
+      const used = new Set(this.data.shapes.filter(free).flatMap(vertsOf));
       const inside = verts.map((_, i) => i).filter((i) => used.has(i) && verts[i].x >= x0 && verts[i].x <= x1 && verts[i].y >= y0 && verts[i].y <= y1);
       const before = add && this.sel?.kind === "verts" ? this.sel.list : [];
       const list = [...new Set([...before, ...inside])];
@@ -782,11 +831,11 @@ export class ReliefEditor {
     this.pushUndo();
     const ramp = sel.kind === "shape" ? this.data.shapes[sel.i].ramp : undefined;
     if (sel.kind === "shape" && this.data.shapes[sel.i].kind === "ramp" && ramp) {
-      ramp.from += step;
-      ramp.to += step;
+      ramp.from = clampHeight(ramp.from + step);
+      ramp.to = clampHeight(ramp.to + step);
     } else {
       for (const target of this.targets()) {
-        target.h += step;
+        target.h = clampHeight(target.h + step);
       }
     }
     this.changed();
@@ -901,7 +950,7 @@ export class ReliefEditor {
     }
     if (this.tool === "edit") {
       const reach = this.host.snapReach();
-      const used = new Set(this.data.shapes.flatMap(vertsOf));
+      const used = new Set(this.data.shapes.filter(free).flatMap(vertsOf));
       if (this.data.verts.some((v, i) => used.has(i) && Math.hypot(v.x - p.x, v.y - p.y) < reach)) {
         return "pointer";
       }
@@ -916,6 +965,11 @@ export class ReliefEditor {
   startTransform(p: { x: number; y: number }): boolean {
     const grab = this.grabAt(p);
     if (!grab) {
+      return false;
+    }
+    // A locked (or hidden) shape picked from the list: not moved.
+    const own = this.sel?.kind === "shape" ? [this.sel.i, ...(this.sel.more ?? [])].map((i) => this.data.shapes[i]) : [];
+    if (own.some((s) => s && !free(s))) {
       return false;
     }
     // Editing: a vertex under the pointer is picked rather than the whole moved.
@@ -1036,6 +1090,24 @@ export class ReliefEditor {
 }
 
 /** The affine map taking points `from` to `to` (worked out from the three farthest apart), or null. */
+/** A closed outline rounded `passes` times (Chaikin's: each corner cut at a quarter of its sides). */
+function rounded(ring: Pt[], passes: number): Pt[] {
+  let out = ring;
+  for (let k = 0; k < passes && out.length >= 3; k++) {
+    out = out.flatMap((p, i): Pt[] => {
+      const q = out[(i + 1) % out.length];
+      return [
+        [p[0] * 0.75 + q[0] * 0.25, p[1] * 0.75 + q[1] * 0.25],
+        [p[0] * 0.25 + q[0] * 0.75, p[1] * 0.25 + q[1] * 0.75],
+      ];
+    });
+  }
+  return out;
+}
+
+/** A shape the editor's map lets be picked and changed (not hidden, nor locked there). */
+export const free = (s: Shape) => !s.hidden && !s.locked;
+
 export function affineFrom(from: Pt[], to: Pt[]): Affine | null {
   if (from.length < 3) {
     return null;

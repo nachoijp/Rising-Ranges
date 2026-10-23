@@ -14,8 +14,12 @@ import {
   closeMenus,
   esc,
   installTips,
+  liveHint,
   openMenu,
+  placeUnder,
   renderOptions,
+  toolButton,
+  toolsMenu,
   renderProps,
   renderShapes,
   renderTools,
@@ -26,6 +30,7 @@ import {
   type T,
 } from "./panel";
 import { duplicate, setType, swap } from "./shapes";
+import { installSplit } from "./split";
 import { MapView } from "./view2d";
 
 // Editing a relief in the Vistazo 3D (its full screen, the GM's): the map in
@@ -76,6 +81,8 @@ export type SessionOptions = {
   onRelief: (imageId: string, relief: Relief, lite: boolean, heights?: Box | null, moving?: Moving | null) => void;
   /** The scene's items and its dpi now (for its old terrain zones). */
   scene: () => { items: Item[]; dpi: number };
+  /** What's picked changed: these shapes (their indexes) are, shown in the 3D. */
+  onPick?: (shapes: number[]) => void;
   /** "Done" (or the X): editing over. */
   onDone: () => void;
 };
@@ -116,6 +123,10 @@ async function pictureOf(url: string): Promise<HTMLCanvasElement | null> {
 
 /** An image's name, as the list shows it. */
 const imageName = (image: Image, i: number) => image.text?.plainText || image.name || `#${i + 1}`;
+
+/** Under this width (or height) of the map, the narrow layout: the tools in a menu, the panels at the bottom. */
+const NARROW_W = 600;
+const NARROW_H = 520;
 
 export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? ""): EditSession {
   const { t, root } = o;
@@ -160,8 +171,10 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
   pieces.className = "re-ui";
   pieces.innerHTML = `
     <div class="re-top glass">
+      <button type="button" class="ib sm re-toolbtn" data-k="toolBtn" aria-haspopup="menu" ${tip(t("relief.tools"), t("relief.toolsHint"))}></button>
+      <div class="vsep re-toolsep"></div>
       <label class="re-image" ${tip(t("relief.image"), t("relief.imageHint"))}><select data-k="image">${o.images.map((i, k) => `<option value="${esc(i.id)}" ${i.id === image.id ? "selected" : ""}>${esc(imageName(i, k))}</option>`).join("")}</select></label>
-      <div class="vsep"></div>
+      <div class="vsep re-imagesep"></div>
       <button type="button" class="ib sm" data-k="undo" ${tip(t("relief.undoName"), "", "Ctrl+Z")}>${icon("undo")}</button>
       <button type="button" class="ib sm" data-k="redo" ${tip(t("relief.redo"), "", "Ctrl+Y")}>${icon("redo")}</button>
       <button type="button" class="ib sm on" data-k="heights" aria-pressed="true" ${tip(t("relief.heights"), t("relief.heightsHint"))}>${icon("heights")}</button>
@@ -174,14 +187,88 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
       <button type="button" class="ib sm" data-k="exit" ${tip(t("relief.exit"), t("relief.exitHint"))}>${icon("close")}</button>
       <button type="button" class="done" data-k="done" ${tip(t("vistazo.editDone"), t("relief.localOnly"))}>${esc(t("vistazo.editDone"))}</button>
     </div>
+    <div class="re-optbar glass" data-k="optbar" hidden><button type="button" class="ib sm scr" data-k="prev" aria-label="${esc(t("relief.scrollPrev"))}">${icon("expand")}</button><button type="button" class="ib sm scr next" data-k="next" aria-label="${esc(t("relief.scrollNext"))}">${icon("expand")}</button></div>
     <div class="re-tools glass" data-k="tools"></div>
     <div class="re-props glass" data-k="props" hidden></div>
     <div class="re-shapes glass" data-k="shapes"></div>
+    <div class="re-drawer" data-k="drawer" hidden></div>
     <div class="re-pop glass" data-k="pop" hidden></div>
+    <div class="re-chip" data-k="chip" aria-live="polite" hidden></div>
     <div class="re-toast" data-k="toast" role="status" hidden></div>`;
   root.append(pieces);
   const $ = <E extends HTMLElement = HTMLElement>(k: string) => pieces.querySelector<E>(`[data-k="${k}"]`)!;
   const untip = installTips(root);
+  /**
+   * The tool's options as the map's width lets them, measured: as they are;
+   * without names; in a bar of their own (with names if they fit there);
+   * that bar without names, scrolled if even so.
+   */
+  const fitOptions = () => {
+    // A narrow (or short) map: the tools in a menu, the image and the heights in "⋯", what's
+    // picked and the shapes stacked at the bottom.
+    const area = pieces.getBoundingClientRect();
+    const narrow = area.width > 0 && (area.width < NARROW_W || area.height < NARROW_H);
+    pieces.classList.toggle("re-narrow", narrow);
+    const drawer = $("drawer");
+    drawer.hidden = !narrow;
+    if (narrow && $("props").parentElement !== drawer) {
+      drawer.append($("props"), $("shapes"));
+    } else if (!narrow && $("props").parentElement === drawer) {
+      pieces.insertBefore($("props"), drawer);
+      pieces.insertBefore($("shapes"), drawer);
+    }
+    const el = $("options");
+    const top = pieces.querySelector<HTMLElement>(".re-top")!;
+    if (el.parentElement !== top) {
+      top.insertBefore(el, $("help"));
+    }
+    // The top bar itself, when even its own buttons don't fit: no separators, then the "?" in "⋯".
+    pieces.classList.remove("re-tight", "re-tighter");
+    const over = () => top.scrollWidth > top.clientWidth + 1;
+    if (over()) {
+      pieces.classList.add("re-tight");
+      if (over()) {
+        pieces.classList.add("re-tighter");
+      }
+    }
+    $("optbar").hidden = true;
+    pieces.classList.remove("re-compact", "re-wrapped");
+    const fits = () => el.scrollWidth <= el.clientWidth + 1;
+    if (el.childElementCount && !fits()) {
+      pieces.classList.add("re-compact");
+      if (!fits()) {
+        pieces.classList.remove("re-compact");
+        $("optbar").hidden = false;
+        $("optbar").insertBefore(el, $("next"));
+        pieces.classList.add("re-wrapped");
+        if (!fits()) {
+          pieces.classList.add("re-compact");
+        }
+      }
+    }
+    arrows();
+    placeUnder(pieces);
+  };
+  /** The bar of their own's ends: a button each side while there's more of it that way. */
+  const arrows = () => {
+    const el = $("options");
+    const more = pieces.classList.contains("re-wrapped") && el.scrollWidth > el.clientWidth + 1;
+    $("prev").hidden = $("next").hidden = !more;
+    $<HTMLButtonElement>("prev").disabled = el.scrollLeft <= 0;
+    $<HTMLButtonElement>("next").disabled = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
+  };
+  $("options").addEventListener("scroll", arrows, { passive: true });
+  for (const [k, dir] of [["prev", -1], ["next", 1]] as const) {
+    $(k).onclick = () => $("options").scrollBy({ left: dir * $("options").clientWidth * 0.6, behavior: "smooth" });
+  }
+  const fitter = new ResizeObserver(() => {
+    fitOptions();
+    // The menus were placed for the size before.
+    closeMenus();
+  });
+  fitter.observe(pieces);
+  // The line between the map and the 3D, dragged.
+  const unsplit = root.parentElement ? installSplit(root.parentElement, t) : () => {};
 
   // A notice for a moment (only what went wrong, or what came of a choice).
   const toast = $("toast");
@@ -222,6 +309,17 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
     name?.focus();
     name?.select();
   };
+  let toldPicked = "";
+  /** The shapes picked, told the Vistazo (once each time they change). */
+  const tellPicked = () => {
+    const sel = editor.sel;
+    const shapes = sel?.kind === "shape" ? [sel.i, ...(sel.more ?? [])] : [];
+    const key = shapes.join(",");
+    if (key !== toldPicked) {
+      toldPicked = key;
+      o.onPick?.(shapes);
+    }
+  };
   const history = () => {
     $<HTMLButtonElement>("undo").disabled = !editor.canUndo;
     $<HTMLButtonElement>("redo").disabled = !editor.canRedo;
@@ -235,9 +333,12 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
       frame = 0;
       renderTools($("tools"), editor, t, setTool);
       renderOptions($("options"), editor, t);
+      $("toolBtn").innerHTML = toolButton(editor, t);
+      fitOptions();
       renderProps($("props"), editor, t, o.unit, panelFolds);
       renderShapes($("shapes"), editor, t, shapesFold, shapeMenu, focusName);
       history();
+      tellPicked();
       if (!$("pop").hidden) {
         $("pop").innerHTML = shortcutsHtml(editor, t);
       }
@@ -284,6 +385,17 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
   );
   const texts = () => ({ rampNoArrow: t("relief.label.rampNoArrow"), inclined: t("relief.label.inclined"), relative: t("relief.label.relative") });
   map = new MapView(o.map, editor, texts());
+  // What the keys do in what's being done, on the map while it's being done.
+  const chip = $("chip");
+  const drawMap = map.redraw.bind(map);
+  map.redraw = () => {
+    drawMap();
+    const text = liveHint(editor, t);
+    if (chip.textContent !== text) {
+      chip.textContent = text;
+    }
+    chip.hidden = !text;
+  };
   // Picking (Elegir) to start with.
   editor.setTool("edit");
   // Let go: the Vistazo draws all of it again.
@@ -431,11 +543,39 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
     }
     editor.replace(read);
   };
+  $("toolBtn").onclick = () => {
+    const r = $("toolBtn").getBoundingClientRect();
+    const [x, y] = rootPoint(r.left, r.bottom + 4);
+    openMenu(root, x, y, toolsMenu(editor, t, setTool));
+  };
   $("more").onclick = () => {
     const r = $("more").getBoundingClientRect();
     const [x, y] = rootPoint(r.right, r.bottom + 4);
     let sure = false;
+    // On a narrow map, what the top bar has no room for.
+    const narrow = (): MenuItem[] =>
+      pieces.classList.contains("re-narrow")
+        ? [
+            {
+              label: t("relief.image"),
+              items: o.images.map((i, k): MenuItem => ({
+                label: i.id === image.id ? `${imageName(i, k)} ✓` : imageName(i, k),
+                run: () => {
+                  if (i.id !== image.id) {
+                    const select = $<HTMLSelectElement>("image");
+                    select.value = i.id;
+                    select.dispatchEvent(new Event("change"));
+                  }
+                },
+              })),
+            },
+            { icon: "heights", label: map.showHeights ? `${t("relief.heights")} ✓` : t("relief.heights"), run: () => $("heights").click() },
+            ...(pieces.classList.contains("re-tighter") ? [{ label: t("relief.shortcuts"), key: "?", run: toggleHelp }] : []),
+            "-",
+          ]
+        : [];
     const items = (): MenuItem[] => [
+      ...narrow(),
       {
         label: t("relief.export"),
         run: () => {
@@ -482,8 +622,21 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
     openMenu(root, x - 220, y, items());
   };
   $("done").onclick = () => o.onDone();
-  // The X: the relief back as it was when editing began, and editing over.
+  // The X: the relief back as it was when editing began, and editing over. With changes made, a second
+  // click to be sure (within a moment).
+  let exitArmed: ReturnType<typeof setTimeout> | undefined;
   $("exit").onclick = () => {
+    const changed = JSON.stringify(toStored(editor.data)) !== (original ?? JSON.stringify(toStored(emptyRelief(w, h))));
+    if (changed && !exitArmed) {
+      $("exit").classList.add("armed");
+      notice(t("relief.exitSure"));
+      exitArmed = setTimeout(() => {
+        exitArmed = undefined;
+        $("exit").classList.remove("armed");
+      }, NOTICE_MS);
+      return;
+    }
+    clearTimeout(exitArmed);
     clearTimeout(saveTimer);
     saveTimer = undefined;
     const back = original ? fromStored(JSON.parse(original)) : null;
@@ -538,6 +691,14 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
         focusName();
         return true;
       }
+      if ((event.key === "]" || event.key === "[") && editor.isBrush()) {
+        const s = editor.settings;
+        s.radius = Math.min(6, Math.max(0.25, Math.round((s.radius + (event.key === "]" ? 0.25 : -0.25)) * 4) / 4));
+        editor.host.saveSettings();
+        editor.host.showProps();
+        editor.host.redraw();
+        return true;
+      }
       if ((event.key === "]" || event.key === "[") && sel?.kind === "shape" && !sel.more?.length) {
         swap(editor, sel.i, sel.i + (event.key === "]" ? 1 : -1));
         editor.changed();
@@ -553,6 +714,14 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
           return true;
         }
         const tool = TOOL_LIST.find((x) => x.key === event.key.toLowerCase());
+        // Elegir's key again: shapes ↔ vertices.
+        if (tool?.id === "edit" && editor.tool === "edit") {
+          editor.settings.pickMode = editor.settings.pickMode === "points" ? "shapes" : "points";
+          editor.host.saveSettings();
+          editor.host.showProps();
+          editor.host.redraw();
+          return true;
+        }
         if (tool) {
           setTool(tool.id);
           return true;
@@ -572,6 +741,9 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
       stopWatching();
       closeMenus();
       untip();
+      unsplit();
+      fitter.disconnect();
+      o.onPick?.([]);
       document.removeEventListener("pointerdown", outside, true);
       clearTimeout(toastTimer);
       map.dispose();

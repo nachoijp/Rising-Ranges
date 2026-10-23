@@ -35,7 +35,8 @@ export type IconName =
   | "undo" | "redo" | "heights" | "more" | "delete" | "expand" | "close"
   | "terrain" | "slab" | "stand" | "flat" | "ramp" | "inclined" | "relative" | "fixed"
   | "duplicate" | "rename" | "layer-up" | "layer-down" | "convert" | "combine" | "texture"
-  | "plus" | "minus" | "pick-shapes" | "pick-points" | "edge-wall" | "edge-soft";
+  | "plus" | "minus" | "pick-shapes" | "pick-points" | "edge-wall" | "edge-soft" | "eyedropper"
+  | "visible" | "hidden" | "locked" | "unlocked" | "size" | "strength";
 
 /** An icon, as markup. */
 export const icon = (name: IconName) => `<svg class="ri" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">${ICONS.get(name) ?? ""}</svg>`;

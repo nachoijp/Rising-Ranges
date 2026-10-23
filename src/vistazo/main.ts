@@ -1851,6 +1851,7 @@ async function start() {
         soon();
       },
       scene: () => ({ items, dpi }),
+      onPick: (shapes) => view.highlight(shapes, getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#bb99ff"),
       onDone: leaveEdit,
     });
   }

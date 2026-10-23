@@ -62,6 +62,10 @@ export type Shape = {
   skin?: Skin;
   /** Water over its lowest floor, this deep (cells); only drawn. */
   water?: number;
+  /** The editor's own (not the Vistazo's, nor what's measured): not drawn on its map, not to be picked there. */
+  hidden?: boolean;
+  /** The editor's own: drawn, but not to be picked, moved or cut on its map. */
+  locked?: boolean;
 };
 
 /** A whole terrain: the map's size in cells, its shapes, and the painted ground (gw × gh points, G apart). */

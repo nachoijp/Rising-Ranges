@@ -1,8 +1,9 @@
 import type { TranslationKey } from "../../i18n/translate";
 import type { Shape, StandEdge, WallLook } from "../types";
 import { corners } from "../stand";
+import { HEIGHT_LIMIT, quarter } from "../relief";
 import { BRUSHES, type BrushKind } from "./brush";
-import type { PickMode, ReliefEditor, ToolId } from "./editor";
+import type { PickMode, ReliefEditor, RollerMode, ToolId } from "./editor";
 import { icon, type IconName } from "./icons";
 import { combine, defaultRamp, moveLayer, setKind, setRel, setType, togglePick, type Combine, type ShapeType } from "./shapes";
 
@@ -290,25 +291,118 @@ function bindRange(el: HTMLElement, key: string, get: () => number, set: (v: num
   };
 }
 
-/** A number field: undo kept from when it's entered, the relief changed as it's typed. */
+/**
+ * A step to undo taken once, at the first change after it's armed (entering
+ * a field, pressing a slider): only entering it, nothing to undo.
+ */
+function undoOnce(ed: ReliefEditor) {
+  let armed = true;
+  return {
+    arm: () => (armed = true),
+    take: () => {
+      if (armed) {
+        ed.pushUndo();
+        armed = false;
+      }
+    },
+  };
+}
+
+/** A number field: the relief changed as it's typed, a step to undo from its first change. */
+/** A shape's name: as long as it can be. */
+export const NAME_MAX = 40;
+
+/**
+ * A number field: text (not the browser's number field: its arrows, and what
+ * it lets be typed, differ from one to another) that takes only a number's
+ * characters, kept between its limits.
+ */
+const numField = (key: string, label: string, min: number, max: number, int = false) =>
+  `<input type="text" class="num" inputmode="${int ? "numeric" : "decimal"}" maxlength="8" autocomplete="off" spellcheck="false" data-k="${key}" data-min="${min}" data-max="${max}"${int ? " data-int" : ""} aria-label="${esc(label)}" />`;
+
+/** A height's field: ±HEIGHT_LIMIT. */
+const heightField = (key: string, label: string) => numField(key, label, -HEIGHT_LIMIT, HEIGHT_LIMIT);
+
+/** A value kept within a field's limits. */
+function within(input: HTMLInputElement, v: number): number {
+  const [min, max] = [Number(input.dataset.min ?? -Infinity), Number(input.dataset.max ?? Infinity)];
+  const n = input.dataset.int !== undefined ? Math.round(v) : v;
+  return Math.max(min, Math.min(max, n));
+}
+
+/** What's typed in a number field, cleaned (only a number's characters; a comma a point): its number, or null while it isn't one yet. */
+function readNumber(input: HTMLInputElement): number | null {
+  const int = input.dataset.int !== undefined;
+  const min = Number(input.dataset.min ?? -Infinity);
+  let text = input.value.replace(/,/g, ".").replace(int ? /[^\d-]/g : /[^\d.-]/g, "");
+  // A minus only first (and only where it can be), a point only once.
+  text = (text.startsWith("-") && min < 0 ? "-" : "") + text.replace(/-/g, "");
+  const dot = text.indexOf(".");
+  if (dot >= 0) {
+    text = text.slice(0, dot + 1) + text.slice(dot + 1).replace(/\./g, "");
+  }
+  if (text !== input.value) {
+    const at = Math.max(0, (input.selectionStart ?? text.length) - (input.value.length - text.length));
+    input.value = text;
+    input.setSelectionRange(at, at);
+  }
+  const v = Number(text);
+  return text === "" || text === "-" || text === "." || text === "-." || !Number.isFinite(v) ? null : within(input, v);
+}
+
 function bindNumber(el: HTMLElement, ed: ReliefEditor, key: string, get: () => number, set: (v: number) => void) {
   const input = el.querySelector<HTMLInputElement>(`[data-k="${key}"]`);
   if (!input) {
     return;
   }
   input.value = String(get());
-  input.onfocus = () => ed.pushUndo();
+  const step = undoOnce(ed);
+  input.onfocus = step.arm;
   input.oninput = () => {
-    if (input.value !== "" && Number.isFinite(Number(input.value))) {
-      set(Number(input.value));
+    const v = readNumber(input);
+    if (v !== null) {
+      step.take();
+      set(v);
       ed.changed();
     }
   };
+  // Left: what it is (within its limits, or as it was if it was left empty).
+  input.onchange = () => (input.value = String(get()));
+}
+
+/** A number in its box with − and + (no browser arrows), each a step of `by`. */
+const stepper = (field: string, key: string, by: number, t: T) =>
+  `<span class="numbox">${field}<button type="button" class="ib sm" data-by="${-by}" data-for="${key}" ${tip(t("relief.less"))}>${icon("minus")}</button><button type="button" class="ib sm" data-by="${by}" data-for="${key}" ${tip(t("relief.plus"))}>${icon("plus")}</button></span>`;
+
+/** A stepper's field, and its −/+ (each a step to undo, when it changes anything). */
+function bindStepper(el: HTMLElement, ed: ReliefEditor, key: string, get: () => number, set: (v: number) => void) {
+  bindNumber(el, ed, key, get, set);
+  const input = el.querySelector<HTMLInputElement>(`[data-k="${key}"]`);
+  if (!input) {
+    return;
+  }
+  for (const button of el.querySelectorAll<HTMLButtonElement>(`[data-for="${key}"]`)) {
+    button.onclick = () => {
+      // Tried first: nothing changed (at its least, or its most), no step to undo.
+      const before = get();
+      const next = within(input, before + Number(button.dataset.by));
+      set(next);
+      const after = get();
+      if (after === before) {
+        return;
+      }
+      set(before);
+      ed.pushUndo();
+      set(next);
+      input.value = String(after);
+      ed.changed();
+    };
+  }
 }
 
 /** A slider from a wall (0) to a soft edge, an icon at each end. */
 const edgeSlider = (t: T, key: string) =>
-  `<span class="slider"><span class="sl">${esc(t("relief.shape.edge"))}</span><span class="end" ${tip(t("relief.edge.wall"), t("relief.edge.wallHint"))}>${icon("edge-wall")}</span><input type="range" min="0" max="8" step="0.5" data-k="${key}" aria-label="${esc(t("relief.shape.edge"))}" /><span class="end" ${tip(t("relief.edge.soft"), t("relief.edge.softHint"))}>${icon("edge-soft")}</span></span>`;
+  `<span class="slider"><span class="end" ${tip(t("relief.edge.wall"), t("relief.edge.wallHint"))}>${icon("edge-wall")}</span><input type="range" min="0" max="8" step="0.5" data-k="${key}" aria-label="${esc(t("relief.shape.edge"))}" /><span class="end" ${tip(t("relief.edge.soft"), t("relief.edge.softHint"))}>${icon("edge-soft")}</span></span>`;
 
 // ---------- Tools ----------
 
@@ -324,6 +418,21 @@ export function renderTools(el: HTMLElement, ed: ReliefEditor, t: T, onTool: (id
   }
 }
 
+/** The tools as a menu (the column's stand-in on a narrow map). */
+export function toolsMenu(ed: ReliefEditor, t: T, onTool: (id: ToolId) => void): MenuItem[] {
+  return TOOLS.map((tool): MenuItem =>
+    tool === null
+      ? "-"
+      : { icon: tool.icon, label: ed.tool === tool.id ? `${t(toolLabel(tool.id))} ✓` : t(toolLabel(tool.id)), key: tool.key.toUpperCase(), run: () => onTool(tool.id) }
+  );
+}
+
+/** The tool in hand, as the button that opens that menu shows it. */
+export function toolButton(ed: ReliefEditor, t: T): string {
+  const tool = TOOL_LIST.find((x) => x.id === ed.tool)!;
+  return `${icon(tool.icon)}<span class="sr">${esc(t(toolLabel(tool.id)))}</span>`;
+}
+
 /** Every key of the tool in hand, and those for everything. */
 export function shortcutsHtml(ed: ReliefEditor, t: T): string {
   const tool = TOOL_LIST.find((x) => x.id === ed.tool)!;
@@ -332,77 +441,319 @@ export function shortcutsHtml(ed: ReliefEditor, t: T): string {
     <p class="ptitle">${esc(t("relief.shortcutsAll"))}</p><dl>${list(GENERAL_KEYS)}</dl>`;
 }
 
+// ---------- What the keys do now (the chip over the map) ----------
+
+/**
+ * What the keys do in what's being done right now (a rectangle being drawn,
+ * an outline being clicked, the brush painting...), as a line: empty when
+ * nothing is.
+ */
+export function liveHint(ed: ReliefEditor, t: T): string {
+  const pairs = (list: [TranslationKey, TranslationKey][]) => list.map(([k, v]) => `${t(k)}: ${t(v)}`).join(" · ");
+  if (ed.skinPick !== null) {
+    return `${t("relief.shape.picking")} · ${t("relief.key.escape")}: ${t("relief.key.cancelDo")}`;
+  }
+  if (ed.shape) {
+    if (ed.tool === "rect") {
+      return pairs([["relief.key.shiftDrag", "relief.key.square"], ["relief.key.altDrag", "relief.key.altDragDo"]]);
+    }
+    if (ed.tool === "ellipse") {
+      return pairs([["relief.key.shiftDrag", "relief.key.circle"], ["relief.key.altDrag", "relief.key.altDragDo"]]);
+    }
+    return "";
+  }
+  if (ed.drawing) {
+    return pairs([
+      ["relief.key.close", "relief.key.closeDo"],
+      ["relief.key.backspace", "relief.key.backspaceDo"],
+      ["relief.key.shift", "relief.key.freeDo"],
+      ["relief.key.escape", "relief.key.cancelDo"],
+    ]);
+  }
+  if (ed.stroke) {
+    return ed.settings.rollerMode === "cut" ? "" : pairs([["relief.key.alt", "relief.key.altCutsDo"]]);
+  }
+  if (ed.knife) {
+    return pairs([["relief.key.shift", "relief.key.by15Do"]]);
+  }
+  if (ed.xf && ed.xf.kind !== "move") {
+    return pairs([["relief.key.shift", ed.xf.kind === "rotate" ? "relief.key.by15Do" : "relief.key.proportionDo"]]);
+  }
+  if (ed.levelPick) {
+    return t("relief.brush.levelPickHint");
+  }
+  if (ed.brushing) {
+    return pairs(ed.settings.brushMode === "flatten" ? [["relief.key.altFlatten", "relief.key.altFlattenDo"]] : [["relief.key.ctrlPaint", "relief.key.ctrlPaintDo"]]);
+  }
+  return "";
+}
+
 // ---------- The tool's options (the top bar's middle) ----------
+
+/** A slider kept under the bar: its button in the bar shows its name and value, a click opens it. */
+type Under = { html: string; get: () => number; set: (v: number) => void };
+
+/** The slider open under the bar (its key), kept through the bar's redraws. */
+let underOpen: string | null = null;
+
+/** A slider's button in the bar: its icon, its name (dropped when the bar is narrow) and its value. */
+const underButton = (key: string, ic: IconName, label: string, hint = "", keys = "") =>
+  `<button type="button" class="field under" data-under="${key}" aria-expanded="false" ${tip(label, hint, keys)}>${icon(ic)}<span class="pl">${esc(label)}</span><span class="pv" data-v="${key}"></span>${icon("expand")}</button>`;
+
+const rangeHtml = (key: string, label: string, min: number, max: number, step: number) =>
+  `<span class="slider"><input type="range" min="${min}" max="${max}" step="${step}" data-k="${key}" aria-label="${esc(label)}" /><span class="sv" data-v="${key}"></span></span>`;
+
+/** The box under the bar, made the first time. */
+function underBox(ui: HTMLElement): HTMLElement {
+  let box = ui.querySelector<HTMLElement>(":scope > .re-under");
+  if (!box) {
+    box = document.createElement("div");
+    box.className = "re-under glass";
+    box.hidden = true;
+    ui.append(box);
+    // A press anywhere else, or Esc, closes it.
+    document.addEventListener(
+      "pointerdown",
+      (event) => {
+        const target = event.target as Element | null;
+        if (!box!.hidden && !box!.contains(target) && !target?.closest?.("[data-under]")) {
+          closeUnder(ui);
+        }
+      },
+      true
+    );
+    box.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" || event.key === "Enter") {
+        event.stopPropagation();
+        event.preventDefault();
+        const key = underOpen;
+        closeUnder(ui);
+        ui.querySelector<HTMLElement>(`[data-under="${key}"]`)?.focus();
+      }
+    });
+  }
+  return box;
+}
+
+function closeUnder(ui: HTMLElement) {
+  underOpen = null;
+  const box = ui.querySelector<HTMLElement>(":scope > .re-under");
+  if (box) {
+    box.hidden = true;
+    box.innerHTML = "";
+  }
+  for (const button of ui.querySelectorAll<HTMLElement>("[data-under]")) {
+    button.classList.remove("on");
+    button.setAttribute("aria-expanded", "false");
+  }
+}
+
+/** The bar's slider buttons: their values, a click opening (or closing) each; the one open kept open. */
+function bindUnders(el: HTMLElement, unders: Record<string, Under>, saved: () => void) {
+  const ui = el.closest<HTMLElement>(".re-ui");
+  for (const button of el.querySelectorAll<HTMLButtonElement>("[data-under]")) {
+    const key = button.dataset.under!;
+    const u = unders[key];
+    const value = button.querySelector<HTMLElement>(".pv")!;
+    value.textContent = fmt(u.get());
+    button.onclick = () => {
+      if (!ui) {
+        return;
+      }
+      if (underOpen === key) {
+        closeUnder(ui);
+      } else {
+        openUnder(ui, button, key, u, saved);
+      }
+    };
+  }
+  if (!ui) {
+    return;
+  }
+  const open = underOpen;
+  const button = open ? el.querySelector<HTMLButtonElement>(`[data-under="${open}"]`) : null;
+  if (!open || !button) {
+    closeUnder(ui);
+    return;
+  }
+  const box = underBox(ui);
+  if (box.dataset.key === open && !box.hidden) {
+    // Already open: only its value (the slider may be in hand).
+    const input = box.querySelector<HTMLInputElement>("input")!;
+    const u = unders[open];
+    if (document.activeElement !== input) {
+      input.value = String(u.get());
+      box.querySelector<HTMLElement>(".sv")!.textContent = fmt(u.get());
+    }
+    button.classList.add("on");
+    button.setAttribute("aria-expanded", "true");
+    place(ui, box, button);
+  } else {
+    openUnder(ui, button, open, unders[open], saved);
+  }
+}
+
+function openUnder(ui: HTMLElement, button: HTMLElement, key: string, u: Under, saved: () => void) {
+  closeUnder(ui);
+  underOpen = key;
+  const box = underBox(ui);
+  box.dataset.key = key;
+  box.innerHTML = u.html;
+  box.hidden = false;
+  button.classList.add("on");
+  button.setAttribute("aria-expanded", "true");
+  bindRange(box, key, u.get, u.set, () => {
+    saved();
+    const value = ui.querySelector<HTMLElement>(`[data-under="${key}"] .pv`);
+    if (value) {
+      value.textContent = fmt(u.get());
+    }
+  });
+  place(ui, box, button);
+  box.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true });
+}
+
+/** The slider open under the bar, put back under its button (the bar laid out again). */
+export function placeUnder(ui: HTMLElement) {
+  const box = ui.querySelector<HTMLElement>(":scope > .re-under");
+  const button = underOpen ? ui.querySelector<HTMLElement>(`[data-under="${underOpen}"]`) : null;
+  if (box && !box.hidden && button) {
+    place(ui, box, button);
+  }
+}
+
+/** Under the bar, centred on its button, inside the map. */
+function place(ui: HTMLElement, box: HTMLElement, button: HTMLElement) {
+  const area = ui.getBoundingClientRect();
+  const b = button.getBoundingClientRect();
+  const bar = button.closest(".re-top, .re-optbar")?.getBoundingClientRect() ?? b;
+  const left = b.left + b.width / 2 - box.offsetWidth / 2 - area.left;
+  box.style.left = `${Math.max(8, Math.min(area.width - box.offsetWidth - 8, left))}px`;
+  box.style.top = `${bar.bottom - area.top + 6}px`;
+}
 
 export function renderOptions(el: HTMLElement, ed: ReliefEditor, t: T) {
   const s = ed.settings;
   const saved = () => ed.host.saveSettings();
-  const label = `<span class="opt-label">${esc(t(toolLabel(ed.tool)))}</span>`;
+  const unders: Record<string, Under> = {};
+  // Taking a shape's texture from the map: that, whatever the tool, till it's done or let go.
+  if (ed.skinPick !== null) {
+    const s = ed.data.shapes[ed.skinPick];
+    el.innerHTML = `${icon("texture")}<span class="opt-label">${esc(t("relief.taking", { name: s ? nameOf(t, s, ed.skinPick) : "" }))}</span><button type="button" class="field" data-k="cancelSkin" ${tip(t("relief.key.cancelDo"), "", "Esc")}>${esc(t("relief.cancel"))}</button>`;
+    el.querySelector<HTMLButtonElement>('[data-k="cancelSkin"]')!.onclick = () => {
+      ed.skinPick = null;
+      ed.skinBox = null;
+      ed.host.showProps();
+      ed.host.redraw();
+    };
+    bindUnders(el, unders, saved);
+    return;
+  }
   if (ed.tool === "edit") {
-    el.innerHTML =
-      label +
-      seg(
-        "pick",
-        [
-          ["shapes", "pick-shapes", t("relief.pick.shapes"), t("relief.pick.shapesHint")],
-          ["points", "pick-points", t("relief.pick.points"), t("relief.pick.pointsHint")],
-        ],
-        s.pickMode === "points" ? "points" : "shapes"
-      );
+    el.innerHTML = seg(
+      "pick",
+      [
+        ["shapes", "pick-shapes", t("relief.pick.shapes"), t("relief.pick.shapesHint")],
+        ["points", "pick-points", t("relief.pick.points"), t("relief.pick.pointsHint")],
+      ],
+      s.pickMode === "points" ? "points" : "shapes"
+    );
     onSeg(el, "pick", (v) => {
       s.pickMode = v as PickMode;
       saved();
       ed.host.showProps();
       ed.host.redraw();
     });
+    bindUnders(el, unders, saved);
     return;
   }
   if (ed.tool === "brush") {
     const modes = BRUSHES.map((b, i): [string, IconName, string, string] => [b, b as IconName, `${t(`relief.brush.${b}` as TranslationKey)} (${i + 1})`, t(`relief.brush.${b}Text` as TranslationKey)]);
+    unders.radius = { html: rangeHtml("radius", t("relief.size"), 0.25, 6, 0.25), get: () => s.radius, set: (v) => (s.radius = v) };
+    unders.strength = { html: rangeHtml("strength", t("relief.brush.strength"), 0.1, 2, 0.1), get: () => s.strength, set: (v) => (s.strength = v) };
     el.innerHTML = `${seg("mode", modes, s.brushMode)}
-      <span class="slider"><span class="sl">${esc(t("relief.size"))}</span><input type="range" min="0.25" max="6" step="0.25" data-k="radius" aria-label="${esc(t("relief.size"))}" /></span>
+      ${underButton("radius", "size", t("relief.size"), "", "[ ]")}
       ${
         s.brushMode === "flatten"
-          ? `<span class="slider" ${tip(t("relief.height"), t("relief.brush.levelHint"))}><span class="sl">${esc(t("relief.height"))}</span><input class="field num" type="number" step="0.25" data-k="level" aria-label="${esc(t("relief.height"))}" /></span>`
-          : `<span class="slider"><span class="sl">${esc(t("relief.brush.strength"))}</span><input type="range" min="0.1" max="2" step="0.1" data-k="strength" aria-label="${esc(t("relief.brush.strength"))}" /></span>`
+          ? // The level: −/+ round the number, the eyedropper inside its box (it takes the number from the map).
+            `<span class="sl" ${tip(t("relief.height"), t("relief.brush.levelHint"))}>${esc(t("relief.height"))}</span><span class="numbox">${heightField("level", t("relief.height"))}<button type="button" class="ib sm" data-level="-0.5" ${tip(t("relief.down"))}>${icon("minus")}</button><button type="button" class="ib sm" data-level="0.5" ${tip(t("relief.up"))}>${icon("plus")}</button><span class="nsep"></span><button type="button" class="ib sm pick${ed.levelPick ? " on" : ""}" data-k="levelPick" aria-pressed="${ed.levelPick}" ${tip(t("relief.brush.levelPick"), t("relief.brush.levelPickHint"), "Alt+clic")}>${icon("eyedropper")}</button></span>`
+          : underButton("strength", "strength", t("relief.brush.strength"))
       }
-      <label class="check" ${tip(t("relief.brush.ground"), t("relief.brush.paintsHint"))}><input type="checkbox" data-k="ground" ${s.groundOnly ? "checked" : ""} /> ${esc(t("relief.brush.ground"))}</label>`;
+      <button type="button" class="field toggle${s.groundOnly ? " on" : ""}" data-k="ground" aria-pressed="${s.groundOnly}" ${tip(t("relief.brush.ground"), t("relief.brush.paintsHint"))}>${icon("terrain")}<span class="ct">${esc(t("relief.brush.ground"))}</span></button>`;
     onSeg(el, "mode", (v) => {
       s.brushMode = v as BrushKind;
       saved();
       ed.host.showProps();
     });
-    bindRange(el, "radius", () => s.radius, (v) => (s.radius = v), saved);
-    bindRange(el, "strength", () => s.strength, (v) => (s.strength = v), saved);
     const level = el.querySelector<HTMLInputElement>('[data-k="level"]');
     if (level) {
       level.value = String(s.level);
       level.oninput = () => {
-        if (level.value !== "" && Number.isFinite(Number(level.value))) {
-          s.level = Number(level.value);
+        const v = readNumber(level);
+        if (v !== null) {
+          s.level = v;
           saved();
         }
       };
+      level.onchange = () => (level.value = String(s.level));
+      for (const button of el.querySelectorAll<HTMLButtonElement>("[data-level]")) {
+        button.onclick = () => {
+          s.level = within(level, quarter(s.level + Number(button.dataset.level)));
+          level.value = String(s.level);
+          saved();
+        };
+      }
     }
-    el.querySelector<HTMLInputElement>('[data-k="ground"]')!.onchange = (event) => {
-      s.groundOnly = (event.target as HTMLInputElement).checked;
+    const picker = el.querySelector<HTMLButtonElement>('[data-k="levelPick"]');
+    if (picker) {
+      picker.onclick = () => {
+        ed.levelPick = !ed.levelPick;
+        ed.host.showProps();
+        ed.host.redraw();
+      };
+    }
+    el.querySelector<HTMLButtonElement>('[data-k="ground"]')!.onclick = () => {
+      s.groundOnly = !s.groundOnly;
       saved();
+      ed.host.showProps();
     };
+    bindUnders(el, unders, saved);
     return;
   }
   if (ed.tool === "cut") {
-    el.innerHTML = label;
+    el.innerHTML = "";
+    bindUnders(el, unders, saved);
     return;
   }
-  // The shape tools: the edge new shapes get; the roller its width too.
+  // The shape tools: the edge new shapes get; the roller what it does and its width too.
+  const edge = t("relief.shape.edge");
+  unders.lastSoft = {
+    html: `<span class="slider"><span class="end" ${tip(t("relief.edge.wall"), t("relief.edge.wallHint"))}>${icon("edge-wall")}</span><input type="range" min="0" max="8" step="0.5" data-k="lastSoft" aria-label="${esc(edge)}" /><span class="end" ${tip(t("relief.edge.soft"), t("relief.edge.softHint"))}>${icon("edge-soft")}</span><span class="sv" data-v="lastSoft"></span></span>`,
+    get: () => s.lastSoft,
+    set: (v) => (s.lastSoft = v),
+  };
+  unders.shapeRadius = { html: rangeHtml("shapeRadius", t("relief.size"), 0.25, 5, 0.25), get: () => s.shapeRadius, set: (v) => (s.shapeRadius = v) };
+  unders.lassoSmooth = { html: rangeHtml("lassoSmooth", t("relief.lasso.smooth"), 0, 3, 1), get: () => s.lassoSmooth, set: (v) => (s.lassoSmooth = v) };
   el.innerHTML =
-    label +
     (ed.tool === "paintShape"
-      ? `<span class="slider" ${tip(t("relief.size"), t(ed.sel?.kind === "shape" ? "relief.paintShape.picked" : "relief.paintShape.new"))}><span class="sl">${esc(t("relief.size"))}</span><input type="range" min="0.25" max="5" step="0.25" data-k="shapeRadius" aria-label="${esc(t("relief.size"))}" /></span>`
+      ? seg(
+          "roller",
+          [
+            ["new", "roller", t("relief.roller.new"), t("relief.roller.newHint")],
+            ["grow", "plus", t("relief.roller.grow"), t("relief.roller.growHint")],
+            ["cut", "minus", t("relief.roller.cut"), t("relief.roller.cutHint")],
+          ],
+          s.rollerMode
+        ) + underButton("shapeRadius", "size", t("relief.size"))
       : "") +
-    edgeSlider(t, "lastSoft");
-  bindRange(el, "shapeRadius", () => s.shapeRadius, (v) => (s.shapeRadius = v), saved);
-  bindRange(el, "lastSoft", () => s.lastSoft, (v) => (s.lastSoft = v), saved);
+    (ed.tool === "lasso" ? underButton("lassoSmooth", "smooth", t("relief.lasso.smooth"), t("relief.lasso.smoothHint")) : "") +
+    underButton("lastSoft", "edge-soft", edge, t("relief.shape.edgeHint"));
+  onSeg(el, "roller", (v) => {
+    s.rollerMode = v as RollerMode;
+    saved();
+    ed.host.showProps();
+  });
+  bindUnders(el, unders, saved);
 }
 
 // ---------- What's picked (the panel at the right) ----------
@@ -443,19 +794,23 @@ function pointProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
   const same = targets.every((x) => x.h === targets[0].h);
   el.innerHTML = `
     <div class="head"><span class="ptitle grow" ${tip(title, t(sel.kind === "point" ? "relief.pointText" : "relief.vertexText"))}>${esc(title)}</span>${deleteButton(t)}</div>
-    <div class="rows"><span class="l">${esc(t("relief.height"))}</span>${heightRow(t, `<input type="number" step="0.25" data-k="h" aria-label="${esc(t("relief.height"))}" />`, same ? unit(targets[0].h) : "")}</div>`;
+    <div class="rows"><span class="l">${esc(t("relief.height"))}</span>${heightRow(t, heightField("h", t("relief.height")), same ? unit(targets[0].h) : "")}</div>`;
   const input = el.querySelector<HTMLInputElement>('[data-k="h"]')!;
   input.value = same ? String(targets[0].h) : "";
   input.placeholder = same ? "" : t("relief.varied");
-  input.onfocus = () => ed.pushUndo();
+  const step = undoOnce(ed);
+  input.onfocus = step.arm;
   input.oninput = () => {
-    if (input.value !== "" && Number.isFinite(Number(input.value))) {
+    const v = readNumber(input);
+    if (v !== null) {
+      step.take();
       for (const target of targets) {
-        target.h = Number(input.value);
+        target.h = v;
       }
       ed.changed();
     }
   };
+  input.onchange = () => (input.value = same || targets.every((x) => x.h === targets[0].h) ? String(targets[0].h) : "");
   bindSteps(el, ed);
   el.querySelector<HTMLButtonElement>('[data-k="del"]')!.onclick = () => ed.remove();
 }
@@ -508,19 +863,21 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
   const s = ed.data.shapes[si];
   const slope = s.kind === "slope";
   const type = typeOf(s);
-  const number = (key: string, label: string, min = "") => `<input type="number" step="0.25" ${min !== "" ? `min="${min}"` : ""} data-k="${key}" aria-label="${esc(label)}" />`;
+
   const quad = corners(ed.relief.coordsOf(s)[0]).length === 4;
   let height = "";
   if (s.kind === "flat") {
-    height = `<span class="l">${esc(t("relief.height"))}</span>${heightRow(t, number("h", t("relief.height")), unit(s.h))}`;
+    height = `<span class="l">${esc(t("relief.height"))}</span>${heightRow(t, heightField("h", t("relief.height")), unit(s.h))}`;
   } else if (s.kind === "ramp" && s.ramp) {
     height =
-      `<span class="l" ${tip(t("relief.height"), t("relief.shape.rampHint"))}>${esc(t("relief.height"))}</span>${heightRow(t, `${number("from", t("relief.height"))}<span class="muted">→</span>${number("to", t("relief.height"))}`, `${unit(s.ramp.from)} → ${unit(s.ramp.to)}`)}` +
-      `<span class="l" ${tip(t("relief.shape.steps"), t("relief.shape.stepsHint"))}>${esc(t("relief.shape.steps"))}</span><span class="line">${number("steps", t("relief.shape.steps"), "0")}<button type="button" class="ib sm" data-k="flip" ${tip(t("relief.shape.flip"), t("relief.shape.flipHint"))}>${icon("convert")}</button><button type="button" class="field" data-k="rearrow" ${tip(t("relief.shape.rearrow"), t("relief.shape.rearrowHint"))}>${esc(t("relief.shape.rearrow"))}</button></span>`;
+      `<span class="l" ${tip(t("relief.height"), t("relief.shape.rampHint"))}>${esc(t("relief.height"))}</span>${heightRow(t, `${heightField("from", t("relief.height"))}<span class="muted">→</span>${heightField("to", t("relief.height"))}`, `${unit(s.ramp.from)} → ${unit(s.ramp.to)}`)}` +
+      `<span class="l" ${tip(t("relief.shape.steps"), t("relief.shape.stepsHint"))}>${esc(t("relief.shape.steps"))}</span><span class="line">${stepper(numField("steps", t("relief.shape.steps"), 0, 50, true), "steps", 1, t)}<button type="button" class="ib sm" data-k="flip" ${tip(t("relief.shape.flip"), t("relief.shape.flipHint"))}>${icon("convert")}</button><button type="button" class="field" data-k="rearrow" ${tip(t("relief.shape.rearrow"), t("relief.shape.rearrowHint"))}>${esc(t("relief.shape.rearrow"))}</button></span>`;
   } else if (s.kind === "ramp") {
     height = `<span class="l">${esc(t("relief.height"))}</span><span class="line"><span class="warn">${esc(t("relief.shape.noArrow"))}</span><button type="button" class="field" data-k="rearrow">${esc(t("relief.shape.addArrow"))}</button></span>`;
   } else {
-    height = `<span class="l" ${tip(t("relief.height"), t("relief.shape.slopeText"))}>${esc(t("relief.height"))}</span>${heightRow(t, `<span class="muted">${esc(t("relief.label.inclined"))}</span>`, "")}`;
+    height =
+      `<span class="l" ${tip(t("relief.height"), t("relief.shape.slopeText"))}>${esc(t("relief.height"))}</span>${heightRow(t, `<span class="muted">${esc(t("relief.label.inclined"))}</span>`, "")}` +
+      `<span class="l"></span><button type="button" class="field" data-k="vertexHeights" ${tip(t("relief.shape.vertexHeights"), t("relief.shape.vertexHeightsHint"))}>${icon("pick-points")}<span>${esc(t("relief.shape.vertexHeights"))}</span></button>`;
   }
   const picture =
     ed.skinPick === si
@@ -531,16 +888,16 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
   const look = [
     s.stand ? "" : `<span class="l" ${tip(t("relief.shape.walls"), t("relief.shape.wallsHint"))}>${esc(t("relief.shape.walls"))}</span><select class="field" data-k="wall" ${s.skin ? "disabled" : ""} aria-label="${esc(t("relief.shape.walls"))}">${WALL_LOOKS.map((v) => `<option value="${v}" ${(s.wall ?? "") === v ? "selected" : ""}>${esc(t(`relief.wall.${v || "default"}` as TranslationKey))}</option>`).join("")}</select>`,
     s.stand ? "" : `<span class="l" ${tip(t("relief.shape.picture"), t("relief.shape.pictureHint"))}>${esc(t("relief.shape.picture"))}</span><span class="line">${picture}</span>`,
-    s.slab || s.stand ? "" : `<span class="l" ${tip(t("relief.shape.water"), t("relief.shape.waterHint"))}>${esc(t("relief.shape.water"))}</span><span class="line">${number("water", t("relief.shape.water"), "0")}</span>`,
-    s.slab || s.stand ? "" : `<span class="l" ${tip(t("relief.shape.edge"), t("relief.shape.edgeHint"))}>${esc(t("relief.shape.edge"))}</span>${edgeSlider(t, "soft").replace(/<span class="sl">[^<]*<\/span>/, "")}`,
+    s.slab || s.stand ? "" : `<span class="l" ${tip(t("relief.shape.water"), t("relief.shape.waterHint"))}>${esc(t("relief.shape.water"))}</span><span class="line">${stepper(numField("water", t("relief.shape.water"), 0, 20), "water", 0.25, t)}</span>`,
+    s.slab || s.stand ? "" : `<span class="l" ${tip(t("relief.shape.edge"), t("relief.shape.edgeHint"))}>${esc(t("relief.shape.edge"))}</span>${edgeSlider(t, "soft")}`,
   ].join("");
   el.innerHTML = `
-    <div class="head"><button type="button" class="chev${folded.body ? " closed" : ""}" data-fold="body" ${tip(t(folded.body ? "relief.unfold" : "relief.fold"))}>${icon("expand")}</button><input class="name" data-k="name" value="${esc(s.name ?? "")}" placeholder="${esc(t("relief.shape.name", { n: si + 1 }))}" ${tip(t("relief.shape.nameHint"), "", "F2")} />${deleteButton(t)}</div>
+    <div class="head"><button type="button" class="chev${folded.body ? " closed" : ""}" data-fold="body" ${tip(t(folded.body ? "relief.unfold" : "relief.fold"))}>${icon("expand")}</button><input class="name" data-k="name" maxlength="${NAME_MAX}" autocomplete="off" value="${esc(s.name ?? "")}" placeholder="${esc(t("relief.shape.name", { n: si + 1 }))}" ${tip(t("relief.shape.nameHint"), "", "F2")} />${deleteButton(t)}</div>
     <div class="body" ${folded.body ? "hidden" : ""}>
       <div class="rows">
         ${height}
         <span class="l" ${tip(t("relief.shape.type"), t("relief.shape.typeHint"))}>${esc(t("relief.shape.type"))}</span>${seg("type", [["terrain", "terrain", t("relief.shape.terrain"), t("relief.shape.terrainHint")], ["slab", "slab", t("relief.shape.slab"), t("relief.shape.slabHint")], ["stand", "stand", t("relief.shape.stand"), t("relief.shape.standHint")]], type)}
-        ${s.slab && s.slab > 0 ? `<span class="l">${esc(t("relief.shape.thickness"))}</span><span class="line">${number("slab", t("relief.shape.thickness"), "0.25")}</span>` : ""}
+        ${s.slab && s.slab > 0 ? `<span class="l">${esc(t("relief.shape.thickness"))}</span><span class="line">${stepper(numField("slab", t("relief.shape.thickness"), 0.25, 20), "slab", 0.25, t)}</span>` : ""}
         ${s.stand ? `<span class="l" ${tip(t("relief.shape.standsOn"), t("relief.shape.standsOnHint"))}>${esc(t("relief.shape.standsOn"))}</span><select class="field" data-k="stand" aria-label="${esc(t("relief.shape.standsOn"))}">${STAND_EDGES.map((v) => `<option value="${v}" ${s.stand === v ? "selected" : ""}>${esc(t(`relief.stand.${v}` as TranslationKey))}</option>`).join("")}</select>` : ""}
         ${s.stand ? `<span class="l"></span><label class="check" ${tip(t("relief.shape.wrap"), t(quad ? "relief.shape.wrapHint4" : "relief.shape.wrapHint"))}><input type="checkbox" data-k="wrap" ${s.wrap ? "checked" : ""} /> ${esc(t("relief.shape.wrap"))}</label>` : ""}
         ${s.stand ? "" : `<span class="l">${esc(t("relief.shape.surface"))}</span>${seg("kind", [["flat", "flat", t("relief.shape.flat")], ["ramp", "ramp", t("relief.shape.ramp"), t("relief.shape.rampKindHint")], ["slope", "inclined", t("relief.shape.slope"), t("relief.shape.slopeHint")]], s.kind)}`}
@@ -564,8 +921,10 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
     };
   }
   const name = el.querySelector<HTMLInputElement>('[data-k="name"]')!;
-  name.onfocus = () => ed.pushUndo();
+  const naming = undoOnce(ed);
+  name.onfocus = naming.arm;
   name.oninput = () => {
+    naming.take();
     s.name = name.value.trim() || undefined;
     ed.changed();
   };
@@ -591,20 +950,27 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
   });
   bindSteps(el, ed);
   bindNumber(el, ed, "h", () => s.h, (v) => (s.h = v));
-  bindNumber(el, ed, "slab", () => s.slab ?? 0.5, (v) => (s.slab = Math.max(0.25, v)));
-  bindNumber(el, ed, "water", () => s.water ?? 0, (v) => (s.water = v > 0 ? v : undefined));
+  bindStepper(el, ed, "slab", () => s.slab ?? 0.5, (v) => (s.slab = Math.max(0.25, v)));
+  bindStepper(el, ed, "water", () => s.water ?? 0, (v) => (s.water = v > 0 ? v : undefined));
   if (s.ramp) {
     const ramp = s.ramp;
     bindNumber(el, ed, "from", () => ramp.from, (v) => (ramp.from = v));
     bindNumber(el, ed, "to", () => ramp.to, (v) => (ramp.to = v));
-    bindNumber(el, ed, "steps", () => ramp.steps, (v) => (ramp.steps = Math.max(0, Math.round(v))));
+    // How many treads: whole ones; one alone is none (a smooth ramp), so 0 and 2 are next to each other.
+    const treads = (v: number) => {
+      const n = Math.max(0, Math.round(v));
+      ramp.steps = n === 1 ? (ramp.steps >= 2 ? 0 : 2) : n;
+    };
+    bindStepper(el, ed, "steps", () => ramp.steps, treads);
   }
   const soft = el.querySelector<HTMLInputElement>('[data-k="soft"]');
   if (soft) {
     soft.value = String(s.soft ?? 0);
-    soft.onpointerdown = () => ed.pushUndo();
-    soft.onkeydown = () => ed.pushUndo();
+    const sliding = undoOnce(ed);
+    soft.onpointerdown = sliding.arm;
+    soft.onkeydown = sliding.arm;
     soft.oninput = () => {
+      sliding.take();
       const before = s.soft ?? 0;
       const v = Number(soft.value);
       s.soft = v > 0 ? v : undefined;
@@ -671,6 +1037,18 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
       redo();
     };
   }
+  const vertexHeights = el.querySelector<HTMLButtonElement>('[data-k="vertexHeights"]');
+  if (vertexHeights) {
+    // Its corners' heights: Elegir on vertices, the shape still picked (its vertices shown).
+    vertexHeights.onclick = () => {
+      ed.setTool("edit");
+      ed.settings.pickMode = "points";
+      ed.sel = { kind: "shape", i: si };
+      ed.host.saveSettings();
+      ed.host.showProps();
+      ed.host.redraw();
+    };
+  }
   el.querySelector<HTMLButtonElement>('[data-k="del"]')!.onclick = () => ed.remove();
 }
 
@@ -696,8 +1074,10 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, folded: { 
     .reverse()
     .map(({ s, i }) => {
       const state = i === picked ? "on" : more.includes(i) ? "more" : "";
-      return `<div class="item ${state}" draggable="true" data-i="${i}" tabindex="0" role="button" aria-pressed="${i === picked || more.includes(i)}" ${tip(nameOf(t, s, i), t("relief.layerRow"))}>
-        ${icon(TYPE_ICONS[typeOf(s)])}<span class="n">${esc(nameOf(t, s, i))}</span><span class="h">${esc(describe(t, s))}</span></div>`;
+      const eye = `<button type="button" class="tg${s.hidden ? " set" : ""}" data-hide="${i}" aria-pressed="${!!s.hidden}" ${tip(t(s.hidden ? "relief.row.show" : "relief.row.hide"), t("relief.row.editorOnly"))}>${icon(s.hidden ? "hidden" : "visible")}</button>`;
+      const lock = `<button type="button" class="tg${s.locked ? " set" : ""}" data-lock="${i}" aria-pressed="${!!s.locked}" ${tip(t(s.locked ? "relief.row.unlock" : "relief.row.lock"), t("relief.row.editorOnly"))}>${icon(s.locked ? "locked" : "unlocked")}</button>`;
+      return `<div class="item ${state}${s.hidden ? " off" : ""}" draggable="true" data-i="${i}" tabindex="0" role="button" aria-pressed="${i === picked || more.includes(i)}" ${tip(nameOf(t, s, i), t("relief.layerRow"))}>
+        ${icon(TYPE_ICONS[typeOf(s)])}<span class="n">${esc(nameOf(t, s, i))}</span><span class="h">${esc(describe(t, s))}</span>${eye}${lock}</div>`;
     })
     .join("");
   el.classList.toggle("closed", folded.value);
@@ -720,6 +1100,29 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, folded: { 
     ed.host.showProps();
     ed.host.redraw();
   };
+  // Hidden, locked: the editor's own, a step to undo.
+  const toggle = (i: number, what: "hidden" | "locked") => {
+    const s = shapes[i];
+    ed.pushUndo();
+    s[what] = s[what] ? undefined : true;
+    if (s[what] && ed.sel?.kind === "shape" && (ed.sel.i === i || ed.sel.more?.includes(i))) {
+      ed.sel = null;
+    }
+    ed.changed();
+    ed.host.showProps();
+  };
+  for (const button of el.querySelectorAll<HTMLButtonElement>("[data-hide]")) {
+    button.onclick = (event) => {
+      event.stopPropagation();
+      toggle(Number(button.dataset.hide), "hidden");
+    };
+  }
+  for (const button of el.querySelectorAll<HTMLButtonElement>("[data-lock]")) {
+    button.onclick = (event) => {
+      event.stopPropagation();
+      toggle(Number(button.dataset.lock), "locked");
+    };
+  }
   let dragged = -1;
   for (const row of el.querySelectorAll<HTMLElement>(".item[data-i]")) {
     const i = Number(row.dataset.i);

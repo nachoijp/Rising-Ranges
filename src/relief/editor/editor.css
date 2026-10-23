@@ -2,7 +2,75 @@
    pieces floating over the map as Owlbear's own (see panel.ts). Only within .re-map, in the Vistazo's
    colours (main.ts sets them from Owlbear's theme). */
 .app.editing .glass-inner {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  position: relative;
+  grid-template-columns: var(--re-cols, minmax(0, 1fr) minmax(0, 1fr));
+}
+/* The line between the map and the 3D (split.ts): dragged; a view hidden, a bar at its edge. */
+.re-split {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 15;
+  width: 10px;
+  margin-left: -5px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.re-split::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.15s;
+}
+.re-split:hover::after,
+.re-split:focus-visible::after,
+.re-splitting .re-split::after {
+  background: var(--accent);
+}
+.re-split:focus-visible {
+  outline: none;
+}
+.re-split.edge {
+  width: 8px;
+  margin-left: 0;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  background: var(--glass-outer, rgba(48, 52, 63, 0.62));
+  border-inline: 1px solid var(--line);
+}
+.re-stage-hidden .re-split.edge {
+  margin-left: -8px;
+}
+.re-split.edge::after {
+  display: none;
+}
+/* Thin to see, wider to hit. */
+.re-split.edge::before {
+  content: "";
+  position: absolute;
+  inset: 0 -6px;
+}
+.re-split .grip {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+}
+.re-split.edge:hover .grip {
+  color: var(--accent);
+}
+/* While it's dragged: no pointer for what's under it (a canvas would take the drag). */
+.re-splitting .re-map,
+.re-splitting .stage {
+  pointer-events: none;
+}
+.re-map-hidden .re-map,
+.re-stage-hidden .stage {
+  visibility: hidden;
 }
 .app.editing aside {
   display: none;
@@ -39,6 +107,8 @@
   inset: 0;
   pointer-events: none;
   font-size: 14px;
+  /* The pieces follow the map's width (the line to the 3D dragged, a phone). */
+  container: re-ui / inline-size;
 }
 .re-ui > * {
   pointer-events: auto;
@@ -93,6 +163,11 @@
   background: var(--re-picked);
   color: var(--accent);
 }
+/* A second click to be sure (the X with changes made). */
+.re-map .ib.armed {
+  background: color-mix(in srgb, var(--re-warn) 22%, transparent);
+  color: var(--re-warn);
+}
 .re-map .ib:disabled {
   opacity: 0.38;
   cursor: default;
@@ -117,7 +192,7 @@
   background: var(--re-divider);
 }
 .re-map .field,
-.re-map input[type="number"],
+.re-map input.num,
 .re-map select {
   height: 32px;
   box-sizing: border-box;
@@ -135,10 +210,19 @@
 .re-map .field {
   cursor: pointer;
 }
+.re-map button.field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.re-map button.field svg.ri {
+  width: 18px;
+  height: 18px;
+}
 .re-map .field:hover {
   background: var(--re-hover);
 }
-.re-map input[type="number"] {
+.re-map input.num {
   width: 64px;
 }
 .re-map input[type="range"] {
@@ -199,6 +283,95 @@
 .re-map .slider .end {
   display: grid;
   color: var(--re-icon);
+}
+/* A slider's button in the bar (its name, its value); the slider opens under the bar. */
+.re-map button.field.under {
+  gap: 4px;
+  padding: 0 4px 0 8px;
+  margin: 0 2px;
+  flex-shrink: 0;
+}
+.re-map button.field.under .pl {
+  color: var(--muted);
+}
+.re-map button.field.under svg.ri {
+  width: 16px;
+  height: 16px;
+  color: var(--re-icon);
+}
+.re-map button.field.under.on {
+  background: var(--re-hover);
+}
+.re-map button.field.under svg.ri:first-child {
+  width: 18px;
+  height: 18px;
+  color: var(--fg);
+}
+/* A choice that's on or off (only the ground). */
+.re-map button.field.toggle {
+  margin: 0 2px;
+  color: var(--muted);
+}
+.re-map button.field.toggle.on {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+/* A number with −/+ round it (and what else picks it, inside the same box). */
+.re-map .numbox {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  height: 32px;
+  box-sizing: border-box;
+  padding: 0 2px;
+  margin: 0 2px;
+  border-radius: 8px;
+  background: var(--re-field);
+}
+.re-map .numbox .ib.sm {
+  width: 28px;
+  height: 28px;
+}
+.re-map .numbox input.num {
+  width: 44px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  text-align: center;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.re-map .numbox input.num::-webkit-inner-spin-button,
+.re-map .numbox input.num::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.re-map .numbox .nsep {
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: var(--re-divider);
+}
+.re-options .sl {
+  color: var(--muted);
+  margin: 0 2px 0 6px;
+}
+.re-under {
+  position: absolute;
+  z-index: 11;
+  padding: 6px 10px;
+}
+.re-map .re-under .slider {
+  margin: 0;
+}
+.re-map .re-under .slider input[type="range"] {
+  width: 140px;
+}
+.re-under .sv {
+  min-width: 28px;
+  text-align: right;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
 }
 .re-map .check {
   display: flex;
@@ -380,13 +553,27 @@
 .re-props .height .num {
   justify-content: center;
 }
-.re-props .height input[type="number"] {
+.re-props .height input.num {
   width: 56px;
   height: 24px;
   padding: 0;
   background: transparent;
   text-align: center;
   font: 500 18px Roboto, "Segoe UI", system-ui, sans-serif;
+  outline: none;
+}
+.re-props .height:focus-within {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.re-props .height input.num,
+.re-map .numbox input.num {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.re-props .height input.num::-webkit-inner-spin-button,
+.re-props .height input.num::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 .re-props .height .unit {
   color: var(--muted);
@@ -539,6 +726,37 @@
 .re-shapes .item.ground .n {
   color: var(--muted);
 }
+.re-shapes .item.off .n,
+.re-shapes .item.off svg.ri:first-child {
+  opacity: 0.45;
+}
+/* Hidden, locked: shown on the pointer (or when they're set). */
+.re-shapes .tg {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+}
+.re-shapes .tg svg.ri {
+  width: 18px;
+  height: 18px;
+}
+.re-shapes .item:hover .tg,
+.re-shapes .item:focus-within .tg,
+.re-shapes .tg.set {
+  opacity: 1;
+}
+.re-shapes .tg:hover {
+  background: var(--re-hover);
+  color: var(--fg);
+}
 
 /* Menus (right click, ⋮): Owlbear's own. */
 .re-map .re-menu {
@@ -624,11 +842,28 @@
   color: rgba(255, 255, 255, 0.82);
 }
 
-/* A notice for a moment, at the bottom. */
-.re-toast {
+/* What the keys do in what's being done: a line at the bottom, only while it's being done. */
+.re-chip {
   position: absolute;
   left: 50%;
   bottom: 16px;
+  transform: translateX(-50%);
+  max-width: calc(100% - 290px);
+  padding: 5px 12px;
+  border-radius: 14px;
+  background: rgba(20, 22, 28, 0.72);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+/* A notice for a moment, at the bottom (over the line above, if it's there). */
+.re-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 52px;
   transform: translateX(-50%);
   max-width: 70%;
   padding: 8px 14px;
@@ -636,4 +871,212 @@
   background: rgba(50, 50, 50, 0.95);
   color: #fff;
   font-size: 13px;
+}
+
+/*
+ * The tool's options as the map's width lets them (measured, see fitOptions):
+ * as they are; without the names (.re-compact: the icons, the values, the
+ * tooltips keep the names); in a bar of their own under the top one, past
+ * the tools' column (.re-wrapped), with the names again if they fit there.
+ */
+.re-ui.re-compact button.field.under .pl,
+.re-ui.re-compact button.field.toggle .ct,
+.re-ui.re-compact .re-options > .sl {
+  display: none;
+}
+.re-optbar {
+  position: absolute;
+  left: 60px;
+  right: 8px;
+  top: 60px;
+  height: 44px;
+  box-sizing: border-box;
+  display: flex;
+  padding: 0 4px;
+}
+.re-optbar .re-options {
+  height: 44px;
+  justify-content: flex-start;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.re-optbar .re-options::-webkit-scrollbar {
+  display: none;
+}
+/* Past its ends: a button each side to see the rest (shown only while there's more that way). */
+.re-optbar .scr {
+  flex-shrink: 0;
+  align-self: center;
+}
+.re-optbar .scr svg.ri {
+  transform: rotate(90deg);
+}
+.re-optbar .scr.next svg.ri {
+  transform: rotate(-90deg);
+}
+/* Centred, but from its start when it doesn't fit (scrolled then). */
+.re-ui .re-optbar .re-options > :first-child:not(.scr) {
+  margin-left: auto;
+}
+.re-ui .re-optbar .re-options > :last-child:not(.scr) {
+  margin-right: auto;
+}
+.re-ui.re-wrapped .re-pop,
+.re-ui.re-wrapped .re-props {
+  top: 112px;
+}
+.re-ui.re-wrapped .re-props {
+  max-height: calc(100% - 120px);
+}
+.re-ui.re-wrapped .re-pop {
+  max-height: calc(100% - 128px);
+}
+/* A narrow map: the panels inside it, the chip off the list (at the bottom). */
+@container re-ui (max-width: 720px) {
+  .re-props {
+    width: min(280px, calc(100% - 72px));
+  }
+  .re-pop {
+    width: min(340px, calc(100% - 16px));
+  }
+  .re-shapes {
+    width: min(248px, calc(100% - 16px));
+  }
+  .re-chip {
+    max-width: calc(100% - 80px);
+    top: 112px;
+    bottom: auto;
+  }
+  .re-image select {
+    max-width: 120px;
+  }
+}
+/* A phone: what's left smaller. */
+@container re-ui (max-width: 420px) {
+  .re-image select {
+    max-width: 80px;
+  }
+  .re-map .done {
+    padding: 0 10px;
+  }
+}
+
+/* ---------- A narrow (or short) map ---------- */
+.re-map .re-toolbtn,
+.re-map .re-toolsep {
+  display: none;
+}
+.re-map .re-toolbtn .sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.re-ui.re-narrow .re-toolbtn,
+.re-ui.re-narrow .re-toolsep {
+  display: grid;
+}
+.re-ui.re-narrow .re-toolbtn {
+  color: var(--accent);
+}
+.re-ui.re-narrow .re-tools,
+.re-ui.re-narrow .re-image,
+.re-ui.re-narrow [data-k="heights"] {
+  display: none;
+}
+.re-ui.re-narrow .re-optbar {
+  left: 8px;
+}
+/* What's picked over the shapes, both at the bottom, each scrolled on its own. */
+.re-drawer {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  max-height: 60%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 6px;
+  pointer-events: none;
+}
+.re-drawer > * {
+  pointer-events: auto;
+}
+.re-ui .re-drawer .re-props,
+.re-ui .re-drawer .re-shapes {
+  position: static;
+  width: auto;
+  max-height: none;
+  min-height: 0;
+  flex: 0 1 auto;
+}
+.re-ui .re-drawer .re-props {
+  overflow: auto;
+}
+.re-ui .re-drawer .re-shapes {
+  flex-shrink: 2;
+  overflow: hidden;
+}
+.re-ui.re-narrow .re-chip {
+  top: 112px;
+  bottom: auto;
+}
+.re-ui.re-narrow .re-pop {
+  width: auto;
+  left: 8px;
+}
+
+/* ---------- Nothing out past its box, whatever the size ---------- */
+.re-tools {
+  max-height: calc(100% - 72px);
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.re-map .re-menu {
+  max-height: calc(100% - 8px);
+  overflow-y: auto;
+}
+.re-tip {
+  max-width: min(280px, calc(100% - 8px));
+}
+.re-top {
+  min-width: 0;
+}
+.re-top > * {
+  flex-shrink: 0;
+}
+.re-top .re-options,
+.re-top .re-image {
+  flex-shrink: 1;
+  min-width: 0;
+}
+.re-image select {
+  min-width: 64px;
+  width: 100%;
+  text-overflow: ellipsis;
+}
+
+/* The top bar's own buttons too many for it (measured): its separators out, then the "?" (in "⋯" then). */
+.re-ui.re-narrow .re-imagesep,
+.re-ui.re-tight .re-top .vsep {
+  display: none;
+}
+.re-ui.re-tight .re-top {
+  gap: 0;
+  padding: 0 4px;
+}
+.re-ui.re-tight .done {
+  padding: 0 10px;
+}
+.re-ui.re-tighter .re-help {
+  display: none;
+}
+/* The options in a bar of their own: the rest of the top bar at its right end. */
+.re-ui.re-wrapped .re-top .re-help {
+  margin-left: auto;
+}
+.re-ui.re-wrapped.re-tighter .re-top [data-k="more"] {
+  margin-left: auto;
 }

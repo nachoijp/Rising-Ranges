@@ -211,8 +211,8 @@ export function defaultRamp(ed: ReliefEditor, s: Shape): Ramp {
   const { x0, y0, x1, y1 } = bbox(ring);
   const [cx, cy] = [(x0 + x1) / 2, (y0 + y1) / 2];
   const [w, h] = [x1 - x0, y1 - y0];
-  // Wide: left to right; tall: from the bottom up.
-  const [a, b]: [Pt, Pt] = w >= h ? [[x0 + w * 0.1, cy], [x1 - w * 0.1, cy]] : [[cx, y1 - h * 0.1], [cx, y0 + h * 0.1]];
+  // Wide: left to right; tall: from the bottom up; from edge to edge (shorter, it'd leave a landing at each end).
+  const [a, b]: [Pt, Pt] = w >= h ? [[x0, cy], [x1, cy]] : [[cx, y1], [cx, y0]];
   const layer = layerOf(ed, ed.data.shapes.indexOf(s));
   const from = s.kind === "flat" ? s.h : quarter(layer ? ed.relief.surface(layer, ...a, true) : 0);
   return { a, b, from, to: from + 1, steps: 0 };
@@ -396,7 +396,8 @@ export function cut(ed: ReliefEditor, a: Pt, b: Pt, only: number | null = null):
   const [ux, uy] = [(b[0] - a[0]) / len, (b[1] - a[1]) / len];
   const plans: { si: number; chords: [Hit, Hit][]; holed: boolean }[] = [];
   data.shapes.forEach((s, si) => {
-    if (only !== null && si !== only) {
+    // Hidden or locked on the editor's map: not cut.
+    if ((only !== null && si !== only) || s.hidden || s.locked) {
       return;
     }
     // Where its sides (round it and round its holes) go across the line (a corner on it counting as over it).
@@ -538,7 +539,10 @@ export function cut(ed: ReliefEditor, a: Pt, b: Pt, only: number | null = null):
   prune(ed);
   ed.relief.derive();
   keepHeights(ed, halves);
-  ed.sel = only !== null ? { kind: "shape", i: only } : null;
+  // The biggest of the halves picked, to go on with.
+  const sizes = halves.map(({ si }) => ({ si, size: ed.data.shapes[si] ? Math.abs(area(ed.relief.coordsOf(ed.data.shapes[si])[0])) : 0 }));
+  const biggest = sizes.reduce((best, x) => (x.size > best.size ? x : best), { si: -1, size: -1 });
+  ed.sel = biggest.si >= 0 ? { kind: "shape", i: biggest.si } : only !== null ? { kind: "shape", i: only } : null;
   return true;
 }
 
@@ -548,7 +552,7 @@ export function cut(ed: ReliefEditor, a: Pt, b: Pt, only: number | null = null):
  * added to it instead (with `erase`, taken from it: a hole, if it's inside);
  * a part a shape's cut into by that is its own shape, as it was.
  */
-export function paintShape(ed: ReliefEditor, pts: Pt[], erase: boolean) {
+export function paintShape(ed: ReliefEditor, pts: Pt[], erase: boolean, fresh = false) {
   const r = ed.settings.shapeRadius;
   const circle = ([x, y]: Pt) => Array.from({ length: 24 }, (_, k): Pt => [x + Math.cos((k / 24) * Math.PI * 2) * r, y + Math.sin((k / 24) * Math.PI * 2) * r]);
   const parts = pts.length === 1 ? [circle(pts[0])] : pts.slice(1).map((b, k) => hull([...circle(pts[k]), ...circle(b)]));
@@ -564,7 +568,8 @@ export function paintShape(ed: ReliefEditor, pts: Pt[], erase: boolean) {
     return;
   }
   const tolerance = Math.min(0.08, r * 0.03);
-  const si = ed.sel?.kind === "shape" ? ed.sel.i : -1;
+  // A new shape asked for: what's picked left as it is.
+  const si = !fresh && ed.sel?.kind === "shape" ? ed.sel.i : -1;
   const own = si >= 0 ? polygonOf(ed, ed.data.shapes[si]) : null;
   let touches = false;
   if (own) {

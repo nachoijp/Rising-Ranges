@@ -1,4 +1,4 @@
-import { area, centroid } from "../geom";
+import { area, centroid, inShape } from "../geom";
 import { G, apply, cellOf } from "../relief";
 import { standSide } from "../stand";
 import type { Pt } from "../types";
@@ -21,6 +21,14 @@ export type ViewTexts = { rampNoArrow: string; inclined: string; relative: strin
 
 /** How long two clicks can be apart to be a double click (ms), and how far (px). */
 const DOUBLE_CLICK = { ms: 400, px: 6 };
+
+/** The shapes' outlines and their vertices: violets, as the UI's own accent; what's picked, a deeper one. */
+const LINE = "rgba(214,196,255,0.9)";
+const VERTEX = "#a57cff";
+const PICK = "#6a3cf0";
+const PICK_SOFT = "rgba(106,60,240,0.75)";
+const PICK_FILL = "rgba(106,60,240,0.2)";
+const WIDTH = 2.5;
 
 export class MapView {
   canvas: HTMLCanvasElement;
@@ -266,6 +274,9 @@ export class MapView {
     const data = ed.data;
     if (this.showHeights) {
       for (const piece of r.pieces) {
+        if (data.shapes[piece.si]?.hidden) {
+          continue;
+        }
         this.path([piece.ring, ...piece.holes]);
         ctx.fillStyle = piece.h === undefined ? tint(0, 0.12) : tint(piece.h, 0.3);
         ctx.fill("evenodd");
@@ -274,18 +285,18 @@ export class MapView {
     const picked = ed.sel?.kind === "shape" ? ed.sel.i : -1;
     data.shapes.forEach((s, i) => {
       const [ring, holes] = r.coordsOf(s);
-      if (ring.length < 3) {
+      if (ring.length < 3 || s.hidden) {
         return;
       }
       this.path([ring, ...holes]);
       const selected = picked === i;
       ctx.setLineDash(s.kind === "flat" ? [] : [6, 4]);
-      ctx.strokeStyle = selected ? "#ffd54a" : "rgba(255,255,255,0.85)";
-      ctx.lineWidth = selected ? 3 : 1.5;
+      ctx.strokeStyle = selected ? PICK : LINE;
+      ctx.lineWidth = WIDTH;
       ctx.stroke();
       ctx.setLineDash([]);
       if (s.kind === "ramp" && s.ramp) {
-        arrow(ctx, this.toScreen(...s.ramp.a), this.toScreen(...s.ramp.b), selected ? "#ffd54a" : "#7fd3ff");
+        arrow(ctx, this.toScreen(...s.ramp.a), this.toScreen(...s.ramp.b), selected ? PICK : "#7fd3ff");
       }
       if (Math.abs(area(ring)) * this.scale * this.scale > 500) {
         const [cx, cy] = this.toScreen(...centroid(ring));
@@ -307,23 +318,23 @@ export class MapView {
       const [ring, holes] = r.coordsOf(data.shapes[ed.hover]);
       if (ring.length >= 3) {
         this.path([ring, ...holes]);
-        ctx.strokeStyle = "rgba(255,213,74,0.7)";
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = PICK_SOFT;
+        ctx.lineWidth = WIDTH;
         ctx.stroke();
       }
     }
     if (picked >= 0 && data.shapes[picked]) {
       const [ring, holes] = r.coordsOf(data.shapes[picked]);
       this.path([ring, ...holes]);
-      ctx.fillStyle = "rgba(255,213,74,0.18)";
+      ctx.fillStyle = PICK_FILL;
       ctx.fill("evenodd");
     }
     const h = ed.tool === "edit" || ed.isShapeTool() ? ed.handles() : null;
     if (h) {
       const [hx0, hy0, hx1, hy1] = h.rect;
-      ctx.strokeStyle = "#ffd54a";
-      ctx.lineWidth = 1;
-      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
       ctx.strokeRect(hx0, hy0, hx1 - hx0, hy1 - hy0);
       ctx.setLineDash([]);
       ctx.beginPath();
@@ -345,28 +356,59 @@ export class MapView {
     const onSlope = new Set(data.shapes.filter((s) => s.kind === "slope").flatMap(vertsOf));
     const sel = ed.sel;
     const pickedVerts = new Set(sel?.kind === "verts" ? sel.list : sel?.kind === "vertex" ? [sel.i] : []);
-    const used = new Set([...data.shapes.flatMap(vertsOf), ...(ed.drawing ?? [])]);
+    // Only those of the shapes picked (or whose vertices are), of the one Elegir's pointer is over
+    // while it picks vertices, and of the outline being drawn: the rest only their outlines.
+    const shown = new Set<number>(sel?.kind === "shape" ? [sel.i, ...(sel.more ?? [])] : []);
+    data.shapes.forEach((s, si) => {
+      if (vertsOf(s).some((v) => pickedVerts.has(v))) {
+        shown.add(si);
+      }
+    });
+    if (sel?.kind === "point" && data.points[sel.i]) {
+      const q = data.points[sel.i];
+      data.shapes.forEach((s, si) => s.kind === "slope" && inShape(q.x, q.y, ...r.coordsOf(s)) && shown.add(si));
+    }
+    if (ed.tool === "edit" && ed.settings.pickMode !== "shapes" && ed.hover >= 0) {
+      shown.add(ed.hover);
+    }
+    const visible = [...shown].map((si) => data.shapes[si]).filter((s) => s && !s.hidden);
+    const used = new Set([...visible.flatMap(vertsOf), ...(ed.drawing ?? [])]);
+    ctx.strokeStyle = "rgba(20,16,32,0.8)";
+    ctx.lineWidth = 1;
     data.verts.forEach((v, i) => {
       if (!used.has(i)) {
         return;
       }
       const [x, y] = this.toScreen(v.x, v.y);
-      ctx.fillStyle = pickedVerts.has(i) ? "#ffd54a" : onSlope.has(i) ? "#7fd3ff" : "#fff";
-      ctx.fillRect(x - 3, y - 3, 6, 6);
+      ctx.fillStyle = pickedVerts.has(i) ? PICK : onSlope.has(i) ? "#7fd3ff" : VERTEX;
+      ctx.beginPath();
+      ctx.moveTo(x, y - 4.5);
+      ctx.lineTo(x + 4.5, y);
+      ctx.lineTo(x, y + 4.5);
+      ctx.lineTo(x - 4.5, y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
       if (onSlope.has(i) || (pickedVerts.has(i) && pickedVerts.size === 1)) {
         label(ctx, x + 12, y - 10, fmt(v.h), pickedVerts.has(i));
       }
     });
+    // Height points: those inside an inclined shape shown.
+    const slopes = visible.filter((s) => s.kind === "slope").map((s) => r.coordsOf(s));
     data.points.forEach((q, i) => {
-      const [x, y] = this.toScreen(q.x, q.y);
       const selected = sel?.kind === "point" && sel.i === i;
-      ctx.fillStyle = selected ? "#ffd54a" : "#b388ff";
+      if (!selected && !slopes.some(([ring, holes]) => inShape(q.x, q.y, ring, holes))) {
+        return;
+      }
+      const [x, y] = this.toScreen(q.x, q.y);
+      // A round mark (the vertices are diamonds), ringed in white.
+      ctx.fillStyle = selected ? PICK : VERTEX;
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.moveTo(x, y - 6);
-      ctx.lineTo(x + 6, y);
-      ctx.lineTo(x, y + 6);
-      ctx.lineTo(x - 6, y);
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
       ctx.fill();
+      ctx.stroke();
       label(ctx, x + 12, y - 10, fmt(q.h), selected);
     });
   }
@@ -377,8 +419,8 @@ export class MapView {
     const ed = this.editor;
     const r = ed.relief;
     const data = ed.data;
-    ctx.strokeStyle = "#ffd54a";
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = PICK;
+    ctx.lineWidth = WIDTH;
     if (ed.drawing) {
       ctx.beginPath();
       ed.drawing.forEach((i, k) => {
@@ -394,6 +436,31 @@ export class MapView {
         ctx.lineTo(...this.toScreen(c.x, c.y));
       }
       ctx.stroke();
+    }
+    // The pen's catch: where the next point goes on something that's there (a vertex: shared with it;
+    // a side: on it), and the first point, closing the outline, a ring of its own.
+    const snapped = ed.tool === "polygon" ? ed.cursor?.snap : null;
+    if (snapped) {
+      const [x, y] = this.toScreen(snapped.x, snapped.y);
+      const closing = !!ed.drawing && ed.drawing.length >= 3 && "vertex" in snapped && snapped.vertex === ed.drawing[0];
+      ctx.save();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = closing ? "#7cffb0" : "#ffffff";
+      ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
+      ctx.beginPath();
+      if ("vertex" in snapped) {
+        ctx.arc(x, y, closing ? 9 : 6, 0, Math.PI * 2);
+      } else {
+        // On a side: a diamond.
+        ctx.moveTo(x, y - 6);
+        ctx.lineTo(x + 6, y);
+        ctx.lineTo(x, y + 6);
+        ctx.lineTo(x - 6, y);
+        ctx.closePath();
+      }
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
     }
     if (ed.shape) {
       const { start: a, end: b, path: points } = ed.shape;
@@ -412,9 +479,12 @@ export class MapView {
     if (ed.box) {
       const [ax, ay] = this.toScreen(ed.box.start.x, ed.box.start.y);
       const [bx, by] = this.toScreen(ed.box.end.x, ed.box.end.y);
-      ctx.setLineDash([4, 3]);
+      ctx.save();
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
       ctx.strokeRect(ax, ay, bx - ax, by - ay);
-      ctx.setLineDash([]);
+      ctx.restore();
     }
     // A shape's painted relief: its terrain's tint, within its outline.
     if (this.showHeights) {
@@ -449,24 +519,24 @@ export class MapView {
         continue;
       }
       this.path([ring, ...holes]);
-      ctx.fillStyle = "rgba(255,213,74,0.1)";
+      ctx.fillStyle = PICK_FILL;
       ctx.fill("evenodd");
-      ctx.strokeStyle = "#ffd54a";
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = PICK;
+      ctx.lineWidth = WIDTH;
       ctx.setLineDash([5, 3]);
       ctx.stroke();
       ctx.setLineDash([]);
     }
     const one = ed.sel?.kind === "shape" && !ed.sel.more?.length ? data.shapes[ed.sel.i] : null;
-    // A picked ramp's arrow ends (dragged with Elegir): its tail dark, its head yellow.
+    // A picked ramp's arrow ends (dragged with Elegir): its tail dark, its head the picked colour.
     if (ed.tool === "edit" && one?.kind === "ramp" && one.ramp) {
-      for (const [end, fill] of [["a", "#222"], ["b", "#ffd54a"]] as const) {
+      for (const [end, fill] of [["a", "#222"], ["b", PICK]] as const) {
         const [x, y] = this.toScreen(...one.ramp[end]);
         ctx.beginPath();
         ctx.arc(x, y, 6, 0, Math.PI * 2);
         ctx.fillStyle = fill;
         ctx.fill();
-        ctx.strokeStyle = "#ffd54a";
+        ctx.strokeStyle = "#fff";
         ctx.lineWidth = 2;
         ctx.stroke();
       }
@@ -527,7 +597,7 @@ export class MapView {
       ctx.stroke();
     }
     if (ed.stroke) {
-      ctx.strokeStyle = ed.stroke.erase ? "rgba(255,107,107,0.45)" : "rgba(255,213,74,0.45)";
+      ctx.strokeStyle = ed.stroke.erase ? "rgba(255,107,107,0.45)" : "rgba(124,77,255,0.45)";
       ctx.lineWidth = ed.settings.shapeRadius * 2 * this.scale;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
@@ -542,7 +612,7 @@ export class MapView {
     }
     if (ed.cursor && (ed.tool === "paintShape" || ed.isBrush())) {
       const [x, y] = this.toScreen(ed.cursor.x, ed.cursor.y);
-      ctx.strokeStyle = ed.tool === "paintShape" ? "#ffd54a" : ed.brushKind === "lower" ? "#ff9f6b" : "#fff";
+      ctx.strokeStyle = ed.tool === "paintShape" ? PICK : ed.brushKind === "lower" ? "#ff9f6b" : "#fff";
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.arc(x, y, (ed.tool === "paintShape" ? ed.settings.shapeRadius : ed.settings.radius) * this.scale, 0, Math.PI * 2);
@@ -570,9 +640,9 @@ function arrow(ctx: CanvasRenderingContext2D, [ax, ay]: [number, number], [bx, b
 function label(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, selected: boolean) {
   ctx.font = "bold 12px system-ui";
   const w = ctx.measureText(text).width + 8;
-  ctx.fillStyle = selected ? "#ffd54a" : "rgba(20,20,24,0.8)";
+  ctx.fillStyle = selected ? PICK : "rgba(20,20,24,0.8)";
   ctx.fillRect(x - w / 2, y - 9, w, 18);
-  ctx.fillStyle = selected ? "#111" : "#fff";
+  ctx.fillStyle = "#fff";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(text, x, y);
