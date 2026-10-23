@@ -3,6 +3,7 @@ import { clampHeight, compose, inverse, quarter, Relief, type Layer } from "../r
 import { fromStored, toStored } from "../codec";
 import type { Affine, Pt, ReliefData, Shape } from "../types";
 import { BRUSHES, paintBrush, type BrushKind } from "./brush";
+import { time } from "../../timing";
 import {
   addShape,
   cut,
@@ -154,7 +155,7 @@ export class ReliefEditor {
 
   /** The relief worked out again, and the page told. */
   changed() {
-    this.relief.derive();
+    time("editor.derive", () => this.relief.derive());
     this.host.changed();
   }
 
@@ -202,7 +203,6 @@ export class ReliefEditor {
     return this.relief.heightAt(x, y);
   }
 
-  /** The shape on top at a point (-1: none). */
   /** The topmost shape at a point that can be picked there (not hidden, nor locked, in the editor); -1: none. */
   shapeAt(x: number, y: number): number {
     const pieces = this.relief.pieces;
@@ -729,7 +729,7 @@ export class ReliefEditor {
   /** A dab of the brush at `p` (see brush.ts), as the settings have it. */
   paint(p: { x: number; y: number }) {
     const { radius, strength, level, groundOnly } = this.settings;
-    paintBrush(this.relief, p, { kind: this.brushKind, radius, strength, level, groundOnly });
+    time("editor.brush", () => paintBrush(this.relief, p, { kind: this.brushKind, radius, strength, level, groundOnly }));
     // A flattening brush reaches a cell past its edge (see brush.ts); one more for the surfaces between points.
     const reach = radius + 2;
     const d = this.dirty;
@@ -1089,7 +1089,6 @@ export class ReliefEditor {
   }
 }
 
-/** The affine map taking points `from` to `to` (worked out from the three farthest apart), or null. */
 /** A closed outline rounded `passes` times (Chaikin's: each corner cut at a quarter of its sides). */
 function rounded(ring: Pt[], passes: number): Pt[] {
   let out = ring;
@@ -1108,6 +1107,7 @@ function rounded(ring: Pt[], passes: number): Pt[] {
 /** A shape the editor's map lets be picked and changed (not hidden, nor locked there). */
 export const free = (s: Shape) => !s.hidden && !s.locked;
 
+/** The affine map taking points `from` to `to` (worked out from the three farthest apart), or null. */
 export function affineFrom(from: Pt[], to: Pt[]): Affine | null {
   if (from.length < 3) {
     return null;

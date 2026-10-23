@@ -1,5 +1,6 @@
 import { buildShape, type Item } from "@owlbear-rodeo/sdk";
 import { getPluginId } from "../util/getPluginId";
+import { since, stamp } from "../timing";
 import { fromBase64, toBase64 } from "./codec";
 
 // A relief kept in the scene, so every client has it (Owlbear shares the
@@ -24,11 +25,17 @@ async function through(bytes: Uint8Array, stream: CompressionStream | Decompress
 }
 
 export async function pack(json: string): Promise<string> {
-  return toBase64(await through(new TextEncoder().encode(json), new CompressionStream("gzip")));
+  const t0 = stamp();
+  const packed = toBase64(await through(new TextEncoder().encode(json), new CompressionStream("gzip")));
+  since("relief.pack", t0);
+  return packed;
 }
 
 export async function unpack(text: string): Promise<string> {
-  return new TextDecoder().decode(await through(fromBase64(text), new DecompressionStream("gzip")));
+  const t0 = stamp();
+  const json = new TextDecoder().decode(await through(fromBase64(text), new DecompressionStream("gzip")));
+  since("relief.unpack", t0);
+  return json;
 }
 
 export const partOf = (item: Item): ReliefPart | undefined => {

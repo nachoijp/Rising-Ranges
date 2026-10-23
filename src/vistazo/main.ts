@@ -12,7 +12,8 @@ import { getStoredTheme } from "../theme/themes";
 import { getColorString } from "../util/color";
 import { buildScene, propOf, type Piece, type Reliefs, type Token, type VistazoScene } from "./scene";
 import type { Region } from "./view/walls";
-import { anchorOf, cellToScene, type Anchor } from "../relief/anchor";
+import { settles } from "./settle";
+import { anchorOf, cellToScene, sceneToCell, type Anchor } from "../relief/anchor";
 import { reliefTerrain } from "../relief/vistazo";
 import clip from "../terrain/clip";
 import type { Moving } from "../relief/editor/session";
@@ -54,6 +55,7 @@ import { clearOf, fogOver } from "./fog";
 import { DragPath } from "../util/dragPath";
 import { saveDraggedToken } from "../util/saveDrag";
 import "./vistazo.css";
+import { since, stamp, time } from "../timing";
 
 /**
  * The same page opened full screen (an Owlbear modal, `?full`): the
@@ -881,6 +883,93 @@ async function start() {
     }
   };
   let lastClick = { token: "", at: 0, x: 0, y: 0 };
+
+  // ---------- The relief editor's terrain brush, on the 3D terrain ----------
+  // With it in hand, the left button paints where the pointer is on the terrain (as on the 2D map, its
+  // keys too); the right one still turns the camera, the middle one moves it.
+  /** The pointer painting (pressed on the terrain), if one is. */
+  let brushPointer: number | null = null;
+  const modsOf = (event: PointerEvent) => ({ shift: event.shiftKey, alt: event.altKey, ctrl: event.ctrlKey || event.metaKey, clicks: 1 });
+  /** The edited map's cell under the pointer on the terrain (null: none, or no brush in hand). */
+  const brushCell = (event: PointerEvent) => {
+    const map = session && items.find((item): item is Image => item.id === session!.imageId && item.type === "IMAGE");
+    if (!session?.brush.active() || !map || !scene) {
+      return null;
+    }
+    const at = stagePoint(event);
+    const ground = view.pickTerrain(at.x, at.y);
+    if (!ground) {
+      return null;
+    }
+    const [x, y] = sceneToCell(anchorOf(map), dpi, ground.x, ground.y);
+    return { x, y, anchor: anchorOf(map) };
+  };
+  /** The brush's ring round a cell, on the terrain (or none). */
+  const showBrush = (cell: { x: number; y: number; anchor: Anchor } | null) => {
+    if (!cell || !session) {
+      view.setBrushRing(null);
+      stage.classList.remove("re-brushing");
+      return;
+    }
+    const r = session.brush.radius();
+    const ring = Array.from({ length: 48 }, (_, i) => cellToScene(cell.anchor, dpi, cell.x + r * Math.cos((i / 48) * Math.PI * 2), cell.y + r * Math.sin((i / 48) * Math.PI * 2)));
+    view.setBrushRing(ring);
+    stage.classList.add("re-brushing");
+  };
+  stage.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || !session?.brush.active() || (event.target as Element).closest("button")) {
+      return;
+    }
+    // Caught here, before the camera's own (see below).
+    event.stopImmediatePropagation();
+    event.preventDefault();
+    stage.focus({ preventScroll: true });
+    const cell = brushCell(event);
+    if (cell) {
+      brushPointer = event.pointerId;
+      stage.setPointerCapture(event.pointerId);
+      session.brush.down(cell, modsOf(event));
+    }
+    showBrush(cell);
+  });
+  stage.addEventListener("pointermove", (event) => {
+    if (!session?.brush.active()) {
+      if (stage.classList.contains("re-brushing")) {
+        showBrush(null);
+      }
+      return;
+    }
+    const held = brushPointer === event.pointerId;
+    // Turning or moving the camera (another button held): only the ring.
+    if (!held && pointers.size > 0) {
+      showBrush(null);
+      return;
+    }
+    const cell = brushCell(event);
+    if (cell) {
+      session.brush.move(cell, modsOf(event), held);
+    } else if (!held) {
+      session.brush.leave();
+    }
+    showBrush(cell);
+  });
+  const brushUp = (event: PointerEvent) => {
+    if (brushPointer !== event.pointerId) {
+      return;
+    }
+    event.stopImmediatePropagation();
+    brushPointer = null;
+    session?.brush.up();
+  };
+  stage.addEventListener("pointerup", brushUp);
+  stage.addEventListener("pointercancel", brushUp);
+  stage.addEventListener("pointerleave", () => {
+    if (brushPointer === null && session) {
+      session.brush.leave();
+      showBrush(null);
+    }
+  });
+
   stage.addEventListener("contextmenu", (event) => event.preventDefault());
   stage.addEventListener("mousedown", (event) => {
     if (event.button === 1) {
@@ -1379,10 +1468,6 @@ async function start() {
   let selection: string[] = (await OBR.player.getSelection()) ?? [];
   /** The token being dragged (here, or with the Medición tool): its rings stay where the drag began, as on the map. */
   let draggingId: string | null = null;
-  /**
-   * With one token selected, lines to every other token within a Banda —
-   * the same readings as the Distancias panel (heights with the terrain).
-   */
   /** The selected token, or prop (with the lines to props on): where the lines and rings go from. */
   const selectedOrigin = () => {
     // The free point, while there's one (selecting a token takes it away).
@@ -1447,6 +1532,10 @@ async function start() {
     placePoint(null);
     return true;
   };
+  /**
+   * With one token selected, lines to every other token within a Banda —
+   * the same readings as the Distancias panel (heights with the terrain).
+   */
   const showDistances = () => {
     updateAffected();
     const origin = selectedOrigin();
@@ -1647,6 +1736,18 @@ async function start() {
 
   /** Only the relief's heights changed since it was drawn (a brush), within this box (scene px): moved where they are (see VistazoView.reheight). */
   let heightsOnly: Region | null = null;
+  /** Where a brush went since the terrain was last built whole (scene px): let go, see settles. */
+  let brushed: Region | null = null;
+  /** A brush let go that settles: the next build, with the scene kept (see VistazoView.settleNext). */
+  let settling = false;
+  /** To tell, if something looks wrong after a brush: localStorage "rising-ranges/whole" = "1", and it's always built whole. */
+  const wholeAlways = (() => {
+    try {
+      return localStorage.getItem("rising-ranges/whole") === "1";
+    } catch {
+      return false;
+    }
+  })();
   /** The reliefs' key the scene was last built with: a change of shapes since, and it's built again whatever. */
   let builtWith = "";
   /** Shapes being dragged whole (see VistazoView.moveShapes): till they're let go. */
@@ -1657,10 +1758,14 @@ async function start() {
       if (heightsOnly && scene && builtWith === `${reliefs.key}${reliefs.surfaced}`) {
         const region = heightsOnly;
         heightsOnly = null;
-        if (view.reheight(scene, region)) {
-          return;
+        if (time("vistazo.reheight", () => view.reheight(scene!, region))) {
+          if (!settling) {
+            return;
+          }
+        } else {
+          reliefs.key = String(++reliefVersion);
+          settling = false;
         }
-        reliefs.key = String(++reliefVersion);
       }
       // The player view's fog, worked out again only when what it depends on changed (not on every token move).
       if (options.playerView) {
@@ -1700,6 +1805,7 @@ async function start() {
         sightFogKey = "";
       }
       const fogNow = options.playerView ? sightFog : null;
+      const t0 = stamp();
       scene = buildScene(
         sceneMetadata,
         items,
@@ -1712,6 +1818,7 @@ async function start() {
         fogNow ? { key: sightFogKey, clear: (world) => clearOf(fogNow, world) } : null,
         reliefs
       );
+      since("vistazo.buildScene", t0);
       builtWith = `${reliefs.key}${reliefs.surfaced}`;
       heightsOnly = null;
       for (const [id, at] of live) {
@@ -1728,7 +1835,11 @@ async function start() {
       }
       $("terrainOff").hidden = !scene.terrainOff;
       showCloudsChoice();
-      view.setScene(scene);
+      if (settling) {
+        settling = false;
+        view.settleNext();
+      }
+      time("vistazo.setScene", () => view.setScene(scene!));
       showDistances();
     } catch (error) {
       console.error("Rising Ranges: Vistazo couldn't draw the scene", error);
@@ -1809,18 +1920,26 @@ async function start() {
       root: $("reMap"),
       map: $<HTMLCanvasElement>("reMapCanvas"),
       unit: (h) => formatDistance(scale, Math.abs(h)),
-      onRelief: (image, relief, lite, heights, moving) => {
+      onRelief: (image, relief, lite, heights, moving, settle) => {
         reliefs.byImage.set(image, relief);
+        // A brush let go, where it can be drawn so: the scene kept, built again from it (see settles).
+        if (settle && !wholeAlways && !lite && scene && brushed && !dragging && builtWith === `${reliefs.key}${reliefs.surfaced}` && settles(scene, brushed)) {
+          view.setLite(false, true);
+          settling = true;
+          brushed = null;
+          soon(0);
+          return;
+        }
         view.setLite(lite);
         const map = items.find((item): item is Image => item.id === image && item.type === "IMAGE");
         // Shapes dragged whole: their meshes moved as they are; the first time, what's under them (where
         // they were) drawn, only there. Let go, all of it is built again.
         if (lite && moving && map && scene && (dragging || builtWith === `${reliefs.key}${reliefs.surfaced}`)) {
           const anchor = anchorOf(map);
-          const moved = view.moveShapes(moving.shapes, sceneMap(anchor, dpi, moving.map));
+          const moved = time("vistazo.moveShapes", () => view.moveShapes(moving.shapes, sceneMap(anchor, dpi, moving.map)));
           if (moved === "started") {
             dragging = true;
-            view.fillUnder(underShapes(relief, anchor, dpi, moving));
+            time("vistazo.fillUnder", () => view.fillUnder(underShapes(relief, anchor, dpi, moving)));
           }
           if (moved) {
             return;
@@ -1836,17 +1955,19 @@ async function start() {
             [heights.x1, heights.y1],
             [heights.x0, heights.y1],
           ].map(([x, y]) => cellToScene(anchor, dpi, x, y));
-          const before = heightsOnly;
-          heightsOnly = {
+          const grow = (before: Region | null): Region => ({
             x0: Math.min(before?.x0 ?? Infinity, ...corners.map((p) => p.x)),
             y0: Math.min(before?.y0 ?? Infinity, ...corners.map((p) => p.y)),
             x1: Math.max(before?.x1 ?? -Infinity, ...corners.map((p) => p.x)),
             y1: Math.max(before?.y1 ?? -Infinity, ...corners.map((p) => p.y)),
-          };
+          });
+          heightsOnly = grow(heightsOnly);
+          brushed = grow(brushed);
           soon(50);
           return;
         }
         heightsOnly = null;
+        brushed = null;
         reliefs.key = String(++reliefVersion);
         soon();
       },

@@ -21,18 +21,22 @@ function seeded(seed: number) {
  * moment), a new texture on it each time.
  */
 export function patternTexture(style: "stone" | "rubble" | "earth" | "wood"): THREE.CanvasTexture {
-  let canvas = patternCanvases.get(style);
-  if (!canvas) {
-    canvas = drawPattern(style);
-    patternCanvases.set(style, canvas);
+  let texture = patternTextures.get(style);
+  if (!texture) {
+    texture = new THREE.CanvasTexture(drawPattern(style));
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    // One for every material of its style, every build: not to be let go with one (see isShared).
+    texture.userData.shared = true;
+    patternTextures.set(style, texture);
   }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
   return texture;
 }
 
-const patternCanvases = new Map<string, HTMLCanvasElement>();
+/** A texture every build shares (a pattern's): kept when what uses it is let go. */
+export const isShared = (texture: THREE.Texture) => texture.userData.shared === true;
+
+const patternTextures = new Map<string, THREE.CanvasTexture>();
 
 function drawPattern(style: "stone" | "rubble" | "earth" | "wood"): HTMLCanvasElement {
   const size = 256;

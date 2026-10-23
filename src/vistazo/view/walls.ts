@@ -1,4 +1,4 @@
-import { inShape, pieceHeight, type VistazoScene } from "../scene";
+import { pieceHeight, type VistazoScene } from "../scene";
 import { LIGHT, type Wall } from "./types";
 
 /** A box of the scene (px). */
@@ -22,6 +22,13 @@ export function computeWalls(scene: VistazoScene, base: number, region?: Region,
   for (const [pi, piece] of scene.pieces.entries()) {
     for (const [gi, polygon] of piece.shape.entries()) {
       for (const [ri, ring] of polygon.entries()) {
+        // Which way is out of the piece, by the ring's turn: an outline's outside is its right going
+        // one way round, a hole's the other (no asking the piece's shape at each edge).
+        let turn = 0;
+        for (let i = 0; i < ring.length - 1; i++) {
+          turn += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+        }
+        const flip = turn > 0 !== (ri === 0);
         for (let i = 0; i < ring.length - 1; i++) {
           const [ax, ay] = ring[i];
           const [bx, by] = ring[i + 1];
@@ -39,14 +46,10 @@ export function computeWalls(scene: VistazoScene, base: number, region?: Region,
           if (len < probe) {
             continue;
           }
-          let nx = dy / len;
-          let ny = -dx / len;
+          const nx = (flip ? -dy : dy) / len;
+          const ny = (flip ? dx : -dx) / len;
           const mx = (ax + bx) / 2;
           const my = (ay + by) / 2;
-          if (inShape(mx + nx * probe, my + ny * probe, piece.shape)) {
-            nx = -nx;
-            ny = -ny;
-          }
           // (A standing shape's picture stands just in front of its walls: they all stay.)
           const lower = scene.pieceAt(mx + nx * probe, my + ny * probe);
           // With slopes about, every edge is cut in short steps: a slope may meet it anywhere along
@@ -61,14 +64,18 @@ export function computeWalls(scene: VistazoScene, base: number, region?: Region,
             const t0 = pieceHeight(piece, px, py);
             const t1 = pieceHeight(piece, qx, qy);
             // The higher side draws the wall: where this one's lower at an end, it narrows to nothing there.
-            // Beside a ramp, down to the lowest ground along the step (its ends and middle): where a ramp
-            // ends partway along, a straight line between the ends would leave a wedge open, and what
-            // reaches below the ground is hidden under it.
+            // Beside a ramp ending partway along the step (the ground dips at its middle, below a straight
+            // line between its ends), down to the lowest of it: that line would leave a wedge open, and
+            // what reaches below the ground is hidden under it. Otherwise, the ground as it is at each end:
+            // a flat foot under a top that rises along the step (a soft edge's, beside ground that rises
+            // with it) shows as a tooth on every step.
             let low0 = outP ?? base;
             let low1 = outQ ?? base;
             if (steps > 1) {
               const outM = scene.heightAt((px + qx) / 2 + nx * probe, (py + qy) / 2 + ny * probe) ?? base;
-              low0 = low1 = Math.min(low0, low1, outM);
+              if (outM < (low0 + low1) / 2 - 0.02) {
+                low0 = low1 = Math.min(low0, low1, outM);
+              }
             }
             const b0 = Math.min(t0, low0);
             const b1 = Math.min(t1, low1);

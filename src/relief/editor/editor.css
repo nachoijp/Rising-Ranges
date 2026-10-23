@@ -84,11 +84,23 @@
   --re-field: color-mix(in srgb, var(--fg) 6%, transparent);
   --re-picked: color-mix(in srgb, var(--accent) 18%, transparent);
   --re-warn: #ffb74d;
+  --re-map-bg: #111318;
+  /* Rounding: fields and small buttons; buttons and boxes; panels and menus. */
+  --re-radius-s: 6px;
+  --re-radius-m: 8px;
+  --re-radius-l: 12px;
+  /* Notes over the map (the tooltip, the keys' chip, the toast): dark, their text light. */
+  --re-tip-bg: rgba(97, 97, 97, 0.94);
+  --re-chip-bg: rgba(20, 22, 28, 0.72);
+  --re-toast-bg: rgba(50, 50, 50, 0.95);
+  --re-on-note: #fff;
+  --re-on-note-soft: rgba(255, 255, 255, 0.84);
+  --re-on-note-faint: rgba(255, 255, 255, 0.7);
   position: relative;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: #111318;
+  background: var(--re-map-bg);
   border-right: 1px solid var(--line);
 }
 .re-map canvas {
@@ -109,6 +121,9 @@
   font-size: 14px;
   /* The pieces follow the map's width (the line to the 3D dragged, a phone). */
   container: re-ui / inline-size;
+  /* Under the top bar; under the bars (the options in one of their own: see fitOptions). */
+  --re-bar: 64px;
+  --re-below: var(--re-bar);
 }
 .re-ui > * {
   pointer-events: auto;
@@ -124,7 +139,7 @@
   backdrop-filter: blur(18px) saturate(1.3);
   -webkit-backdrop-filter: blur(18px) saturate(1.3);
   border: 1px solid var(--re-divider);
-  border-radius: 12px;
+  border-radius: var(--re-radius-l);
   box-shadow: 0 10px 34px -10px rgba(0, 0, 0, 0.5);
 }
 
@@ -142,7 +157,7 @@
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--re-radius-m);
   background: transparent;
   color: var(--re-icon);
   cursor: pointer;
@@ -197,7 +212,7 @@
   height: 32px;
   box-sizing: border-box;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--re-radius-s);
   background: var(--re-field);
   color: var(--fg);
   font: inherit;
@@ -251,9 +266,21 @@
   align-items: center;
   gap: 2px;
   padding: 0 6px;
+  min-width: 0;
+}
+.re-top > * {
+  flex-shrink: 0;
+}
+.re-top .re-options,
+.re-top .re-image {
+  flex-shrink: 1;
+  min-width: 0;
 }
 .re-image select {
   max-width: 180px;
+  min-width: 64px;
+  width: 100%;
+  text-overflow: ellipsis;
 }
 .re-options {
   flex: 1;
@@ -325,7 +352,7 @@
   box-sizing: border-box;
   padding: 0 2px;
   margin: 0 2px;
-  border-radius: 8px;
+  border-radius: var(--re-radius-m);
   background: var(--re-field);
 }
 .re-map .numbox .ib.sm {
@@ -338,13 +365,6 @@
   padding: 0;
   background: transparent;
   text-align: center;
-  -moz-appearance: textfield;
-  appearance: textfield;
-}
-.re-map .numbox input.num::-webkit-inner-spin-button,
-.re-map .numbox input.num::-webkit-outer-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
 }
 .re-map .numbox .nsep {
   width: 1px;
@@ -389,7 +409,7 @@
   padding: 0 16px;
   margin-left: 4px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--re-radius-m);
   background: var(--accent);
   color: var(--accent-fg);
   font: 500 14px Roboto, "Segoe UI", system-ui, sans-serif;
@@ -400,7 +420,10 @@
 .re-tools {
   position: absolute;
   left: 8px;
-  top: 64px;
+  top: var(--re-bar);
+  max-height: calc(100% - var(--re-bar) - 8px);
+  overflow-y: auto;
+  scrollbar-width: none;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -415,10 +438,10 @@
 .re-pop {
   position: absolute;
   right: 8px;
-  top: 64px;
+  top: var(--re-below);
   z-index: 10;
   width: 340px;
-  max-height: calc(100% - 80px);
+  max-height: calc(100% - var(--re-below) - 16px);
   overflow: auto;
   padding: 10px 12px;
   font-size: 13px;
@@ -451,9 +474,9 @@
 .re-props {
   position: absolute;
   right: 8px;
-  top: 64px;
+  top: var(--re-below);
   width: 280px;
-  max-height: calc(100% - 72px);
+  max-height: calc(100% - var(--re-below) - 8px);
   overflow: auto;
   box-sizing: border-box;
   padding: 8px;
@@ -473,7 +496,7 @@
   min-width: 0;
   height: 32px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--re-radius-s);
   background: transparent;
   color: var(--fg);
   font: 500 14px Roboto, "Segoe UI", system-ui, sans-serif;
@@ -492,7 +515,7 @@
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--re-radius-s);
   background: transparent;
   color: var(--muted);
   cursor: pointer;
@@ -529,7 +552,7 @@
   display: inline-flex;
   gap: 2px;
   padding: 2px;
-  border-radius: 10px;
+  border-radius: var(--re-radius-m);
   background: var(--re-field);
   justify-self: start;
 }
@@ -538,7 +561,7 @@
   align-items: center;
   gap: 2px;
   padding: 2px;
-  border-radius: 10px;
+  border-radius: var(--re-radius-m);
   background: var(--re-field);
 }
 .re-props .height .num {
@@ -547,11 +570,8 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  line-height: 1.1;
-}
-.re-props .height .num > div,
-.re-props .height .num {
   justify-content: center;
+  line-height: 1.1;
 }
 .re-props .height input.num {
   width: 56px;
@@ -564,16 +584,6 @@
 }
 .re-props .height:focus-within {
   box-shadow: inset 0 0 0 1px var(--accent);
-}
-.re-props .height input.num,
-.re-map .numbox input.num {
-  -moz-appearance: textfield;
-  appearance: textfield;
-}
-.re-props .height input.num::-webkit-inner-spin-button,
-.re-props .height input.num::-webkit-outer-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
 }
 .re-props .height .unit {
   color: var(--muted);
@@ -614,7 +624,7 @@
   height: 36px;
   padding: 0 8px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--re-radius-m);
   background: var(--re-field);
   color: var(--fg);
   font: inherit;
@@ -648,7 +658,7 @@
   height: 36px;
   padding: 0 4px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--re-radius-m);
   background: transparent;
   color: var(--fg);
   font: inherit;
@@ -685,7 +695,7 @@
   height: 34px;
   padding: 0 8px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--re-radius-m);
   color: var(--re-icon);
   cursor: pointer;
   user-select: none;
@@ -738,7 +748,7 @@
   height: 24px;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--re-radius-s);
   background: transparent;
   color: var(--muted);
   cursor: pointer;
@@ -763,6 +773,8 @@
   position: absolute;
   z-index: 20;
   min-width: 220px;
+  max-height: calc(100% - 8px);
+  overflow-y: auto;
   padding: 4px;
   box-sizing: border-box;
 }
@@ -774,7 +786,7 @@
   height: 36px;
   padding: 0 10px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--re-radius-m);
   background: transparent;
   color: var(--fg);
   font: inherit;
@@ -820,11 +832,11 @@
 .re-tip {
   position: absolute;
   z-index: 30;
-  max-width: 280px;
+  max-width: min(280px, calc(100% - 8px));
   padding: 4px 8px;
-  border-radius: 4px;
-  background: rgba(97, 97, 97, 0.94);
-  color: #fff;
+  border-radius: var(--re-radius-s);
+  background: var(--re-tip-bg);
+  color: var(--re-on-note);
   font-size: 12px;
   line-height: 1.4;
   pointer-events: none;
@@ -834,12 +846,12 @@
 }
 .re-tip .key {
   margin-left: 6px;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--re-on-note-faint);
 }
 .re-tip .sub {
   display: block;
   margin-top: 2px;
-  color: rgba(255, 255, 255, 0.82);
+  color: var(--re-on-note-soft);
 }
 
 /* What the keys do in what's being done: a line at the bottom, only while it's being done. */
@@ -850,9 +862,9 @@
   transform: translateX(-50%);
   max-width: calc(100% - 290px);
   padding: 5px 12px;
-  border-radius: 14px;
-  background: rgba(20, 22, 28, 0.72);
-  color: rgba(255, 255, 255, 0.86);
+  border-radius: 999px;
+  background: var(--re-chip-bg);
+  color: var(--re-on-note-soft);
   font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
@@ -867,9 +879,9 @@
   transform: translateX(-50%);
   max-width: 70%;
   padding: 8px 14px;
-  border-radius: 8px;
-  background: rgba(50, 50, 50, 0.95);
-  color: #fff;
+  border-radius: var(--re-radius-m);
+  background: var(--re-toast-bg);
+  color: var(--re-on-note);
   font-size: 13px;
 }
 
@@ -921,15 +933,8 @@
 .re-ui .re-optbar .re-options > :last-child:not(.scr) {
   margin-right: auto;
 }
-.re-ui.re-wrapped .re-pop,
-.re-ui.re-wrapped .re-props {
-  top: 112px;
-}
-.re-ui.re-wrapped .re-props {
-  max-height: calc(100% - 120px);
-}
-.re-ui.re-wrapped .re-pop {
-  max-height: calc(100% - 128px);
+.re-ui.re-wrapped {
+  --re-below: calc(var(--re-bar) + 48px);
 }
 /* A narrow map: the panels inside it, the chip off the list (at the bottom). */
 @container re-ui (max-width: 720px) {
@@ -944,7 +949,7 @@
   }
   .re-chip {
     max-width: calc(100% - 80px);
-    top: 112px;
+    top: var(--re-below);
     bottom: auto;
   }
   .re-image select {
@@ -1020,42 +1025,12 @@
   overflow: hidden;
 }
 .re-ui.re-narrow .re-chip {
-  top: 112px;
+  top: var(--re-below);
   bottom: auto;
 }
 .re-ui.re-narrow .re-pop {
   width: auto;
   left: 8px;
-}
-
-/* ---------- Nothing out past its box, whatever the size ---------- */
-.re-tools {
-  max-height: calc(100% - 72px);
-  overflow-y: auto;
-  scrollbar-width: none;
-}
-.re-map .re-menu {
-  max-height: calc(100% - 8px);
-  overflow-y: auto;
-}
-.re-tip {
-  max-width: min(280px, calc(100% - 8px));
-}
-.re-top {
-  min-width: 0;
-}
-.re-top > * {
-  flex-shrink: 0;
-}
-.re-top .re-options,
-.re-top .re-image {
-  flex-shrink: 1;
-  min-width: 0;
-}
-.re-image select {
-  min-width: 64px;
-  width: 100%;
-  text-overflow: ellipsis;
 }
 
 /* The top bar's own buttons too many for it (measured): its separators out, then the "?" (in "⋯" then). */

@@ -269,6 +269,10 @@ body {
 .stage.dragging {
   cursor: grabbing;
 }
+/* The relief editor's terrain brush over the terrain: its ring shows where it paints. */
+.stage.re-brushing:not(.dragging) {
+  cursor: crosshair;
+}
 .gl {
   position: absolute;
   inset: 0;

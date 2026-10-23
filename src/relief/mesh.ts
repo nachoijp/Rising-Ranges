@@ -42,6 +42,12 @@ export type MeshData = {
 
 type Segment = { px: number; py: number; qx: number; qy: number; tp: number; bp: number; tq: number; bq: number };
 
+/**
+ * How far (cells) a standing shape's picture is off its wall, in front: a hair (the Vistazo draws it
+ * toward the eye besides, see VistazoView.buildPiece); more shows as a gap at its edges, close up.
+ */
+const CARD_GAP = 0.002;
+
 export class ReliefMesh {
   relief: Relief;
   /** The lattice squares' cuts, by square and the outlines through it. */
@@ -410,7 +416,7 @@ export class ReliefMesh {
     const probe = 0.1;
     const beside: Record<string, Pt> = { bottom: [cx, y1 + probe], top: [cx, y0 - probe], right: [x1 + probe, cy], left: [x0 - probe, cy] };
     const base = r.evaluate(...beside[edge]);
-    const gap = 0.02;
+    const gap = CARD_GAP;
     const turn = ([X, Y]: Pt): V5 => {
       const placed: Record<string, V3> = {
         bottom: [X, y1 + gap, base + (y1 - Y)],
@@ -437,7 +443,7 @@ export class ReliefMesh {
     const ground = r.evaluate(mx + out[0] * probe, my + out[1] * probe);
     const [cx, cy] = centroid(layer.ring);
     const rise = Math.max(0.5, r.surface(layer, cx, cy) - ground);
-    const [gap, rows, step] = [0.02, 12, 0.25];
+    const [gap, rows, step] = [CARD_GAP, 12, 0.25];
     const edges = layer.loops.flatMap((loop) => loop.map((a, k): [Pt, Pt] => [a, loop[(k + 1) % loop.length]]));
     /** How far back (against `out`) the shape reaches from a point of its outline: to where it ends behind it. */
     const back = ([px, py]: Pt) => {
@@ -509,7 +515,7 @@ export class ReliefMesh {
     const ground = r.evaluate(mx + out[0] * probe, my + out[1] * probe);
     const [cx, cy] = centroid(layer.ring);
     const rise = Math.max(0.5, r.surface(layer, cx, cy) - ground);
-    const gap = 0.02;
+    const gap = CARD_GAP;
     const lerp = (a: Pt, b: Pt, t: number): Pt => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
     const n = 12;
     const tris: V5[] = [];

@@ -14,14 +14,14 @@ import { getTokenRadius } from "../render/iconAnchor";
 import { anchorOf } from "../relief/anchor";
 import type { Relief } from "../relief/relief";
 import { reliefTerrain } from "../relief/vistazo";
+import { time } from "../timing";
 
 // What the Vistazo draws, read from the scene: the map images where they
 // lie, the terrain as non-overlapping pieces (from each map image's relief,
 // see relief/vistazo.ts), and the tokens with their height above the
 // ground and the terrain under them. All in scene px; heights in grid units.
 
-/** An image of the Map layer: drawn as an <img> of its own size under `transform`. */
-/** `video`: an animated image (webm and the like), drawn with a video element. */
+/** An image of the Map layer: drawn as an <img> of its own size under `transform`; `video`: an animated one (webm and the like), drawn with a video element. */
 export type MapImage = { url: string; video: boolean; width: number; height: number; transform: string; corners: Pair[] };
 
 /** Whether an image item is a video (Owlbear takes webm and the like as images). */
@@ -95,8 +95,7 @@ export type Token = {
   bridge?: number;
 };
 
-/** An image of the Props layer, where it lies, to draw flat on the ground or standing. */
-/** `own`: its height above the terrain, set like a token's (the Elevation menu works on props too). */
+/** An image of the Props layer, where it lies, to draw flat on the ground or standing; `own`: its height above the terrain, set like a token's (the Elevation menu works on props too). */
 export type Prop = {
   id: string;
   name: string;
@@ -389,11 +388,11 @@ function buildTerrain(
   }
   const withRelief = terrainOff ? [] : mapItems.filter((item) => reliefs.has(item.id));
   const clear = sight ? sight.clear(world) : null;
-  const parts = withRelief.map((item) => reliefTerrain(reliefs.get(item.id)!, anchorOf(item), dpi, clear, surfaced));
+  const parts = withRelief.map((item) => time("scene.reliefTerrain", () => reliefTerrain(reliefs.get(item.id)!, anchorOf(item), dpi, clear, surfaced)));
   const pieces: Piece[] = parts.flatMap((part) => part.pieces);
   // The map round the reliefs: plain ground.
   try {
-    const rest = parts.length > 0 ? polygonClipping.difference(world, ...parts.map((part) => part.area)) : world;
+    const rest = parts.length > 0 ? time("scene.groundRound", () => polygonClipping.difference(world, ...parts.map((part) => part.area))) : world;
     if (rest.length > 0) {
       pieces.unshift({ height: 0, shape: rest });
     }
@@ -417,24 +416,49 @@ function buildTerrain(
     }
     return 0;
   };
-  // For asking which piece a point is in: each with its box first.
+  // For asking which piece a point is in: each ring with its box (a big piece, the ground round
+  // everything, has a hole for each shape: only those whose box has the point are asked), the pieces
+  // kept by the squares of a coarse grid their boxes reach (only those of the point's square are asked).
+  const boxOf = (ring: Pair[]) => {
+    let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const [x, y] of ring) {
+      x0 = Math.min(x0, x);
+      y0 = Math.min(y0, y);
+      x1 = Math.max(x1, x);
+      y1 = Math.max(y1, y);
+    }
+    return { x0, y0, x1, y1 };
+  };
+  const within = (b: { x0: number; y0: number; x1: number; y1: number }, x: number, y: number) => x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1;
   const boxed = pieces.map((piece) => {
-    const outline = piece.shape.flatMap((polygon) => polygon[0]);
-    return {
-      piece,
-      x0: Math.min(...outline.map((p) => p[0])),
-      y0: Math.min(...outline.map((p) => p[1])),
-      x1: Math.max(...outline.map((p) => p[0])),
-      y1: Math.max(...outline.map((p) => p[1])),
-    };
+    const polygons = piece.shape.map((polygon) => ({ outer: polygon[0], box: boxOf(polygon[0]), holes: polygon.slice(1).map((ring) => ({ ring, box: boxOf(ring) })) }));
+    const box = { x0: Math.min(...polygons.map((p) => p.box.x0)), y0: Math.min(...polygons.map((p) => p.box.y0)), x1: Math.max(...polygons.map((p) => p.box.x1)), y1: Math.max(...polygons.map((p) => p.box.y1)) };
+    const has = (x: number, y: number) =>
+      polygons.some((p) => within(p.box, x, y) && inRing(x, y, p.outer) && !p.holes.some((hole) => within(hole.box, x, y) && inRing(x, y, hole.ring)));
+    return { piece, box, has };
+  });
+  const square = dpi * 4;
+  const columns = Math.max(1, Math.ceil((bounds.x1 - bounds.x0) / square));
+  const rows = Math.max(1, Math.ceil((bounds.y1 - bounds.y0) / square));
+  const squares: number[][] = Array.from({ length: columns * rows }, () => []);
+  const column = (x: number) => Math.max(0, Math.min(columns - 1, Math.floor((x - bounds.x0) / square)));
+  const row = (y: number) => Math.max(0, Math.min(rows - 1, Math.floor((y - bounds.y0) / square)));
+  boxed.forEach(({ box }, i) => {
+    for (let r = row(box.y0); r <= row(box.y1); r++) {
+      for (let c = column(box.x0); c <= column(box.x1); c++) {
+        squares[r * columns + c].push(i);
+      }
+    }
   });
   const pieceAt = (x: number, y: number): Piece | undefined => {
     if (!inWorld(x, y)) {
       return undefined;
     }
-    for (let i = boxed.length - 1; i >= 0; i--) {
-      const b = boxed[i];
-      if (x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1 && inShape(x, y, b.piece.shape)) {
+    // The topmost first (the last drawn).
+    const list = squares[row(y) * columns + column(x)];
+    for (let k = list.length - 1; k >= 0; k--) {
+      const b = boxed[list[k]];
+      if (within(b.box, x, y) && b.has(x, y)) {
         return b.piece;
       }
     }

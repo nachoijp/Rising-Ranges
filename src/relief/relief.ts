@@ -21,6 +21,12 @@ const RASTER = 0.25;
 
 export const quarter = (h: number) => Math.round(h * 4) / 4;
 
+/** How near a shape's outline (cells) a point is on it: what working it out to and from the scene leaves. */
+const ON_EDGE = 1e-6;
+
+/** How long (cells) a stair's riser slopes, round it, where its soft edge copies its steps (see Relief.edgeHeight). */
+const RISER_SLOPE = 0.5;
+
 /** The highest (and, below 0, the deepest) a height goes, in cells: past it nothing's of use, and the maths would suffer. */
 export const HEIGHT_LIMIT = 100;
 export const clampHeight = (h: number) => Math.max(-HEIGHT_LIMIT, Math.min(HEIGHT_LIMIT, h));
@@ -47,6 +53,8 @@ export type Layer = {
   detail: Detail | null;
   raster: Raster;
   pieces: Piece[];
+  /** A stair's: its steps with sloped risers (its soft edge fades from that, see Relief.edgeHeight). */
+  climb?: (x: number, y: number) => number;
 };
 
 /** A slab worked out: over the terrain, `thick` deep under its surface. */
@@ -123,7 +131,7 @@ export class Relief {
         if (near.d < layer.soft) {
           // Its edge's height, fading over the width into what's there.
           const u = 1 - near.d / layer.soft;
-          h += (this.surface(layer, near.x, near.y) - h) * u * u * (3 - 2 * u);
+          h += (this.edgeHeight(layer, near.x, near.y) - h) * u * u * (3 - 2 * u);
         }
       }
     }
@@ -141,16 +149,56 @@ export class Relief {
     let h = !own ? this.relief(x, y) : piece ? piece.fn(x, y) + (own.detail && own.detail.v.size > 0 ? detailAt(own.detail, x, y) : 0) : this.surface(own, x, y);
     const near = !this.buckets ? this.layers : (this.buckets.get(bucketKey(x, y)) ?? []);
     for (const layer of near) {
-      if ((own && layer.si <= own.si) || layer.soft <= 0 || !inBox(layer.outer, x, y) || covers(layer, x, y)) {
+      if ((own && layer.si <= own.si) || layer.soft <= 0 || !inBox(layer.outer, x, y)) {
         continue;
       }
+      // On its outline is its edge, not under it (a neighbour's corner there, a hair either side of it
+      // as it's worked out: some taken in, some left at what's under, would show as teeth along it).
+      const inside = covers(layer, x, y);
       const edge = nearestOnLoops(layer.loops, x, y);
+      if (inside && edge.d > ON_EDGE) {
+        continue;
+      }
       if (edge.d < layer.soft) {
         const u = 1 - edge.d / layer.soft;
-        h += (this.surface(layer, edge.x, edge.y) - h) * u * u * (3 - 2 * u);
+        h += (this.edgeHeight(layer, edge.x, edge.y) - h) * u * u * (3 - 2 * u);
       }
     }
     return h;
+  }
+
+  /**
+   * What a soft edge fades from, at a point of its outline: the shape's surface; a stair's, its steps
+   * with each riser a short slope instead of a jump (fading from a jump would make what's round it jump
+   * too, which no ground can: it showed as wedges). The step beside such a slope stands over it: its
+   * side's wall (see the Vistazo's walls).
+   */
+  edgeHeight(layer: Layer, x: number, y: number): number {
+    if (!layer.climb) {
+      return this.surface(layer, x, y);
+    }
+    return layer.climb(x, y) + (layer.detail && layer.detail.v.size > 0 ? detailAt(layer.detail, x, y) : 0);
+  }
+
+  /** A stair's steps with sloped risers (see edgeHeight): undefined for anything else. */
+  private climbOf(s: Shape): ((x: number, y: number) => number) | undefined {
+    if (s.kind !== "ramp" || !s.ramp || s.ramp.steps < 2) {
+      return undefined;
+    }
+    const { a, b, steps } = s.ramp;
+    const [from, to] = this.rampEnds(s);
+    const [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+    const len = Math.hypot(dx, dy) || 1;
+    const [ux, uy] = [dx / len, dy / len];
+    const tread = len / steps;
+    const slope = Math.min(RISER_SLOPE, tread / 2);
+    const step = (k: number) => from + ((to - from) * k) / (steps - 1);
+    return (x, y) => {
+      const d = (x - a[0]) * ux + (y - a[1]) * uy;
+      const k = Math.max(0, Math.min(steps - 1, Math.floor(d / tread)));
+      const past = d - k * tread;
+      return k > 0 && past < slope ? step(k - 1) + (step(k) - step(k - 1)) * (past / slope) : step(k);
+    };
   }
 
   /** A shape's own surface at a point (a stair's step there, or the nearest one), and its painted relief unless `bare`. */
@@ -245,6 +293,7 @@ export class Relief {
           detail: s.stand ? null : (s.detail ?? null),
           raster,
           pieces: own,
+          climb: soft > 0 ? this.climbOf(s) : undefined,
         });
       });
     } finally {

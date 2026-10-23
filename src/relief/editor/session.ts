@@ -6,7 +6,7 @@ import { Relief } from "../relief";
 import { saveRelief, watchReliefs } from "../store";
 import type { Affine, ReliefData } from "../types";
 import { withZones } from "../zones";
-import { DEFAULT_SETTINGS, ReliefEditor, type Settings, type ToolId } from "./editor";
+import { DEFAULT_SETTINGS, ReliefEditor, type Mods, type Settings, type ToolId } from "./editor";
 import { icon } from "./icons";
 import {
   COMBINES,
@@ -25,13 +25,13 @@ import {
   renderTools,
   runCombine,
   shortcutsHtml,
-  tip,
   type MenuItem,
   type T,
 } from "./panel";
 import { duplicate, setType, swap } from "./shapes";
 import { installSplit } from "./split";
 import { MapView } from "./view2d";
+import { time } from "../../timing";
 
 // Editing a relief in the Vistazo 3D (its full screen, the GM's): the map in
 // 2D beside the Vistazo's own 3D, the editor's pieces floating over the map
@@ -58,6 +58,18 @@ export type EditSession = {
   retext(): void;
   /** Saved now, and the editor's pieces taken away. */
   stop(): void;
+  /**
+   * The terrain brush from the Vistazo's 3D view, at a cell of the map: whether it's in hand (and its
+   * size), a press, a move (held or not), a let go, the pointer gone. As the 2D map's own.
+   */
+  brush: {
+    active(): boolean;
+    radius(): number;
+    down(p: { x: number; y: number }, mods: Mods): void;
+    move(p: { x: number; y: number }, mods: Mods, held: boolean): void;
+    up(): void;
+    leave(): void;
+  };
 };
 
 /** Shapes being dragged whole (moved, turned, sized): which, and the map of the relief's cells from where they started. */
@@ -75,10 +87,10 @@ export type SessionOptions = {
   /** A height in the scene's own measure ("10 ft"). */
   unit: (h: number) => string;
   /**
-   * The relief of an image changed: drawn again (`lite`: something's being
-   * dragged; `heights`: only its heights changed, within that box of cells).
+   * The relief changed (`lite`: while something's in hand; `heights`: only its heights, there). Let go,
+   * `settle`: what was in hand only changed heights (a brush), see vistazo/settle.ts.
    */
-  onRelief: (imageId: string, relief: Relief, lite: boolean, heights?: Box | null, moving?: Moving | null) => void;
+  onRelief: (imageId: string, relief: Relief, lite: boolean, heights?: Box | null, moving?: Moving | null, settle?: boolean) => void;
   /** The scene's items and its dpi now (for its old terrain zones). */
   scene: () => { items: Item[]; dpi: number };
   /** What's picked changed: these shapes (their indexes) are, shown in the 3D. */
@@ -171,23 +183,23 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
   pieces.className = "re-ui";
   pieces.innerHTML = `
     <div class="re-top glass">
-      <button type="button" class="ib sm re-toolbtn" data-k="toolBtn" aria-haspopup="menu" ${tip(t("relief.tools"), t("relief.toolsHint"))}></button>
+      <button type="button" class="ib sm re-toolbtn" data-k="toolBtn" aria-haspopup="menu"></button>
       <div class="vsep re-toolsep"></div>
-      <label class="re-image" ${tip(t("relief.image"), t("relief.imageHint"))}><select data-k="image">${o.images.map((i, k) => `<option value="${esc(i.id)}" ${i.id === image.id ? "selected" : ""}>${esc(imageName(i, k))}</option>`).join("")}</select></label>
+      <label class="re-image" data-k="imageBox"><select data-k="image">${o.images.map((i, k) => `<option value="${esc(i.id)}" ${i.id === image.id ? "selected" : ""}>${esc(imageName(i, k))}</option>`).join("")}</select></label>
       <div class="vsep re-imagesep"></div>
-      <button type="button" class="ib sm" data-k="undo" ${tip(t("relief.undoName"), "", "Ctrl+Z")}>${icon("undo")}</button>
-      <button type="button" class="ib sm" data-k="redo" ${tip(t("relief.redo"), "", "Ctrl+Y")}>${icon("redo")}</button>
-      <button type="button" class="ib sm on" data-k="heights" aria-pressed="true" ${tip(t("relief.heights"), t("relief.heightsHint"))}>${icon("heights")}</button>
+      <button type="button" class="ib sm" data-k="undo">${icon("undo")}</button>
+      <button type="button" class="ib sm" data-k="redo">${icon("redo")}</button>
+      <button type="button" class="ib sm on" data-k="heights" aria-pressed="true">${icon("heights")}</button>
       <div class="vsep"></div>
       <div class="re-options" data-k="options"></div>
-      <button type="button" class="ib sm re-help" data-k="help" ${tip(t("relief.shortcuts"), t("relief.shortcutsHint"), "?")}>?</button>
+      <button type="button" class="ib sm re-help" data-k="help">?</button>
       <div class="vsep"></div>
-      <button type="button" class="ib sm" data-k="more" ${tip(t("relief.more"), t("relief.moreHint"))}>${icon("more")}</button>
+      <button type="button" class="ib sm" data-k="more">${icon("more")}</button>
       <input type="file" data-k="file" accept=".json,application/json" hidden />
-      <button type="button" class="ib sm" data-k="exit" ${tip(t("relief.exit"), t("relief.exitHint"))}>${icon("close")}</button>
-      <button type="button" class="done" data-k="done" ${tip(t("vistazo.editDone"), t("relief.localOnly"))}>${esc(t("vistazo.editDone"))}</button>
+      <button type="button" class="ib sm" data-k="exit">${icon("close")}</button>
+      <button type="button" class="done" data-k="done"></button>
     </div>
-    <div class="re-optbar glass" data-k="optbar" hidden><button type="button" class="ib sm scr" data-k="prev" aria-label="${esc(t("relief.scrollPrev"))}">${icon("expand")}</button><button type="button" class="ib sm scr next" data-k="next" aria-label="${esc(t("relief.scrollNext"))}">${icon("expand")}</button></div>
+    <div class="re-optbar glass" data-k="optbar" hidden><button type="button" class="ib sm scr" data-k="prev">${icon("expand")}</button><button type="button" class="ib sm scr next" data-k="next">${icon("expand")}</button></div>
     <div class="re-tools glass" data-k="tools"></div>
     <div class="re-props glass" data-k="props" hidden></div>
     <div class="re-shapes glass" data-k="shapes"></div>
@@ -197,6 +209,34 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
     <div class="re-toast" data-k="toast" role="status" hidden></div>`;
   root.append(pieces);
   const $ = <E extends HTMLElement = HTMLElement>(k: string) => pieces.querySelector<E>(`[data-k="${k}"]`)!;
+  /** The bar's own names and tooltips (again when the language changes: see retext). */
+  const barTexts = () => {
+    const name = (k: string, title: string, sub = "", key = "") => {
+      const el = $(k);
+      el.dataset.tip = title;
+      for (const [field, value] of [["tipSub", sub], ["tipKey", key]] as const) {
+        if (value) {
+          el.dataset[field] = value;
+        } else {
+          delete el.dataset[field];
+        }
+      }
+      el.setAttribute("aria-label", sub ? `${title}. ${sub}` : title);
+    };
+    name("toolBtn", t("relief.tools"), t("relief.toolsHint"));
+    name("imageBox", t("relief.image"), t("relief.imageHint"));
+    name("undo", t("relief.undoName"), "", "Ctrl+Z");
+    name("redo", t("relief.redo"), "", "Ctrl+Y");
+    name("heights", t("relief.heights"), t("relief.heightsHint"));
+    name("help", t("relief.shortcuts"), t("relief.shortcutsHint"), "?");
+    name("more", t("relief.more"), t("relief.moreHint"));
+    name("exit", t("relief.exit"), t("relief.exitHint"));
+    name("done", t("vistazo.editDone"), t("relief.localOnly"));
+    $("done").textContent = t("vistazo.editDone");
+    $("prev").setAttribute("aria-label", t("relief.scrollPrev"));
+    $("next").setAttribute("aria-label", t("relief.scrollNext"));
+  };
+  barTexts();
   const untip = installTips(root);
   /**
    * The tool's options as the map's width lets them, measured: as they are;
@@ -268,7 +308,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
   });
   fitter.observe(pieces);
   // The line between the map and the 3D, dragged.
-  const unsplit = root.parentElement ? installSplit(root.parentElement, t) : () => {};
+  const split = root.parentElement ? installSplit(root.parentElement, t) : { stop() {}, retext() {} };
 
   // A notice for a moment (only what went wrong, or what came of a choice).
   const toast = $("toast");
@@ -331,12 +371,12 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
     }
     frame = requestAnimationFrame(() => {
       frame = 0;
-      renderTools($("tools"), editor, t, setTool);
-      renderOptions($("options"), editor, t);
+      time("editor.panel.tools", () => renderTools($("tools"), editor, t, setTool));
+      time("editor.panel.options", () => renderOptions($("options"), editor, t));
       $("toolBtn").innerHTML = toolButton(editor, t);
-      fitOptions();
-      renderProps($("props"), editor, t, o.unit, panelFolds);
-      renderShapes($("shapes"), editor, t, shapesFold, shapeMenu, focusName);
+      time("editor.panel.fit", fitOptions);
+      time("editor.panel.props", () => renderProps($("props"), editor, t, o.unit, panelFolds));
+      time("editor.panel.shapes", () => renderShapes($("shapes"), editor, t, shapesFold, shapeMenu, focusName));
       history();
       tellPicked();
       if (!$("pop").hidden) {
@@ -357,6 +397,8 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
     });
   };
   const busy = () => !!(editor.xf || editor.drag || editor.brushing || editor.arrowEnd);
+  /** What the pointer pressed has changed, till it's let go: nothing, only heights (a brush), more. */
+  let gesture: "none" | "heights" | "more" = "none";
   // eslint-disable-next-line prefer-const
   let map: MapView;
   const editor: ReliefEditor = new ReliefEditor(
@@ -369,6 +411,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
         const sel = editor.sel;
         // A whole shape (or those picked) dragged: moved as it is, nothing worked out again till it's let go.
         const moving = editor.xf && editor.xfMap && sel?.kind === "shape" ? { shapes: [sel.i, ...(sel.more ?? [])], map: editor.xfMap } : null;
+        gesture = editor.heightsOnly && gesture !== "more" ? "heights" : "more";
         o.onRelief(image.id, editor.relief, busy() || editor.heightsOnly, editor.heightsOnly ? editor.takeDirty() : null, moving);
       },
       showProps: () => {
@@ -398,8 +441,18 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
   };
   // Picking (Elegir) to start with.
   editor.setTool("edit");
-  // Let go: the Vistazo draws all of it again.
-  map.onUp = () => o.onRelief(image.id, editor.relief, false);
+  // Let go: the Vistazo draws all of it again (only what follows the heights, after a brush; nothing, if
+  // nothing changed: a click to pick).
+  map.onDown = () => (gesture = "none");
+  map.onUp = () => {
+    const was = gesture;
+    gesture = "none";
+    // The chip of what the keys do: the brush is let go (nothing else draws the map again till the pointer moves).
+    map.redraw();
+    if (was !== "none") {
+      o.onRelief(image.id, editor.relief, false, null, null, was === "heights");
+    }
+  };
   void pictureOf(image.image.url).then((picture) => {
     map.picture = picture;
     map.fit();
@@ -667,6 +720,24 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
 
   session = {
     imageId: image.id,
+    brush: {
+      active: () => editor.isBrush(),
+      radius: () => editor.settings.radius,
+      down(p, mods) {
+        map.onDown();
+        editor.down(p, mods);
+      },
+      move: (p, mods, held) => editor.move(p, mods, held),
+      up() {
+        editor.up();
+        map.onUp();
+      },
+      leave() {
+        editor.cursor = null;
+        editor.hover = -1;
+        map.redraw();
+      },
+    },
     key(event) {
       const target = event.target as HTMLElement;
       if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) {
@@ -730,6 +801,8 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
       return false;
     },
     retext() {
+      barTexts();
+      split.retext();
       map.texts = texts();
       panel();
       map.redraw();
@@ -741,7 +814,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
       stopWatching();
       closeMenus();
       untip();
-      unsplit();
+      split.stop();
       fitter.disconnect();
       o.onPick?.([]);
       document.removeEventListener("pointerdown", outside, true);

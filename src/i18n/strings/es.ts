@@ -460,6 +460,7 @@ const es = {
   "relief.toolsHint": "La herramienta en uso; un clic elige otra",
   "relief.less": "Menos",
   "relief.plus": "Más",
+  "relief.shape.arrow": "Flecha",
   "relief.import": "Importar",
   "relief.zones": "Traer zonas",
   "relief.zonesNone": "No hay zonas de terreno sobre este mapa.",

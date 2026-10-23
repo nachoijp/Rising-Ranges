@@ -308,7 +308,6 @@ function undoOnce(ed: ReliefEditor) {
   };
 }
 
-/** A number field: the relief changed as it's typed, a step to undo from its first change. */
 /** A shape's name: as long as it can be. */
 export const NAME_MAX = 40;
 
@@ -350,6 +349,7 @@ function readNumber(input: HTMLInputElement): number | null {
   return text === "" || text === "-" || text === "." || text === "-." || !Number.isFinite(v) ? null : within(input, v);
 }
 
+/** A number field: the relief changed as it's typed, a step to undo from its first change. */
 function bindNumber(el: HTMLElement, ed: ReliefEditor, key: string, get: () => number, set: (v: number) => void) {
   const input = el.querySelector<HTMLInputElement>(`[data-k="${key}"]`);
   if (!input) {
@@ -370,9 +370,9 @@ function bindNumber(el: HTMLElement, ed: ReliefEditor, key: string, get: () => n
   input.onchange = () => (input.value = String(get()));
 }
 
-/** A number in its box with − and + (no browser arrows), each a step of `by`. */
-const stepper = (field: string, key: string, by: number, t: T) =>
-  `<span class="numbox">${field}<button type="button" class="ib sm" data-by="${-by}" data-for="${key}" ${tip(t("relief.less"))}>${icon("minus")}</button><button type="button" class="ib sm" data-by="${by}" data-for="${key}" ${tip(t("relief.plus"))}>${icon("plus")}</button></span>`;
+/** A number in its box with − and + (no browser arrows), each a step of `by`; `extra`: what else sets it, in the box past a line. */
+const stepper = (field: string, key: string, by: number, t: T, extra = "") =>
+  `<span class="numbox">${field}<button type="button" class="ib sm" data-by="${-by}" data-for="${key}" ${tip(t("relief.less"))}>${icon("minus")}</button><button type="button" class="ib sm" data-by="${by}" data-for="${key}" ${tip(t("relief.plus"))}>${icon("plus")}</button>${extra ? `<span class="nsep"></span>${extra}` : ""}</span>`;
 
 /** A stepper's field, and its −/+ (each a step to undo, when it changes anything). */
 function bindStepper(el: HTMLElement, ed: ReliefEditor, key: string, get: () => number, set: (v: number) => void) {
@@ -676,7 +676,7 @@ export function renderOptions(el: HTMLElement, ed: ReliefEditor, t: T) {
       ${
         s.brushMode === "flatten"
           ? // The level: −/+ round the number, the eyedropper inside its box (it takes the number from the map).
-            `<span class="sl" ${tip(t("relief.height"), t("relief.brush.levelHint"))}>${esc(t("relief.height"))}</span><span class="numbox">${heightField("level", t("relief.height"))}<button type="button" class="ib sm" data-level="-0.5" ${tip(t("relief.down"))}>${icon("minus")}</button><button type="button" class="ib sm" data-level="0.5" ${tip(t("relief.up"))}>${icon("plus")}</button><span class="nsep"></span><button type="button" class="ib sm pick${ed.levelPick ? " on" : ""}" data-k="levelPick" aria-pressed="${ed.levelPick}" ${tip(t("relief.brush.levelPick"), t("relief.brush.levelPickHint"), "Alt+clic")}>${icon("eyedropper")}</button></span>`
+            `<span class="sl" ${tip(t("relief.height"), t("relief.brush.levelHint"))}>${esc(t("relief.height"))}</span>${stepper(heightField("level", t("relief.height")), "level", 0.5, t, `<button type="button" class="ib sm pick${ed.levelPick ? " on" : ""}" data-k="levelPick" aria-pressed="${ed.levelPick}" ${tip(t("relief.brush.levelPick"), t("relief.brush.levelPickHint"), "Alt+clic")}>${icon("eyedropper")}</button>`)}`
           : underButton("strength", "strength", t("relief.brush.strength"))
       }
       <button type="button" class="field toggle${s.groundOnly ? " on" : ""}" data-k="ground" aria-pressed="${s.groundOnly}" ${tip(t("relief.brush.ground"), t("relief.brush.paintsHint"))}>${icon("terrain")}<span class="ct">${esc(t("relief.brush.ground"))}</span></button>`;
@@ -696,9 +696,9 @@ export function renderOptions(el: HTMLElement, ed: ReliefEditor, t: T) {
         }
       };
       level.onchange = () => (level.value = String(s.level));
-      for (const button of el.querySelectorAll<HTMLButtonElement>("[data-level]")) {
+      for (const button of el.querySelectorAll<HTMLButtonElement>('[data-for="level"]')) {
         button.onclick = () => {
-          s.level = within(level, quarter(s.level + Number(button.dataset.level)));
+          s.level = within(level, quarter(s.level + Number(button.dataset.by)));
           level.value = String(s.level);
           saved();
         };
@@ -871,7 +871,8 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
   } else if (s.kind === "ramp" && s.ramp) {
     height =
       `<span class="l" ${tip(t("relief.height"), t("relief.shape.rampHint"))}>${esc(t("relief.height"))}</span>${heightRow(t, `${heightField("from", t("relief.height"))}<span class="muted">→</span>${heightField("to", t("relief.height"))}`, `${unit(s.ramp.from)} → ${unit(s.ramp.to)}`)}` +
-      `<span class="l" ${tip(t("relief.shape.steps"), t("relief.shape.stepsHint"))}>${esc(t("relief.shape.steps"))}</span><span class="line">${stepper(numField("steps", t("relief.shape.steps"), 0, 50, true), "steps", 1, t)}<button type="button" class="ib sm" data-k="flip" ${tip(t("relief.shape.flip"), t("relief.shape.flipHint"))}>${icon("convert")}</button><button type="button" class="field" data-k="rearrow" ${tip(t("relief.shape.rearrow"), t("relief.shape.rearrowHint"))}>${esc(t("relief.shape.rearrow"))}</button></span>`;
+      `<span class="l" ${tip(t("relief.shape.steps"), t("relief.shape.stepsHint"))}>${esc(t("relief.shape.steps"))}</span><span class="line">${stepper(numField("steps", t("relief.shape.steps"), 0, 50, true), "steps", 1, t)}</span>` +
+      `<span class="l">${esc(t("relief.shape.arrow"))}</span><span class="line"><button type="button" class="ib sm" data-k="flip" ${tip(t("relief.shape.flip"), t("relief.shape.flipHint"))}>${icon("convert")}</button><button type="button" class="field" data-k="rearrow" ${tip(t("relief.shape.rearrow"), t("relief.shape.rearrowHint"))}>${esc(t("relief.shape.rearrow"))}</button></span>`;
   } else if (s.kind === "ramp") {
     height = `<span class="l">${esc(t("relief.height"))}</span><span class="line"><span class="warn">${esc(t("relief.shape.noArrow"))}</span><button type="button" class="field" data-k="rearrow">${esc(t("relief.shape.addArrow"))}</button></span>`;
   } else {

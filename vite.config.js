@@ -1,4 +1,4 @@
-import { readFileSync } from "fs";
+import { appendFileSync, mkdirSync, readFileSync } from "fs";
 import { resolve } from "path";
 import { defineConfig } from "vite";
 import glsl from "vite-plugin-glsl";
@@ -23,8 +23,32 @@ function devManifest() {
   };
 }
 
+// The stopwatch's tables (src/timing.ts, while it's on), kept in
+// dev-tests/tmp/timing.log too: the extension's frames' consoles are
+// awkward to reach in Owlbear.
+function devTiming() {
+  return {
+    name: "dev-timing",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use("/__timing", (req, res) => {
+        let body = "";
+        req.on("data", (chunk) => (body += chunk));
+        req.on("end", () => {
+          mkdirSync(resolve(__dirname, "dev-tests/tmp"), { recursive: true });
+          appendFileSync(resolve(__dirname, "dev-tests/tmp/timing.log"), `${new Date().toISOString()}
+${body}
+
+`);
+          res.end("ok");
+        });
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [glsl(), react(), devManifest()],
+  plugins: [glsl(), react(), devManifest(), devTiming()],
   build: {
     assetsInlineLimit: 0,
     rollupOptions: {

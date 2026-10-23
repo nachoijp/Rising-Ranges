@@ -463,6 +463,7 @@ const en: Record<TranslationKey, string> = {
   "relief.toolsHint": "The tool in hand; a click picks another",
   "relief.less": "Less",
   "relief.plus": "More",
+  "relief.shape.arrow": "Arrow",
   "relief.import": "Import",
   "relief.zones": "Bring zones",
   "relief.zonesNone": "There are no terrain zones on this map.",

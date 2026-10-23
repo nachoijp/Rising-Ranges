@@ -62,18 +62,43 @@ export function reliefTerrain(
     }
     return visible(x, y) ? relief.evaluate(cx, cy) : 0;
   };
+  /**
+   * A layer and its piece as the relief has them now: worked out again since (a brush: Relief.derive),
+   * the same shape's, the same piece of it (only heights change so: a relative shape's, over what the
+   * brush painted). What's drawn reads them so, kept till it's built again (see vistazo/settle.ts).
+   */
+  const born = relief.version;
+  let layersAt = born;
+  let bySi = new Map<number, Layer>();
+  const live = (own: Layer, piece?: ReliefPiece): [Layer, ReliefPiece | undefined] => {
+    if (relief.version === born) {
+      return [own, piece];
+    }
+    if (layersAt !== relief.version) {
+      bySi = new Map(relief.layers.map((layer) => [layer.si, layer]));
+      layersAt = relief.version;
+    }
+    const now = bySi.get(own.si);
+    if (!now) {
+      return [own, piece];
+    }
+    const k = piece ? own.pieces.indexOf(piece) : -1;
+    return [now, k >= 0 ? (now.pieces[k] ?? piece) : piece];
+  };
   /** A piece's own surface (see Relief.evaluateOn): its edge's points at its height, not the next one's. */
   const surfaceOf = (own: Layer | null, piece?: ReliefPiece) => (p: { x: number; y: number }) => {
     if (!visible(p.x, p.y)) {
       return 0;
     }
     const [cx, cy] = sceneToCell(anchor, dpi, p.x, p.y);
-    return relief.evaluateOn(own, cx, cy, piece);
+    const [layer, now] = own ? live(own, piece) : [null, piece];
+    return relief.evaluateOn(layer, cx, cy, now);
   };
   const mesh = new ReliefMesh(relief);
   const pieces: Piece[] = [];
-  // From the top down: each layer's pieces less what's over them, within the map.
-  let above: Pt[][][] = [];
+  // From the top down: each layer's pieces less what's over them (only those whose box reaches theirs:
+  // not one growing union of all of them), within the map.
+  const above: { polygon: Pt[][]; box: { x0: number; y0: number; x1: number; y1: number } }[] = [];
   for (let li = relief.layers.length - 1; li >= 0; li--) {
     const layer = relief.layers[li];
     if (skip?.has(layer.si) || !near(layer.outer)) {
@@ -89,10 +114,12 @@ export function reliefTerrain(
     const card = layer.stand ? mesh.standingCard(layer).map(([x, y, z, mx, my]): [number, number, number, number, number] => [...toScene([x, y]), z, ...toScene([mx, my])]) : undefined;
     for (const piece of layer.pieces) {
       let parts: Pt[][][] = [[closed(piece.ring), ...piece.holes.map(closed)]];
+      const pb = bbox(piece.ring);
+      const over = above.filter(({ box: b }) => b.x0 < pb.x1 && b.x1 > pb.x0 && b.y0 < pb.y1 && b.y1 > pb.y0).map((o) => [o.polygon]);
       try {
         parts = clip.intersection(parts, bounds) as Pt[][][];
-        if (above.length > 0) {
-          parts = clip.difference(parts, above) as Pt[][][];
+        if (over.length > 0) {
+          parts = clip.difference(parts, ...over) as Pt[][][];
         }
       } catch (error) {
         console.error("Rising Ranges: Vistazo left out a part of the relief", error);
@@ -106,7 +133,7 @@ export function reliefTerrain(
       const at = piece.h ?? relief.surface(layer, cx, cy);
       const flatNow = flat && piece.h !== undefined;
       const drawn: Piece = {
-        height: flatNow ? piece.h! : at,
+        height: 0,
         shape: sceneShape,
         surface: flatNow && !surfaced ? undefined : surfaceOf(layer, piece),
         walls: shape.wall,
@@ -130,6 +157,15 @@ export function reliefTerrain(
       if (shape.water) {
         // The water's floor: its lowest point (the Vistazo fills from there up to the level).
         drawn.height = Math.min(at, ...piece.ring.map(([x, y]) => (inBox(layer.box, x, y) ? relief.surface(layer, x, y) : at)));
+      } else {
+        // As the relief has it now (a relative shape's follows what a brush paints under it).
+        Object.defineProperty(drawn, "height", {
+          enumerable: true,
+          get: () => {
+            const [l, p] = live(layer, piece);
+            return flatNow ? p!.h! : (p?.h ?? relief.surface(l, cx, cy));
+          },
+        });
       }
       if (side && card) {
         drawn.stand = (side.edge ?? standFacing(side.out)) as StandEdge;
@@ -137,19 +173,14 @@ export function reliefTerrain(
       }
       pieces.push(drawn);
     }
-    try {
-      const own = [closed(layer.ring), ...layer.holes.map(closed)];
-      above = above.length > 0 ? (clip.union(above, [own]) as Pt[][][]) : [own];
-    } catch (error) {
-      console.error("Rising Ranges: Vistazo couldn't stack a part of the relief", error);
-    }
+    above.push({ polygon: [closed(layer.ring), ...layer.holes.map(closed)], box: bbox(layer.ring) });
   }
   pieces.reverse();
   // The ground: what no shape covers, at the painted ground's heights.
   let ground: Pt[][][] = bounds;
   try {
     if (above.length > 0) {
-      ground = clip.difference(ground, above) as Pt[][][];
+      ground = clip.difference(ground, ...above.map((o) => [o.polygon])) as Pt[][][];
     }
   } catch (error) {
     console.error("Rising Ranges: Vistazo couldn't cut the relief's ground", error);

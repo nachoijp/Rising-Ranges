@@ -4,6 +4,7 @@ import { standSide } from "../stand";
 import type { Pt } from "../types";
 import type { Mods, ReliefEditor } from "./editor";
 import { vertsOf } from "./shapes";
+import { time } from "../../timing";
 
 // The editor's map view: the map image (its own grid over it), and over it
 // the relief as the editor has it — heights tinted, the shapes' outlines
@@ -22,12 +23,41 @@ export type ViewTexts = { rampNoArrow: string; inclined: string; relative: strin
 /** How long two clicks can be apart to be a double click (ms), and how far (px). */
 const DOUBLE_CLICK = { ms: 400, px: 6 };
 
-/** The shapes' outlines and their vertices: violets, as the UI's own accent; what's picked, a deeper one. */
-const LINE = "rgba(214,196,255,0.9)";
-const VERTEX = "#a57cff";
-const PICK = "#6a3cf0";
-const PICK_SOFT = "rgba(106,60,240,0.75)";
-const PICK_FILL = "rgba(106,60,240,0.2)";
+/**
+ * The map's colours: the shapes' outlines and vertices violets, as the UI's own accent (what's picked a
+ * deeper one); what each mark is besides.
+ */
+const C = {
+  line: "rgba(214,196,255,0.9)",
+  vertex: "#a57cff",
+  vertexEdge: "rgba(20,16,32,0.8)",
+  pick: "#6a3cf0",
+  pickSoft: "rgba(106,60,240,0.75)",
+  pickFill: "rgba(106,60,240,0.2)",
+  /** Inclined shapes' vertices, ramps' arrows. */
+  slope: "#7fd3ff",
+  grid: "rgba(0,0,0,0.12)",
+  /** A soft edge's halo. */
+  halo: "rgba(127,211,255,0.22)",
+  slabFill: "rgba(120,180,255,0.25)",
+  slabLine: "#8cc8ff",
+  water: "rgba(90,170,255,0.35)",
+  /** A standing shape's front edge. */
+  stand: "#ff9f43",
+  cut: "#ff6b6b",
+  /** The roller's stroke, growing or cutting. */
+  roll: "rgba(106,60,240,0.45)",
+  erase: "rgba(255,107,107,0.45)",
+  /** The brush's ring, lowering (raising: white). */
+  lower: "#ff9f6b",
+  /** The pen's snap ring, closing the outline. */
+  close: "#7cffb0",
+  shade: "rgba(0,0,0,0.35)",
+  labelBg: "rgba(20,20,24,0.8)",
+  white: "#fff",
+  dark: "#222",
+};
+/** The shapes' outlines' width (px). */
 const WIDTH = 2.5;
 
 export class MapView {
@@ -43,7 +73,8 @@ export class MapView {
   scale = 10;
   ox = 0;
   oy = 0;
-  /** Told when the pointer's let go on the map (after the editor). */
+  /** Told when the pointer's pressed on the map (before the editor), and let go (after it). */
+  onDown: () => void = () => {};
   onUp: () => void = () => {};
   /** A right click (pressed and let go without moving): its menu, at (sx, sy) on the canvas. */
   onMenu: (sx: number, sy: number, at: { x: number; y: number }) => void = () => {};
@@ -133,6 +164,7 @@ export class MapView {
       const clicks = now - last.at < DOUBLE_CLICK.ms && Math.hypot(sx - last.sx, sy - last.sy) < DOUBLE_CLICK.px ? 2 : 1;
       last = { at: clicks === 2 ? 0 : now, sx, sy };
       held = true;
+      this.onDown();
       this.editor.down(this.toWorld(sx, sy), mods(event, clicks));
     }, { signal });
     canvas.addEventListener("pointermove", (event) => {
@@ -194,7 +226,7 @@ export class MapView {
       ctx.drawImage(this.picture, x0, y0, W * this.scale, H * this.scale);
     }
     // The map's own grid, faint.
-    ctx.strokeStyle = "rgba(0,0,0,0.12)";
+    ctx.strokeStyle = C.grid;
     ctx.lineWidth = 1;
     ctx.beginPath();
     for (let i = 0; i <= W; i++) {
@@ -208,9 +240,9 @@ export class MapView {
       ctx.lineTo(x0 + W * this.scale, y);
     }
     ctx.stroke();
-    this.drawRelief();
-    this.drawShapes();
-    this.drawMarks();
+    time("editor.2d.relief", () => this.drawRelief());
+    time("editor.2d.shapes", () => this.drawShapes());
+    time("editor.2d.marks", () => this.drawMarks());
   }
 
   /** An outline and its holes, as one path (filled even-odd, a hole stays empty). */
@@ -247,7 +279,7 @@ export class MapView {
     for (const layer of r.layers) {
       if (layer.soft > 0) {
         this.path(layer.loops);
-        ctx.strokeStyle = "rgba(127,211,255,0.22)";
+        ctx.strokeStyle = C.halo;
         ctx.lineWidth = layer.soft * 2 * this.scale;
         ctx.stroke();
       }
@@ -256,9 +288,9 @@ export class MapView {
     // A slab: blue, so it reads as something over the terrain.
     for (const layer of r.slabLayers) {
       this.path(layer.loops);
-      ctx.fillStyle = "rgba(120,180,255,0.25)";
+      ctx.fillStyle = C.slabFill;
       ctx.fill("evenodd");
-      ctx.strokeStyle = "#8cc8ff";
+      ctx.strokeStyle = C.slabLine;
       ctx.lineWidth = 3;
       ctx.setLineDash([4, 3]);
       ctx.stroke();
@@ -291,12 +323,12 @@ export class MapView {
       this.path([ring, ...holes]);
       const selected = picked === i;
       ctx.setLineDash(s.kind === "flat" ? [] : [6, 4]);
-      ctx.strokeStyle = selected ? PICK : LINE;
+      ctx.strokeStyle = selected ? C.pick : C.line;
       ctx.lineWidth = WIDTH;
       ctx.stroke();
       ctx.setLineDash([]);
       if (s.kind === "ramp" && s.ramp) {
-        arrow(ctx, this.toScreen(...s.ramp.a), this.toScreen(...s.ramp.b), selected ? PICK : "#7fd3ff");
+        arrow(ctx, this.toScreen(...s.ramp.a), this.toScreen(...s.ramp.b), selected ? C.pick : C.slope);
       }
       if (Math.abs(area(ring)) * this.scale * this.scale > 500) {
         const [cx, cy] = this.toScreen(...centroid(ring));
@@ -318,7 +350,7 @@ export class MapView {
       const [ring, holes] = r.coordsOf(data.shapes[ed.hover]);
       if (ring.length >= 3) {
         this.path([ring, ...holes]);
-        ctx.strokeStyle = PICK_SOFT;
+        ctx.strokeStyle = C.pickSoft;
         ctx.lineWidth = WIDTH;
         ctx.stroke();
       }
@@ -326,13 +358,13 @@ export class MapView {
     if (picked >= 0 && data.shapes[picked]) {
       const [ring, holes] = r.coordsOf(data.shapes[picked]);
       this.path([ring, ...holes]);
-      ctx.fillStyle = PICK_FILL;
+      ctx.fillStyle = C.pickFill;
       ctx.fill("evenodd");
     }
     const h = ed.tool === "edit" || ed.isShapeTool() ? ed.handles() : null;
     if (h) {
       const [hx0, hy0, hx1, hy1] = h.rect;
-      ctx.strokeStyle = "#fff";
+      ctx.strokeStyle = C.white;
       ctx.lineWidth = 2;
       ctx.setLineDash([6, 4]);
       ctx.strokeRect(hx0, hy0, hx1 - hx0, hy1 - hy0);
@@ -341,8 +373,8 @@ export class MapView {
       ctx.moveTo((hx0 + hx1) / 2, hy0);
       ctx.lineTo(h.rot.sx, h.rot.sy);
       ctx.stroke();
-      ctx.fillStyle = "#fff";
-      ctx.strokeStyle = "#222";
+      ctx.fillStyle = C.white;
+      ctx.strokeStyle = C.dark;
       for (const q of h.list) {
         ctx.fillRect(q.sx - 5, q.sy - 5, 10, 10);
         ctx.strokeRect(q.sx - 5, q.sy - 5, 10, 10);
@@ -373,14 +405,14 @@ export class MapView {
     }
     const visible = [...shown].map((si) => data.shapes[si]).filter((s) => s && !s.hidden);
     const used = new Set([...visible.flatMap(vertsOf), ...(ed.drawing ?? [])]);
-    ctx.strokeStyle = "rgba(20,16,32,0.8)";
+    ctx.strokeStyle = C.vertexEdge;
     ctx.lineWidth = 1;
     data.verts.forEach((v, i) => {
       if (!used.has(i)) {
         return;
       }
       const [x, y] = this.toScreen(v.x, v.y);
-      ctx.fillStyle = pickedVerts.has(i) ? PICK : onSlope.has(i) ? "#7fd3ff" : VERTEX;
+      ctx.fillStyle = pickedVerts.has(i) ? C.pick : onSlope.has(i) ? C.slope : C.vertex;
       ctx.beginPath();
       ctx.moveTo(x, y - 4.5);
       ctx.lineTo(x + 4.5, y);
@@ -402,8 +434,8 @@ export class MapView {
       }
       const [x, y] = this.toScreen(q.x, q.y);
       // A round mark (the vertices are diamonds), ringed in white.
-      ctx.fillStyle = selected ? PICK : VERTEX;
-      ctx.strokeStyle = "#fff";
+      ctx.fillStyle = selected ? C.pick : C.vertex;
+      ctx.strokeStyle = C.white;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.arc(x, y, 5, 0, Math.PI * 2);
@@ -419,7 +451,7 @@ export class MapView {
     const ed = this.editor;
     const r = ed.relief;
     const data = ed.data;
-    ctx.strokeStyle = PICK;
+    ctx.strokeStyle = C.pick;
     ctx.lineWidth = WIDTH;
     if (ed.drawing) {
       ctx.beginPath();
@@ -445,8 +477,8 @@ export class MapView {
       const closing = !!ed.drawing && ed.drawing.length >= 3 && "vertex" in snapped && snapped.vertex === ed.drawing[0];
       ctx.save();
       ctx.lineWidth = 2;
-      ctx.strokeStyle = closing ? "#7cffb0" : "#ffffff";
-      ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
+      ctx.strokeStyle = closing ? C.close : C.white;
+      ctx.fillStyle = C.shade;
       ctx.beginPath();
       if ("vertex" in snapped) {
         ctx.arc(x, y, closing ? 9 : 6, 0, Math.PI * 2);
@@ -480,7 +512,7 @@ export class MapView {
       const [ax, ay] = this.toScreen(ed.box.start.x, ed.box.start.y);
       const [bx, by] = this.toScreen(ed.box.end.x, ed.box.end.y);
       ctx.save();
-      ctx.strokeStyle = "#fff";
+      ctx.strokeStyle = C.white;
       ctx.lineWidth = 2;
       ctx.setLineDash([6, 4]);
       ctx.strokeRect(ax, ay, bx - ax, by - ay);
@@ -519,9 +551,9 @@ export class MapView {
         continue;
       }
       this.path([ring, ...holes]);
-      ctx.fillStyle = PICK_FILL;
+      ctx.fillStyle = C.pickFill;
       ctx.fill("evenodd");
-      ctx.strokeStyle = PICK;
+      ctx.strokeStyle = C.pick;
       ctx.lineWidth = WIDTH;
       ctx.setLineDash([5, 3]);
       ctx.stroke();
@@ -530,20 +562,20 @@ export class MapView {
     const one = ed.sel?.kind === "shape" && !ed.sel.more?.length ? data.shapes[ed.sel.i] : null;
     // A picked ramp's arrow ends (dragged with Elegir): its tail dark, its head the picked colour.
     if (ed.tool === "edit" && one?.kind === "ramp" && one.ramp) {
-      for (const [end, fill] of [["a", "#222"], ["b", PICK]] as const) {
+      for (const [end, fill] of [["a", C.dark], ["b", C.pick]] as const) {
         const [x, y] = this.toScreen(...one.ramp[end]);
         ctx.beginPath();
         ctx.arc(x, y, 6, 0, Math.PI * 2);
         ctx.fillStyle = fill;
         ctx.fill();
-        ctx.strokeStyle = "#fff";
+        ctx.strokeStyle = C.white;
         ctx.lineWidth = 2;
         ctx.stroke();
       }
     }
     // Water: its cells, a light blue over the map.
     if (this.waterCells.length > 0) {
-      ctx.fillStyle = "rgba(90,170,255,0.35)";
+      ctx.fillStyle = C.water;
       const size = this.waterStep * this.scale + 0.5;
       for (let k = 0; k < this.waterCells.length; k += 2) {
         const [x, y] = this.toScreen(this.waterCells[k], this.waterCells[k + 1]);
@@ -553,7 +585,7 @@ export class MapView {
     // A wall picture's rectangle: the picked shape's, and one being dragged.
     const skin = one?.skin;
     if (skin || ed.skinBox) {
-      ctx.strokeStyle = "#ff9f43";
+      ctx.strokeStyle = C.stand;
       ctx.lineWidth = 2;
       ctx.setLineDash([5, 3]);
       if (ed.skinBox) {
@@ -574,7 +606,7 @@ export class MapView {
       ctx.setLineDash([]);
     }
     if (ed.knife) {
-      ctx.strokeStyle = "#ff6b6b";
+      ctx.strokeStyle = C.cut;
       ctx.lineWidth = 2;
       ctx.setLineDash([6, 4]);
       ctx.beginPath();
@@ -589,7 +621,7 @@ export class MapView {
         continue;
       }
       const base = standSide(layer.stand, layer.ring, layer.box, data.w, data.h).base;
-      ctx.strokeStyle = "#ff9f43";
+      ctx.strokeStyle = C.stand;
       ctx.lineWidth = 4;
       ctx.beginPath();
       ctx.moveTo(...this.toScreen(...base[0]));
@@ -597,7 +629,7 @@ export class MapView {
       ctx.stroke();
     }
     if (ed.stroke) {
-      ctx.strokeStyle = ed.stroke.erase ? "rgba(255,107,107,0.45)" : "rgba(124,77,255,0.45)";
+      ctx.strokeStyle = ed.stroke.erase ? C.erase : C.roll;
       ctx.lineWidth = ed.settings.shapeRadius * 2 * this.scale;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
@@ -612,7 +644,7 @@ export class MapView {
     }
     if (ed.cursor && (ed.tool === "paintShape" || ed.isBrush())) {
       const [x, y] = this.toScreen(ed.cursor.x, ed.cursor.y);
-      ctx.strokeStyle = ed.tool === "paintShape" ? PICK : ed.brushKind === "lower" ? "#ff9f6b" : "#fff";
+      ctx.strokeStyle = ed.tool === "paintShape" ? C.pick : ed.brushKind === "lower" ? C.lower : C.white;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.arc(x, y, (ed.tool === "paintShape" ? ed.settings.shapeRadius : ed.settings.radius) * this.scale, 0, Math.PI * 2);
@@ -640,9 +672,9 @@ function arrow(ctx: CanvasRenderingContext2D, [ax, ay]: [number, number], [bx, b
 function label(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, selected: boolean) {
   ctx.font = "bold 12px system-ui";
   const w = ctx.measureText(text).width + 8;
-  ctx.fillStyle = selected ? PICK : "rgba(20,20,24,0.8)";
+  ctx.fillStyle = selected ? C.pick : C.labelBg;
   ctx.fillRect(x - w / 2, y - 9, w, 18);
-  ctx.fillStyle = "#fff";
+  ctx.fillStyle = C.white;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(text, x, y);

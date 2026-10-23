@@ -28,8 +28,8 @@ function keep(state: State) {
   }
 }
 
-/** The line in `box` (the grid with the map and the 3D side by side); taken away by what it returns. */
-export function installSplit(box: HTMLElement, t: T): () => void {
+/** The line in `box` (the grid with the map and the 3D side by side): taken away (stop), its names again (retext). */
+export function installSplit(box: HTMLElement, t: T): { stop(): void; retext(): void } {
   const state = load();
   const line = document.createElement("div");
   line.className = "re-split";
@@ -123,9 +123,13 @@ export function installSplit(box: HTMLElement, t: T): () => void {
     apply();
     keep(state);
   };
-  return () => {
-    line.remove();
-    box.style.removeProperty("--re-cols");
-    box.classList.remove("re-map-hidden", "re-stage-hidden", "re-splitting");
+  return {
+    stop() {
+      line.remove();
+      box.style.removeProperty("--re-cols");
+      box.classList.remove("re-map-hidden", "re-stage-hidden", "re-splitting");
+    },
+    // Its names (the language changed).
+    retext: () => apply(),
   };
 }

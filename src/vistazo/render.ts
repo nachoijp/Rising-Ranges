@@ -10,12 +10,13 @@ import { visibleBox } from "./visibleBox";
 import { buildWeather, cloudShadowMaterial, setWeatherTime } from "./weather";
 import { buildTemplate, templateTip, type Template } from "./templates";
 import { QUALITY, STONE, TEXTURE_MAX, VIEW_CELL, type Camera, type DistanceLine, type Options, type Reach, type Texture, type TokenText, type TokenView, type Wall, type WallStyle, tintOf } from "./view/types";
-import { patternTexture } from "./view/patterns";
+import { isShared, patternTexture } from "./view/patterns";
 import { floorOf, mediaElement, propsKey, propToken, raised, skinAcross, skinPoint, visibleOnScreen, within } from "./view/helpers";
 import { computeWalls, type Region } from "./view/walls";
 import { BaseBatch, moveBase, type BaseSeat } from "./view/bases";
 import { UNDER_FRAGMENT, UNDER_VERTEX } from "./view/shaders";
-import { waterMaterial, waterReach, waterShape } from "./view/water";
+import { waterMaterial, waterReach, waterShape, type WaterReach } from "./view/water";
+import { time } from "../timing";
 
 export type { Camera, DistanceLine, Options, Quality, Reach, TokenText, WallStyle } from "./view/types";
 export { tintOf };
@@ -94,8 +95,11 @@ export class VistazoView {
   private point: TokenView | null = null;
   /** Zones' water surfaces (see buildWater); moving with the weather's frames while waterMotion is on. */
   private waterGroup = new THREE.Group();
-  /** Each water's reach on the heights grid, as a texture (see buildWater): where it stops at a shore or a rim. */
-  private waterMasks: THREE.DataTexture[] = [];
+  /**
+   * Each water's reach (a texture on the heights grid: where it stops at a shore or a rim) and surface's outline (see buildWater), by its zone, its level and the heights
+   * round it (as the grid has them): worked out again only when one of those changed.
+   */
+  private waterCache = new Map<string, { reach: WaterReach; shape: MultiPolygon; used: number }>();
   private weatherKey = "";
   private weatherFrame = 0;
   /** The player view's fog: where it is, and its shade over copies of the flat pieces (as the Banda tint). */
@@ -124,6 +128,13 @@ export class VistazoView {
   private mapTexture: THREE.Texture | null = null;
   /** The materials of the pieces, to dim or see through without rebuilding. */
   private pieceMaterials: THREE.MeshBasicMaterial[] = [];
+  /** Outlines already cut small (see fineGeometry), by outline: their flat triangles, and the last build that used them. */
+  private fineCache = new Map<string, { position: Float32Array; index: Uint32Array; used: number }>();
+  private builds = 0;
+  /** The next scene's build is a brush's let go (see settleNext). */
+  private settling = false;
+  /** The relief editor's terrain brush, where it'd paint (see setBrushRing). */
+  private brushRing: THREE.LineLoop | null = null;
   private grid = { x0: 0, y0: 0, step: 1, w: 0, h: 0, cells: new Float32Array(0) };
   private minH = 0;
   private maxH = 0;
@@ -171,11 +182,6 @@ export class VistazoView {
   /** Drawn lightly (see setLite). */
   private lite = false;
 
-  /**
-   * Lightly, while the relief editor drags something: the terrain alone, without
-   * its copies for the fog, the Banda tint, the cloud shadows and under bridges
-   * (the most of a rebuild). Off again, the next scene is drawn whole.
-   */
   /**
    * Only the terrain's heights changed (the relief's brush), not where
    * anything is: each piece's corners moved up or down where they are, and
@@ -247,6 +253,8 @@ export class VistazoView {
       this.pieceMaterials = this.pieceMaterials.filter((material) => !gone.has(material));
     }
     this.scene = scene;
+    // The heights grid there too (what the pointer finds on the terrain: the 3D brush paints on it).
+    this.regridIn(region);
     // The walls of the edges through the region worked out again; the others as they were.
     const done = new Set<string>();
     const fresh = computeWalls(scene, this.base, region, done);
@@ -419,14 +427,29 @@ export class VistazoView {
     this.requestApply();
   }
 
-  setLite(lite: boolean) {
+  /**
+   * Lightly, while the relief editor drags something: the terrain alone, without
+   * its copies for the fog, the Banda tint, the cloud shadows and under bridges
+   * (the most of a rebuild). Off again, the next scene is drawn whole (or,
+   * `settling`, by settleNext's build).
+   */
+  setLite(lite: boolean, settling = false) {
     if (this.lite === lite) {
       return;
     }
     this.lite = lite;
-    if (!lite) {
+    if (!lite && !settling) {
       this.terrainKey = "";
     }
+  }
+
+  /**
+   * A brush let go (see vistazo/settle.ts): the next scene, of the same terrain, built again (what
+   * follows the heights: the grid, the copies, the water, the tokens' places, the shadows) with the
+   * walls as the brush left them (see reheight), not worked out again.
+   */
+  settleNext() {
+    this.settling = true;
   }
 
   /** Whether WebGL could start (without it there's nothing to draw the terrain with). */
@@ -435,6 +458,8 @@ export class VistazoView {
   }
 
   setScene(scene: VistazoScene) {
+    const settling = this.settling;
+    this.settling = false;
     this.scene = scene;
     this.u = VIEW_CELL / scene.dpi;
     const heights = scene.pieces.map((piece) => piece.height);
@@ -443,21 +468,24 @@ export class VistazoView {
     // The block reaches a level below the lowest ground, and below the deepest token, so a buried one is
     // inside it. Not by the lowest standing token: one dragged up off the ground would build it all again.
     const base = Math.min(this.minH - 1, ...scene.tokens.map((t) => t.terrain + t.own - 1));
-    if (scene.terrainKey === this.terrainKey && base === this.base) {
+    if (scene.terrainKey === this.terrainKey && base === this.base && !settling) {
       // Only tokens moved (a drag): put them where they are now, without building them again.
-      if (!this.moveTokens(scene)) {
-        this.buildTokens();
+      if (!time("3d.moveTokens", () => this.moveTokens(scene))) {
+        time("3d.tokens", () => this.buildTokens());
       }
       this.updateWeather();
       this.requestApply();
       return;
     }
+    const sameBase = base === this.base;
     this.terrainKey = scene.terrainKey;
     this.base = base;
-    this.computeGrid();
-    this.walls = computeWalls(scene, base);
-    this.build();
-    this.loadColors();
+    time("3d.grid", () => this.computeGrid());
+    if (!settling || !sameBase) {
+      this.walls = time("3d.walls.compute", () => computeWalls(scene, base));
+    }
+    time("3d.build", () => this.build());
+    time("3d.colors", () => this.loadColors());
   }
 
   /** The tokens selected in Owlbear, ringed here too. */
@@ -776,7 +804,6 @@ export class VistazoView {
     return { x: (vx * Math.cos(a) - vy * Math.sin(a)) / this.u, y: (vx * Math.sin(a) + vy * Math.cos(a)) / this.u };
   }
 
-  /** The terrain under a point of the stage (px from its corner), as a place for the camera to turn around; null off the terrain. */
   /**
    * Where a stage point's ray meets a level `height` (grid units) up: what
    * a drag follows, so the cursor passing over something tall (a column)
@@ -797,6 +824,7 @@ export class VistazoView {
     return { x: (eye.x + (through.x - eye.x) * t) / this.u, y: (eye.y + (through.y - eye.y) * t) / this.u, z: height };
   }
 
+  /** The terrain under a point of the stage (px from its corner), as a place for the camera to turn around; null off the terrain. */
   pickTerrain(x: number, y: number): Camera["focus"] {
     if (!this.scene || this.width === 0) {
       return null;
@@ -1012,6 +1040,54 @@ export class VistazoView {
     this.grid = { x0, y0, step, w, h, cells };
   }
 
+  /** The heights grid within a region (scene px) worked out again. */
+  private regridIn(region: Region) {
+    const scene = this.scene!;
+    const { x0, y0, step, w, h, cells } = this.grid;
+    const i0 = Math.max(0, Math.floor((region.x0 - x0) / step));
+    const i1 = Math.min(w - 1, Math.ceil((region.x1 - x0) / step));
+    const j0 = Math.max(0, Math.floor((region.y0 - y0) / step));
+    const j1 = Math.min(h - 1, Math.ceil((region.y1 - y0) / step));
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        cells[j * w + i] = scene.heightAt(x0 + i * step, y0 + j * step) ?? NaN;
+      }
+    }
+  }
+
+  /**
+   * The relief editor's terrain brush, where it'd paint from here (its outline round the pointer on the
+   * terrain, scene px; null: none), laid on the terrain as it is now.
+   */
+  setBrushRing(points: { x: number; y: number }[] | null) {
+    const scene = this.scene;
+    if (!points || !scene || points.length < 3) {
+      if (this.brushRing) {
+        this.world.remove(this.brushRing);
+        this.brushRing.geometry.dispose();
+        this.brushRing = null;
+        this.requestApply();
+      }
+      return;
+    }
+    const u = this.u;
+    const k = this.k;
+    const lift = 0.05 * k;
+    const positions = new Float32Array(points.length * 3);
+    points.forEach((p, i) => positions.set([p.x * u, p.y * u, (scene.heightAt(p.x, p.y) ?? 0) * k + lift], i * 3));
+    if (!this.brushRing) {
+      // Over everything (a bump between the eye and it doesn't hide it), as the 2D map's own ring.
+      const material = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthTest: false });
+      this.brushRing = new THREE.LineLoop(new THREE.BufferGeometry(), material);
+      this.brushRing.renderOrder = 20;
+      this.world.add(this.brushRing);
+    }
+    this.brushRing.geometry.dispose();
+    this.brushRing.geometry = new THREE.BufferGeometry();
+    this.brushRing.geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    this.requestApply();
+  }
+
   /** Height (grid units) at a scene point, NaN outside the map. */
   private gridHeight(x: number, y: number): number {
     const { x0, y0, step, w, h, cells } = this.grid;
@@ -1192,9 +1268,9 @@ export class VistazoView {
         }
         const material = mesh.material as THREE.Material | THREE.Material[] | undefined;
         (Array.isArray(material) ? material : material ? [material] : []).forEach((m) => {
-          // The map texture is shared: only a prop's own is let go.
+          // The map texture and the patterns are shared: only a prop's own is let go.
           const own = (m as THREE.MeshBasicMaterial).map;
-          if (own && own !== this.mapTexture) {
+          if (own && own !== this.mapTexture && !isShared(own)) {
             own.dispose();
           }
           m.dispose();
@@ -1203,23 +1279,58 @@ export class VistazoView {
     }
   }
 
-  /** A piece's outline as a flat shape, in view units. */
   /**
    * A surface that isn't flat: its outline's triangles cut small, to half a
    * cell (the painted ground's own step), however big it is.
    */
   private fineGeometry(piece: Piece): THREE.BufferGeometry {
-    const target = VIEW_CELL / 2;
-    const flat = this.shapeGeometry(piece.shape);
-    flat.computeBoundingBox();
-    const box = flat.boundingBox!;
-    const span = Math.hypot(box.max.x - box.min.x, box.max.y - box.min.y);
-    // Each pass cuts every triangle in two across its longest side (two passes halve them all): as many
-    // as it takes to get them down to the target.
-    const passes = Math.max(1, Math.min(28, 2 * Math.ceil(Math.log2(Math.max(1, span / target))) + 2));
-    return new TessellateModifier(target, passes).modify(flat.toNonIndexed());
+    // Cut once for an outline: the same one again (only its heights changed, a brush let go) takes the
+    // same triangles, its heights set by the caller.
+    const key = `${this.u}|${JSON.stringify(piece.shape)}`;
+    let kept = this.fineCache.get(key);
+    if (!kept) {
+      const target = VIEW_CELL / 2;
+      const flat = this.shapeGeometry(piece.shape);
+      flat.computeBoundingBox();
+      const box = flat.boundingBox!;
+      const span = Math.hypot(box.max.x - box.min.x, box.max.y - box.min.y);
+      // Each pass cuts every triangle in two across its longest side (two passes halve them all): as many
+      // as it takes to get them down to the target.
+      const passes = Math.max(1, Math.min(28, 2 * Math.ceil(Math.log2(Math.max(1, span / target))) + 2));
+      const cut = new TessellateModifier(target, passes).modify(flat.toNonIndexed());
+      // Each corner once (the cut repeats it for every triangle round it, about six): its height is
+      // then worked out once, not for each of them.
+      const from = (cut.getAttribute("position") as THREE.BufferAttribute).array;
+      const seen = new Map<number, number>();
+      const corners: number[] = [];
+      const index = new Uint32Array(from.length / 3);
+      for (let i = 0; i < index.length; i++) {
+        const x = from[i * 3];
+        const y = from[i * 3 + 1];
+        // To a thousandth of a view unit, as one number (both well under 2^26 thousandths).
+        const at = Math.round(x * 1e3) * 2 ** 27 + Math.round(y * 1e3);
+        let n = seen.get(at);
+        if (n === undefined) {
+          n = corners.length / 3;
+          seen.set(at, n);
+          corners.push(x, y, 0);
+        }
+        index[i] = n;
+      }
+      kept = { position: Float32Array.from(corners), index, used: 0 };
+      cut.dispose();
+      flat.dispose();
+      this.fineCache.set(key, kept);
+    }
+    kept.used = this.builds;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(kept.position.slice(), 3));
+    // Never changed: shared by every copy of it.
+    geometry.setIndex(new THREE.BufferAttribute(kept.index, 1));
+    return geometry;
   }
 
+  /** A piece's outline as a flat shape, in view units. */
   private shapeGeometry(shape: MultiPolygon): THREE.ShapeGeometry {
     const u = this.u;
     const shapes = shape.map((polygon) => {
@@ -1267,12 +1378,12 @@ export class VistazoView {
   }
 
   /**
-   * The walls: two meshes (inside, and at the map's edge, which can be
-   * hidden), shaded top to bottom and by the light, their faces as the
-   * wall style has them (their zone's, or the Vistazo's), and level lines
-   * at every whole cell of height.
+   * The walls (all of them, or those given): a mesh each style, inside (in
+   * the terrain, or `into`) and at the map's edge (which can be hidden),
+   * shaded top to bottom and by the light, their faces as the wall style
+   * has them (their zone's, or the Vistazo's), and level lines at every
+   * whole cell of height.
    */
-  /** The walls (all of them, or those given), each style one mesh, in the terrain (or `into`). */
   private buildWalls(list: Wall[] = this.walls, into: THREE.Group | null = null) {
     const u = this.u;
     const k = this.k;
@@ -1490,6 +1601,13 @@ export class VistazoView {
     if (!scene) {
       return;
     }
+    // The cut outlines not used by the last two builds: let go.
+    this.builds++;
+    for (const [key, kept] of this.fineCache) {
+      if (kept.used < this.builds - 2) {
+        this.fineCache.delete(key);
+      }
+    }
     this.clear(this.terrainGroup);
     this.clear(this.movingGroup);
     this.clear(this.underGroup);
@@ -1513,40 +1631,44 @@ export class VistazoView {
         child.userData.si = si;
       }
     };
-    for (const piece of scene.pieces) {
-      const from = this.terrainGroup.children.length;
-      this.buildPiece(piece);
-      mark(from, piece.si);
-    }
-    for (const bridge of scene.bridges) {
-      const from = this.terrainGroup.children.length;
-      this.buildBridge(bridge);
-      mark(from, bridge.si);
-    }
-    this.computeSlabs();
-    this.buildWater();
+    time("3d.build.pieces", () => {
+      for (const piece of scene.pieces) {
+        const from = this.terrainGroup.children.length;
+        this.buildPiece(piece);
+        mark(from, piece.si);
+      }
+    });
+    time("3d.build.bridges", () => {
+      for (const bridge of scene.bridges) {
+        const from = this.terrainGroup.children.length;
+        this.buildBridge(bridge);
+        mark(from, bridge.si);
+      }
+    });
+    time("3d.build.slabs", () => this.computeSlabs());
+    time("3d.build.water", () => this.buildWater());
     // Their heights follow the height scale.
-    this.buildTemplates();
+    time("3d.build.templates", () => this.buildTemplates());
 
-    this.buildWalls();
+    time("3d.build.walls", () => this.buildWalls());
 
     // Not while something's being dragged (drawn lightly): the shadows at the walls' feet come back as it's let go.
     if (!this.lite) {
-      this.buildWallShadows();
+      time("3d.build.wallShadows", () => this.buildWallShadows());
     }
     this.fogTexture?.dispose();
     this.fogTexture = null;
-    this.drawFog();
-    this.buildUnderBridges();
-    this.buildTokens();
-    this.buildReach();
+    time("3d.build.fog", () => this.drawFog());
+    time("3d.build.underBridges", () => this.buildUnderBridges());
+    time("3d.build.tokens", () => this.buildTokens());
+    time("3d.build.reach", () => this.buildReach());
     // The terrain's built again: so are the cloud shadows on it.
     this.weatherKey = "";
-    this.updateWeather();
+    time("3d.build.weather", () => this.updateWeather());
     this.highlight(this.picked.shapes);
     // Its size (it reads the page's layout, which costs): not while something's being dragged, it hasn't changed.
     if (!this.lite) {
-      this.measure();
+      time("3d.measure", () => this.measure());
     }
   }
 
@@ -2190,23 +2312,51 @@ export class VistazoView {
       return;
     }
     const t = this.texture;
-    for (const mask of this.waterMasks) {
-      mask.dispose();
-    }
-    this.waterMasks = [];
     for (const piece of scene.pieces) {
       if (!piece.water || piece.stand) {
         continue;
       }
       const level = piece.height + piece.water;
-      const reach = waterReach(scene, piece as Piece & { water: number });
-      this.waterMasks.push(reach.mask);
-      const surface = new THREE.Mesh(this.shapeGeometry(waterShape(scene, piece)), waterMaterial(this.mapTexture, t, this.u, scene.dpi, reach));
+      const key = `${level}|${JSON.stringify(piece.shape)}|${this.gridKey(piece.shape, scene.dpi * 2)}`;
+      let kept = this.waterCache.get(key);
+      if (!kept) {
+        kept = { reach: waterReach(scene, piece as Piece & { water: number }), shape: waterShape(scene, piece), used: 0 };
+        this.waterCache.set(key, kept);
+      }
+      kept.used = this.builds;
+      const surface = new THREE.Mesh(this.shapeGeometry(kept.shape), waterMaterial(this.mapTexture, t, this.u, scene.dpi, kept.reach));
       surface.position.z = level * this.k;
       surface.renderOrder = 4;
       this.waterGroup.add(surface);
     }
+    // Those no build since the last has used: let go (their masks with them).
+    for (const [key, kept] of this.waterCache) {
+      if (kept.used < this.builds - 1) {
+        kept.reach.mask.dispose();
+        this.waterCache.delete(key);
+      }
+    }
     this.playWeather();
+  }
+
+  /** The grid's heights within a shape's box (and `margin` round it), as a short key: the same while they are. */
+  private gridKey(shape: MultiPolygon, margin: number): string {
+    const { x0, y0, step, w, h, cells } = this.grid;
+    const xs = shape.flatMap((polygon) => polygon[0].map((p) => p[0]));
+    const ys = shape.flatMap((polygon) => polygon[0].map((p) => p[1]));
+    const i0 = Math.max(0, Math.floor((Math.min(...xs) - margin - x0) / step));
+    const i1 = Math.min(w - 1, Math.ceil((Math.max(...xs) + margin - x0) / step));
+    const j0 = Math.max(0, Math.floor((Math.min(...ys) - margin - y0) / step));
+    const j1 = Math.min(h - 1, Math.ceil((Math.max(...ys) + margin - y0) / step));
+    // FNV-1a over the heights' bits.
+    const bits = new Uint32Array(cells.buffer, cells.byteOffset, cells.length);
+    let hash = 0x811c9dc5;
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        hash = Math.imul(hash ^ bits[j * w + i], 0x01000193);
+      }
+    }
+    return `${step}:${i0},${j0},${i1},${j1}:${(hash >>> 0).toString(36)}`;
   }
 
   /**
@@ -2334,7 +2484,6 @@ export class VistazoView {
     this.writeLabel(view);
   }
 
-  /** A token's label, as the options have it, from its height now. */
   /** Every label written again (the language changed: see main.ts). */
   relabel() {
     for (const view of this.tokenViews) {
@@ -2342,6 +2491,7 @@ export class VistazoView {
     }
   }
 
+  /** A token's label, as the options have it, from its height now. */
   private writeLabel(view: TokenView) {
     // A prop's label is on or off by itself; with the tokens' set to none, it says the name.
     const shown = view.prop && this.options.tokenLabels === "none" ? "name" : this.options.tokenLabels;
@@ -2486,7 +2636,7 @@ export class VistazoView {
 
   private render() {
     if (this.renderer && this.scene && this.width > 0 && this.height > 0) {
-      this.renderer.render(this.world, this.glCamera);
+      time("3d.render", () => this.renderer!.render(this.world, this.glCamera));
     }
   }
 
