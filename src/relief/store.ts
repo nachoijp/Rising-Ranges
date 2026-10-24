@@ -71,6 +71,8 @@ export function keptImages(roomId: string): string[] {
 export type ReliefMessage =
   | { kind: "hello" }
   | { kind: "index"; images: string[] }
+  /** The background's answer to a save (its parts' `id`): whether it was kept in the scene. */
+  | { kind: "saved"; image: string; id: string; ok: boolean }
   | { kind: "relief" | "save"; image: string; id: string; index: number; count: number; text: string };
 
 /** A text as the messages that carry it (an empty text: the relief's gone). */
@@ -81,11 +83,11 @@ export function partsOf(kind: "relief" | "save", image: string, text: string): R
 }
 
 /** Parts put back together: each whole text once all its parts are in (a newer one for the same image wins). */
-export function assembler(onWhole: (kind: "relief" | "save", image: string, text: string) => void) {
+export function assembler(onWhole: (kind: "relief" | "save", image: string, text: string, id: string) => void) {
   const pending = new Map<string, { image: string; kind: "relief" | "save"; parts: string[]; got: number }>();
   const latest = new Map<string, string>();
   return (message: ReliefMessage) => {
-    if (message.kind === "hello" || message.kind === "index") {
+    if (message.kind === "hello" || message.kind === "index" || message.kind === "saved") {
       return;
     }
     const { kind, image, id, index, count, text } = message;
@@ -104,7 +106,7 @@ export function assembler(onWhole: (kind: "relief" | "save", image: string, text
       pending.delete(id);
       // An older one finishing after a newer one started: dropped.
       if (latest.get(`${kind}/${image}`) === id) {
-        onWhole(kind, image, entry.parts.join(""));
+        onWhole(kind, image, entry.parts.join(""), id);
       }
     }
   };
@@ -168,7 +170,7 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
           const kept = found.get(image);
           const undone = kept === undefined ? items.some((item) => item.id === image) : kept !== "partial" && kept.v < own.v;
           if (undone && !toWrite.has(image)) {
-            toWrite.set(image, own.text);
+            toWrite.set(image, { text: own.text });
             void write();
           }
         }
@@ -209,6 +211,12 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
         if (!ready) {
           ready = true;
           void migrate(items);
+          // A scene read (the first, or after a change of scene, see onReadyChange): the windows already
+          // open have the last one's, and won't ask again.
+          send([{ kind: "index", images: [...texts.keys()] }]);
+          for (const image of texts.keys()) {
+            handOut(image);
+          }
         }
       }
     } finally {
@@ -252,8 +260,13 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
       await OBR.scene.items.deleteItems(old.map((item) => item.id));
     }
   };
-  // Writing (the GM's): one at a time, the newest for each image.
-  const toWrite = new Map<string, string>();
+  // Writing (the GM's): one at a time, the newest for each image; `id`, the save it answers (none: put back after an undo).
+  const toWrite = new Map<string, { text: string; id?: string }>();
+  const answer = (image: string, id: string | undefined, ok: boolean) => {
+    if (id) {
+      send([{ kind: "saved", image, id, ok }]);
+    }
+  };
   let writing = false;
   const write = async () => {
     if (writing) {
@@ -262,7 +275,7 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
     writing = true;
     try {
       while (toWrite.size > 0) {
-        const [image, text] = toWrite.entries().next().value as [string, string];
+        const [image, { text, id }] = toWrite.entries().next().value as [string, { text: string; id?: string }];
         toWrite.delete(image);
         try {
           await writeRelief(image, text);
@@ -277,25 +290,29 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
             onChange(image, text ? fromStored(JSON.parse(text)) : null);
           }
           handOut(image);
+          answer(image, id, true);
         } catch (error) {
           console.error("Rising Ranges: the relief couldn't be kept in the scene", error);
-          // What's there handed out again: the editor's told it wasn't kept.
+          // What's there handed out again, and the editor told it wasn't kept.
           handOut(image);
+          answer(image, id, false);
         }
       }
     } finally {
       writing = false;
     }
   };
-  const saved = assembler((kind, image, text) => {
+  const saved = assembler((kind, image, text, id) => {
     if (kind !== "save") {
       return;
     }
     if (role !== "GM") {
       handOut(image);
+      answer(image, id, false);
       return;
     }
-    toWrite.set(image, text);
+    // A save still waiting is replaced by this newer one (its editor only waits for the answer to its last).
+    toWrite.set(image, { text, id });
     void write();
   });
 
@@ -341,7 +358,7 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
       OBR.scene.items.getItems().then(take, (error) => console.error("Rising Ranges: the scene's reliefs couldn't be read", error));
       return;
     }
-    // Another scene: none of these.
+    // Another scene: none of these (the windows told, see watchReliefs' index).
     ready = false;
     seen = null;
     mine.clear();
@@ -349,6 +366,7 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
       texts.delete(image);
       onChange(image, null);
     }
+    send([{ kind: "index", images: [] }]);
   });
   if (await OBR.scene.isReady()) {
     take(await OBR.scene.items.getItems());
@@ -376,16 +394,37 @@ export function watchReliefs(onRelief: (image: string, data: ReliefData | null) 
       onIndex?.(listed);
     }
   };
+  /**
+   * The text of each image's relief this window has: one sent again unchanged (every window's hello
+   * has the background send them all) isn't taken again (a relief worked out again, the Vistazo
+   * rebuilt).
+   */
+  const have = new Map<string, string>();
   const take = assembler((kind, image, text) => {
     if (kind === "relief") {
-      onRelief(image, text ? fromStored(JSON.parse(text)) : null);
+      if ((have.get(image) ?? "") !== text) {
+        if (text) {
+          have.set(image, text);
+        } else {
+          have.delete(image);
+        }
+        onRelief(image, text ? fromStored(JSON.parse(text)) : null);
+      }
       waiting?.delete(image);
       complete();
     }
   });
   const stop = OBR.broadcast.onMessage(CHANNEL, (event) => {
     const message = event.data as ReliefMessage;
-    if (message?.kind === "index" && !known) {
+    if (message?.kind === "index" && known) {
+      // Another scene read (see the background's): those not in it are gone; the rest follow.
+      for (const image of [...have.keys()]) {
+        if (!message.images.includes(image)) {
+          have.delete(image);
+          onRelief(image, null);
+        }
+      }
+    } else if (message?.kind === "index") {
       listed = message.images;
       waiting = new Set(message.images);
       complete();
@@ -410,7 +449,19 @@ export function watchReliefs(onRelief: (image: string, data: ReliefData | null) 
   };
 }
 
-/** A window's relief for an image, sent to the background to keep (null: removed). */
-export function saveRelief(image: string, data: ReliefData | null) {
-  send(partsOf("save", image, data ? JSON.stringify(toStored(data)) : ""));
+/** A window's relief for an image, sent to the background to keep (null: removed): the save's id (see onSaved). */
+export function saveRelief(image: string, data: ReliefData | null): string {
+  const parts = partsOf("save", image, data ? JSON.stringify(toStored(data)) : "");
+  send(parts);
+  return (parts[0] as { id: string }).id;
+}
+
+/** The background's answers to saves (see saveRelief): each save's id, and whether it was kept. */
+export function onSaved(listener: (image: string, id: string, ok: boolean) => void): () => void {
+  return OBR.broadcast.onMessage(CHANNEL, (event) => {
+    const message = event.data as ReliefMessage;
+    if (message?.kind === "saved") {
+      listener(message.image, message.id, message.ok);
+    }
+  });
 }

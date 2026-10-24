@@ -517,6 +517,8 @@ const en: Record<TranslationKey, string> = {
   "settings.altura.isoSquare": "This scene has a square grid: these options only apply on isometric, dimetric or hex grids.",
   "vistazo.less": "Less",
   "vistazo.more": "More",
+  "relief.noMaps": "There's no image on the Map layer to edit a relief for.",
+  "relief.oldZones": "This scene has terrain in the old format, which isn't measured anymore. Bring it in from the 3D Glance: Edit relief → ⋯ → Bring zones.",
   "relief.import": "Import",
   "relief.zones": "Bring zones",
   "relief.zonesNone": "There are no terrain zones on this map.",

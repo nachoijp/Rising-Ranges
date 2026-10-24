@@ -5,7 +5,7 @@ import type { Box } from "../geom";
 import { Relief } from "../relief";
 import { backupsOf, keepBackup } from "../backups";
 import { pack } from "../sceneItems";
-import { saveRelief, watchReliefs } from "../store";
+import { onSaved, saveRelief } from "../store";
 import type { Affine, ReliefData } from "../types";
 import { withZones } from "../zones";
 import { DEFAULT_SETTINGS, ReliefEditor, type Mods, type Settings, type ToolId } from "./editor";
@@ -148,7 +148,11 @@ const SIZE_WARN = 4_000_000;
 /** A size in characters (one byte each), as KB or MB. */
 const sizeOf = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1000))} KB`);
 
-export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? ""): EditSession {
+/**
+ * `before`: the images changed earlier in this editing (another picked in the dropdown, theirs saved),
+ * each as it was when editing began (null: none), for the X to put back too.
+ */
+export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "", before = new Map<string, string | null>()): EditSession {
   const { t, root } = o;
   const image = o.images.find((i) => i.id === imageId) ?? o.images[0];
   const [w, h] = reliefSize(anchorOf(image));
@@ -336,16 +340,16 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
 
   // ---------- Saving: a moment after the last change; the background's answer says whether it was kept ----------
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The last save's id, till the background answers it (see onSaved). */
   let sent = "";
   /** Told once a session that the relief has grown big (see SIZE_WARN). */
   let toldBig = false;
   const saveNow = () => {
     clearTimeout(saveTimer);
     saveTimer = undefined;
-    sent = JSON.stringify(toStored(editor.data));
-    saveRelief(image.id, editor.data);
+    sent = saveRelief(image.id, editor.data);
     if (!toldBig) {
-      const json = sent;
+      const json = JSON.stringify(toStored(editor.data));
       void pack(json).then((packed) => {
         if (!toldBig && packed.length > SIZE_WARN) {
           toldBig = true;
@@ -358,12 +362,13 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
     clearTimeout(saveTimer);
     saveTimer = setTimeout(saveNow, SAVE_AFTER);
   };
-  const stopWatching = watchReliefs((id, relief) => {
-    if (id === image.id && sent) {
-      if (!(relief && JSON.stringify(toStored(relief)) === sent)) {
+  // Only the answer to the last save counts: an older one's (replaced while it was written) isn't told.
+  const stopWatching = onSaved((id, save, ok) => {
+    if (id === image.id && save === sent) {
+      sent = "";
+      if (!ok) {
         notice(t("relief.notSaved"));
       }
-      sent = "";
     }
   });
 
@@ -738,11 +743,13 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
     void keepBackup(image.id, JSON.stringify(toStored(editor.data)));
     o.onDone();
   };
-  // The X: the relief back as it was when editing began, and editing over. With changes made, a second
-  // click to be sure (within a moment).
+  // The X: every relief changed in this editing back as it was when editing began (this image's and
+  // those before it, see `before`), and editing over. With changes made, a second click to be sure
+  // (within a moment).
+  const changedHere = () => JSON.stringify(toStored(editor.data)) !== (original ?? JSON.stringify(toStored(emptyRelief(w, h))));
   let exitArmed: ReturnType<typeof setTimeout> | undefined;
   $("exit").onclick = () => {
-    const changed = JSON.stringify(toStored(editor.data)) !== (original ?? JSON.stringify(toStored(emptyRelief(w, h))));
+    const changed = changedHere() || before.size > 0;
     if (changed && !exitArmed) {
       $("exit").classList.add("armed");
       notice(t("relief.exitSure"));
@@ -755,10 +762,16 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
     clearTimeout(exitArmed);
     clearTimeout(saveTimer);
     saveTimer = undefined;
-    const back = original ? fromStored(JSON.parse(original)) : null;
-    saveRelief(image.id, back);
-    if (back) {
-      o.onRelief(image.id, new Relief(back), false);
+    const firsts = new Map(before);
+    if (!firsts.has(image.id)) {
+      firsts.set(image.id, original);
+    }
+    for (const [id, first] of firsts) {
+      const back = first ? fromStored(JSON.parse(first)) : null;
+      saveRelief(id, back);
+      if (back) {
+        o.onRelief(id, new Relief(back), false);
+      }
     }
     o.onDone();
   };
@@ -766,8 +779,12 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
   let session: EditSession;
   $<HTMLSelectElement>("image").onchange = (event) => {
     const next = (event.target as HTMLSelectElement).value;
+    // As it was when editing began, for the X (the first time it's left changed only: later, it's no longer that).
+    if (changedHere() && !before.has(image.id)) {
+      before.set(image.id, original);
+    }
     session.stop();
-    Object.assign(session, startEditing(o, next));
+    Object.assign(session, startEditing(o, next, before));
   };
 
   // The keys, all of them (the "?").

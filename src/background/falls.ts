@@ -57,7 +57,6 @@ export function startFalls() {
     if (!scale) {
       return;
     }
-    await drop(token.id);
     // Under the token, centred: a Lectura's label (the same rules: it follows the map's zoom, as the
     // token does), its background fainter, the figure drawn over the room its text leaves at its left.
     const { topLeft, scaledWidth, scaledHeight } = getTokenBounds(onFloor(token), dpi);
@@ -90,9 +89,16 @@ export function startFalls() {
       .metadata({ [FALL_KEY]: true })
       .build();
     const items = [label, figure];
-    await OBR.scene.local.addItems(items);
     const ids = items.map((item) => item.id);
+    // This one's in place before anything's awaited: a fall right after it takes its place, not the other way.
+    void drop(token.id);
     shown.set(token.id, ids);
+    await OBR.scene.local.addItems(items).catch(() => {});
+    // Replaced (or the token moved on) while it was being added: its own gone too.
+    if (shown.get(token.id) !== ids) {
+      void OBR.scene.local.deleteItems(ids).catch(() => {});
+      return;
+    }
     setTimeout(() => {
       if (shown.get(token.id) === ids) {
         void drop(token.id);

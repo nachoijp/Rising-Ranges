@@ -1,6 +1,6 @@
 import OBR, { type Item } from "@owlbear-rodeo/sdk";
 import type { RampSlope, TerrainShape, TerrainZone } from "../terrain/terrain";
-import { cellToScene, reliefSize, sceneToCell, type Anchor } from "./anchor";
+import { cellToScene, type Anchor } from "./anchor";
 import { mapAnchors, reliefZones } from "./measure";
 import { area, inShape, type Box } from "./geom";
 import { Relief } from "./relief";
@@ -48,21 +48,6 @@ function takeItems(items: Item[]) {
 /** The terrain measured here: the reliefs' (see measure.ts). */
 export function terrainNow(): TerrainZone[] {
   return reliefZones(reliefs, anchors, dpi);
-}
-
-/** Whether a scene point is on a map image that has a relief (there, the zones don't count). */
-export function onRelief(point: { x: number; y: number }): boolean {
-  for (const id of reliefs.keys()) {
-    const anchor = anchors.get(id);
-    if (anchor) {
-      const [w, h] = reliefSize(anchor);
-      const [x, y] = sceneToCell(anchor, dpi, point.x, point.y);
-      if (x >= 0 && y >= 0 && x <= w && y <= h) {
-        return true;
-      }
-    }
-  }
-  return false;
 }
 
 /** Below this rise a cell, a shape is drawn flat. */

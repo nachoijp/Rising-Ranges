@@ -57,6 +57,7 @@ import { saveDraggedToken } from "../util/saveDrag";
 import "./vistazo.css";
 import { since, stamp, time } from "../timing";
 import { enhanceSelects } from "./dropdown";
+import { isMapImage } from "../relief/measure";
 
 // Before any other key listener: an open dropdown's keys are its own (see dropdown.ts).
 enhanceSelects();
@@ -1871,7 +1872,8 @@ async function start() {
       const t0 = stamp();
       scene = buildScene(
         sceneMetadata,
-        items,
+        // The map being edited drawn even hidden (a map got ready before it's shown).
+        session ? items.map((item) => (item.id === session!.imageId && !item.visible ? { ...item, visible: true } : item)) : items,
         dpi,
         scale,
         gridType,
@@ -1961,9 +1963,10 @@ async function start() {
   /** The map images to edit, the largest (in the scene) first. */
   const mapImages = () =>
     items
-      .filter((item): item is Image => item.type === "IMAGE" && item.layer === "MAP" && item.visible)
-      .map((item) => ({ item, size: Math.abs((item as Image).image.width * (item as Image).image.height * item.scale.x * item.scale.y) / (item as Image).grid.dpi ** 2 }))
-      .sort((a, b) => b.size - a.size)
+      .filter(isMapImage)
+      .map((item) => ({ item, size: Math.abs(item.image.width * item.image.height * item.scale.x * item.scale.y) / item.grid.dpi ** 2 }))
+      // Hidden ones too (a map got ready before it's shown), after those shown.
+      .sort((a, b) => Number(b.item.visible) - Number(a.item.visible) || b.size - a.size)
       .map(({ item }) => item);
   function enterEdit() {
     editAsked = false;
@@ -1972,6 +1975,11 @@ async function start() {
     }
     const images = mapImages();
     if (images.length === 0) {
+      // Nothing to edit: said, and back where it was opened from (the panel), not left on an empty screen.
+      void OBR.notification.show(t("relief.noMaps"), "WARNING");
+      if (backToPanel) {
+        leaveFull();
+      }
       return;
     }
     $("app").classList.add("editing");

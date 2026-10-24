@@ -7,11 +7,14 @@ import type { Relief } from "./relief";
 // page, the Distances panel, the token height picker): each map image that
 // has one as a zone, all of it, at the relief's heights (on a slab, its top).
 
+/** A map image: what a relief belongs to (edited even hidden; measured, see mapAnchors, only shown). */
+export const isMapImage = (item: Item): item is Image => item.type === "IMAGE" && item.layer === "MAP";
+
 /** The scene's visible map images, where they are (as the Vistazo takes them). */
 export function mapAnchors(items: Item[]): Map<string, Anchor> {
   const anchors = new Map<string, Anchor>();
   for (const item of items) {
-    if (item.type === "IMAGE" && item.layer === "MAP" && item.visible) {
+    if (isMapImage(item) && item.visible) {
       anchors.set(item.id, anchorOf(item as Image));
     }
   }
