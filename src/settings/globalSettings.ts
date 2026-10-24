@@ -56,6 +56,8 @@ export type GlobalSettings = {
   groundLevel?: GroundLevel;
   /** Terrain with a height (see terrain.ts): its context menu, its toolbar button, and zones counting. Missing = true. */
   enableTerrain?: boolean;
+  /** A token let go lower on the terrain: how far it fell, shown a moment beside it (see falls.ts). Missing = true. */
+  showFalls?: boolean;
   /** How the terrain is drawn on the map (see terrainView.ts). Each field falls back on its own (resolveTerrainLook). */
   terrainLook?: Partial<TerrainLook>;
   /**
@@ -183,6 +185,7 @@ function isGlobalSettings(value: unknown): value is GlobalSettings {
     (value.vistazo === undefined || value.vistazo === "off" || value.vistazo === "gm" || value.vistazo === "everyone") &&
     (value.groundLevel === undefined || value.groundLevel === "terrain" || value.groundLevel === "fixed") &&
     optionalBoolean(value.enableTerrain) &&
+    optionalBoolean(value.showFalls) &&
     // Each field inside is checked (and falls back) on its own in resolveTerrainLook.
     (value.terrainLook === undefined || isPlainObject(value.terrainLook)) &&
     (value.terrainVisibility === undefined ||

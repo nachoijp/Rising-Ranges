@@ -2,6 +2,7 @@ import OBR from "@owlbear-rodeo/sdk";
 import { syncSettings } from "./syncSettings";
 import { startMeasureMirrorReceiver } from "./measureMirror";
 import { startHeightOverlays } from "./heightOverlays";
+import { startFalls } from "./falls";
 import { startMarkerRefresh } from "./markerRefresh";
 import { startFixedMedicion } from "./fixedMedicion";
 import { startIsoLift } from "./isoLift";
@@ -67,6 +68,7 @@ async function init() {
   startMeasureMirrorReceiver();
   // The reliefs kept on this device: handed to the relief editor and the other windows that ask.
   startReliefs();
+  startFalls();
 
   // The toolbar follows the scene's settings (see toolbar.ts); with no scene
   // yet, it starts from the defaults.

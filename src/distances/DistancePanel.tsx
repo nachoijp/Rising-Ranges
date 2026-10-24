@@ -22,6 +22,9 @@ import { DragHandle } from "./DragHandle";
 import { measuredBands } from "../engine/bands";
 import VisibilityRounded from "@mui/icons-material/VisibilityRounded";
 import VisibilityOffRounded from "@mui/icons-material/VisibilityOffRounded";
+import LandscapeRounded from "@mui/icons-material/LandscapeRounded";
+import VisibilityOffOutlined from "@mui/icons-material/VisibilityOffOutlined";
+import { EYE, inSight } from "../relief/sight";
 import { viewportReaches } from "../util/menuRoom";
 import { getColorString } from "../util/color";
 import { formatDistance } from "../util/flattenGridScale";
@@ -123,6 +126,25 @@ function writeShowHidden(show: boolean) {
   }
 }
 
+const SIGHT_KEY = "rising-ranges/distances/sight";
+
+/** Whether the rows say when the terrain hides one token from the other (this browser's choice; on unless turned off). */
+function readSight(): boolean {
+  try {
+    return localStorage.getItem(SIGHT_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+function writeSight(on: boolean) {
+  try {
+    localStorage.setItem(SIGHT_KEY, String(on));
+  } catch {
+    // Not remembered; it still applies until the panel closes.
+  }
+}
+
 export function DistancePanel() {
   const t = useTranslation();
   const [metadata, setMetadata] = useState<Record<string, unknown> | null>(null);
@@ -164,6 +186,8 @@ export function DistancePanel() {
   // The GM's own choice, remembered in their browser: hidden creatures in
   // the list or not (say, while sharing their screen). Players never get them.
   const [showHidden, setShowHidden] = useState(() => readShowHidden());
+  // Sight: whether the terrain between them hides the token from the origin (only with a terrain).
+  const [sightOn, setSightOn] = useState(() => readSight());
 
   useEffect(() => {
     let mounted = true;
@@ -307,12 +331,12 @@ export function DistancePanel() {
     ? tokenHeightsFromMarkers(items.filter(isTokenHeightMarker), bandSet)
     : new Map<string, number>();
   // Heights are kept above the ground each one stands on; the terrain there is added here.
-  if (terrainOn(settings, grid.type)) {
-    const terrain = reliefZones(reliefs, mapAnchors(items), grid.dpi);
-    for (const token of tokens) {
-      heights.set(token.id, (heights.get(token.id) ?? 0) + terrainAt(terrain, token.position));
-    }
+  const withTerrain = terrainOn(settings, grid.type);
+  const terrain = withTerrain ? reliefZones(reliefs, mapAnchors(items), grid.dpi) : [];
+  for (const token of withTerrain ? tokens : []) {
+    heights.set(token.id, (heights.get(token.id) ?? 0) + terrainAt(terrain, token.position));
   }
+  const hasTerrain = terrain.length > 0;
   const origin = tokens.find((token) => token.id === originId);
   const rows = origin
     ? computeDistanceRows(
@@ -324,6 +348,17 @@ export function DistancePanel() {
         grid.axonometry
       )
     : [];
+  /** The terrain between the origin's eye and a token's hides it (with the sight on, and a terrain). */
+  const hidden = (token: Image) =>
+    !!origin &&
+    sightOn &&
+    hasTerrain &&
+    !inSight(
+      (x, y) => terrainAt(terrain, { x, y }),
+      { ...origin.position, z: (heights.get(origin.id) ?? 0) + EYE },
+      { ...token.position, z: (heights.get(token.id) ?? 0) + EYE },
+      grid.dpi
+    );
   const theme = getStoredTheme();
   const distanceText = (gridUnits: number) => formatDistance(grid.scale, gridUnits);
 
@@ -359,6 +394,21 @@ export function DistancePanel() {
               MUI's: MUI's is drawn inside the panel's page, and a one-row
               panel has no room for it. The browser draws its own over
               everything. */}
+          {hasTerrain && (
+            <IconButton
+              size="small"
+              aria-label={t(sightOn ? "distances.sightOff" : "distances.sightOn")}
+              title={t(sightOn ? "distances.sightOff" : "distances.sightOn")}
+              aria-pressed={sightOn}
+              color={sightOn ? "primary" : "default"}
+              onClick={() => {
+                setSightOn(!sightOn);
+                writeSight(!sightOn);
+              }}
+            >
+              <LandscapeRounded fontSize="small" />
+            </IconButton>
+          )}
           {role === "GM" && (
             <IconButton
               size="small"
@@ -436,6 +486,11 @@ export function DistancePanel() {
                             >
                               <TokenLabel token={row.token} />
                             </ButtonBase>
+                            {hidden(row.token) && (
+                              <span title={t("distances.noSight")} aria-label={t("distances.noSight")} style={{ display: "inline-flex", verticalAlign: "middle", opacity: 0.75 }}>
+                                <VisibilityOffOutlined sx={{ fontSize: 16 }} />
+                              </span>
+                            )}
                           </TableCell>
                           <TableCell sx={{ ...cellSx, whiteSpace: "nowrap" }}>
                             <Stack direction="row" alignItems="center" gap={0.75}>

@@ -3,6 +3,8 @@ import { anchorOf, reliefSize } from "../anchor";
 import { emptyRelief, fromStored, toStored } from "../codec";
 import type { Box } from "../geom";
 import { Relief } from "../relief";
+import { backupsOf, keepBackup } from "../backups";
+import { pack } from "../sceneItems";
 import { saveRelief, watchReliefs } from "../store";
 import type { Affine, ReliefData } from "../types";
 import { withZones } from "../zones";
@@ -140,6 +142,12 @@ const imageName = (image: Image, i: number) => image.text?.plainText || image.na
 const NARROW_W = 600;
 const NARROW_H = 520;
 
+/** How big (packed, as the scene keeps it) a relief is when the editor says it's big: it slows the scene loading for everyone. */
+const SIZE_WARN = 4_000_000;
+
+/** A size in characters (one byte each), as KB or MB. */
+const sizeOf = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1000))} KB`);
+
 export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? ""): EditSession {
   const { t, root } = o;
   const image = o.images.find((i) => i.id === imageId) ?? o.images[0];
@@ -148,6 +156,10 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
   // was, for the X.
   const kept = o.reliefs.get(image.id);
   const original = kept ? JSON.stringify(toStored(kept.data)) : null;
+  // What editing began from, kept on this device (see backups.ts).
+  if (original) {
+    void keepBackup(image.id, original);
+  }
   const data: ReliefData = (original && fromStored(JSON.parse(original))) || emptyRelief(w, h);
   // What's folded away, kept between times.
   const folds = loadJson(FOLDS_KEY, { body: false, look: true, shapes: false });
@@ -190,6 +202,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
       <button type="button" class="ib sm" data-k="undo">${icon("undo")}</button>
       <button type="button" class="ib sm" data-k="redo">${icon("redo")}</button>
       <button type="button" class="ib sm on" data-k="heights" aria-pressed="true">${icon("heights")}</button>
+      <button type="button" class="ib sm" data-k="grid" aria-pressed="false">${icon("magnet")}</button>
       <div class="vsep"></div>
       <div class="re-options" data-k="options"></div>
       <button type="button" class="ib sm re-help" data-k="help">?</button>
@@ -228,6 +241,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
     name("undo", t("relief.undoName"), "", "Ctrl+Z");
     name("redo", t("relief.redo"), "", "Ctrl+Y");
     name("heights", t("relief.heights"), t("relief.heightsHint"));
+    name("grid", t("relief.grid"), t("relief.gridHint"));
     name("help", t("relief.shortcuts"), t("relief.shortcutsHint"), "?");
     name("more", t("relief.more"), t("relief.moreHint"));
     name("exit", t("relief.exit"), t("relief.exitHint"));
@@ -323,11 +337,22 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
   // ---------- Saving: a moment after the last change; the background's answer says whether it was kept ----------
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   let sent = "";
+  /** Told once a session that the relief has grown big (see SIZE_WARN). */
+  let toldBig = false;
   const saveNow = () => {
     clearTimeout(saveTimer);
     saveTimer = undefined;
     sent = JSON.stringify(toStored(editor.data));
     saveRelief(image.id, editor.data);
+    if (!toldBig) {
+      const json = sent;
+      void pack(json).then((packed) => {
+        if (!toldBig && packed.length > SIZE_WARN) {
+          toldBig = true;
+          notice(t("relief.sizeWarn", { size: sizeOf(packed.length) }));
+        }
+      });
+    }
   };
   const save = () => {
     clearTimeout(saveTimer);
@@ -433,7 +458,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
   const drawMap = map.redraw.bind(map);
   map.redraw = () => {
     drawMap();
-    const text = liveHint(editor, t);
+    const text = liveHint(editor, t, o.unit);
     if (chip.textContent !== text) {
       chip.textContent = text;
     }
@@ -571,6 +596,17 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
   $("undo").onclick = () => editor.undo();
   $("help").onclick = () => toggleHelp();
   $("redo").onclick = () => editor.redo();
+  // The magnet: points to the half-cell grid (kept for the next time).
+  const showGrid = () => {
+    $("grid").classList.toggle("on", editor.settings.grid);
+    $("grid").setAttribute("aria-pressed", String(editor.settings.grid));
+  };
+  showGrid();
+  $("grid").onclick = () => {
+    editor.settings.grid = !editor.settings.grid;
+    editor.host.saveSettings();
+    showGrid();
+  };
   $("heights").onclick = () => {
     map.showHeights = !map.showHeights;
     $("heights").classList.toggle("on", map.showHeights);
@@ -601,10 +637,24 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
     const [x, y] = rootPoint(r.left, r.bottom + 4);
     openMenu(root, x, y, toolsMenu(editor, t, setTool));
   };
-  $("more").onclick = () => {
+  $("more").onclick = async () => {
     const r = $("more").getBoundingClientRect();
     const [x, y] = rootPoint(r.right, r.bottom + 4);
     let sure = false;
+    // How big it is as the scene keeps it, and the versions kept here.
+    const [packed, backups] = await Promise.all([pack(JSON.stringify(toStored(editor.data))).catch(() => ""), backupsOf(image.id)]);
+    const versions: MenuItem[] = backups.length
+      ? backups.map((backup) => ({
+          label: new Date(backup.at).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }),
+          run: () => {
+            const read = fromStored(JSON.parse(backup.json));
+            if (read) {
+              editor.replace(read);
+              notice(t("relief.versionBack"));
+            }
+          },
+        }))
+      : [{ label: t("relief.versionsNone"), disabled: true }];
     // On a narrow map, what the top bar has no room for.
     const narrow = (): MenuItem[] =>
       pieces.classList.contains("re-narrow")
@@ -623,6 +673,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
               })),
             },
             { icon: "heights", label: map.showHeights ? `${t("relief.heights")} ✓` : t("relief.heights"), run: () => $("heights").click() },
+            { icon: "magnet", label: editor.settings.grid ? `${t("relief.grid")} ✓` : t("relief.grid"), run: () => $("grid").click() },
             ...(pieces.classList.contains("re-tighter") ? [{ label: t("relief.shortcuts"), key: "?", run: toggleHelp }] : []),
             "-",
           ]
@@ -641,6 +692,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
         },
       },
       { label: t("relief.import"), run: () => file.click() },
+      { label: t("relief.versions"), items: versions },
       {
         icon: "terrain",
         label: t("relief.zones"),
@@ -666,15 +718,22 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
             sure = true;
             // The same menu, the item asking again.
             const again = items();
-            again[again.length - 1] = { icon: "delete", label: t("relief.clearSure"), run: () => editor.replace(emptyRelief(editor.data.w, editor.data.h)) };
+            const at = again.findIndex((item) => item !== "-" && item.label === t("relief.clear"));
+            again[at] = { icon: "delete", label: t("relief.clearSure"), run: () => editor.replace(emptyRelief(editor.data.w, editor.data.h)) };
             setTimeout(() => openMenu(root, x - 220, y, again), 0);
           }
         },
       },
+      "-",
+      { label: t("relief.size", { size: packed ? sizeOf(packed.length) : "?" }), disabled: true },
     ];
     openMenu(root, x - 220, y, items());
   };
-  $("done").onclick = () => o.onDone();
+  // Done: this version kept on this device too (see backups.ts).
+  $("done").onclick = () => {
+    void keepBackup(image.id, JSON.stringify(toStored(editor.data)));
+    o.onDone();
+  };
   // The X: the relief back as it was when editing began, and editing over. With changes made, a second
   // click to be sure (within a moment).
   let exitArmed: ReturnType<typeof setTimeout> | undefined;

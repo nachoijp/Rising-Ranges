@@ -109,6 +109,8 @@
   width: 100%;
   height: 100%;
   display: block;
+  /* Its own fingers' gestures (a pinch zooms the map, not the page). */
+  touch-action: none;
 }
 .re-map canvas:focus-visible {
   outline: 2px solid var(--accent);
@@ -987,7 +989,8 @@
 }
 .re-ui.re-narrow .re-tools,
 .re-ui.re-narrow .re-image,
-.re-ui.re-narrow [data-k="heights"] {
+.re-ui.re-narrow [data-k="heights"],
+.re-ui.re-narrow [data-k="grid"] {
   display: none;
 }
 .re-ui.re-narrow .re-optbar {

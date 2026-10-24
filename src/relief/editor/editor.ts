@@ -24,13 +24,14 @@ import {
   vertsOf,
   type Snap,
 } from "./shapes";
+import { placePrefab, type PrefabId } from "./prefabs";
 
 // The relief editor without its page: the tool in hand, what's picked, and
 // what the pointer and the keys do to the relief (in cells). The page (see
 // page.ts) draws it and holds the panel; it hears of each change through the
 // host. Ported from the mockup's editor F (dev-tests/tmp/mockup).
 
-export type ToolId = "rect" | "ellipse" | "lasso" | "paintShape" | "polygon" | "edit" | "cut" | "brush";
+export type ToolId = "rect" | "ellipse" | "lasso" | "paintShape" | "polygon" | "stamp" | "edit" | "cut" | "brush";
 
 export type Selection =
   | { kind: "shape"; i: number; more?: number[] }
@@ -83,9 +84,13 @@ export type Settings = {
   groundOnly: boolean;
   shapeRadius: number;
   brushMode: BrushKind;
+  /** Points drawn and moved to the half-cell grid (the magnet in the bar). */
+  grid: boolean;
+  /** The ready-made shape the Formas listas tool puts down. */
+  stamp: PrefabId;
 };
 
-export const DEFAULT_SETTINGS: Settings = { pickMode: "shapes", rollerMode: "new", lassoSmooth: 0, radius: 1.5, strength: 0.5, level: 1, lastSoft: 0, groundOnly: false, shapeRadius: 1, brushMode: "raise" };
+export const DEFAULT_SETTINGS: Settings = { pickMode: "shapes", rollerMode: "new", lassoSmooth: 0, radius: 1.5, strength: 0.5, level: 1, lastSoft: 0, groundOnly: false, shapeRadius: 1, brushMode: "raise", grid: false, stamp: "column" };
 
 /** An ellipse's points. */
 const SHAPE_POINTS = 24;
@@ -116,6 +121,8 @@ export class ReliefEditor {
   shape: { start: { x: number; y: number }; end: { x: number; y: number }; path: Pt[]; origin?: { x: number; y: number } } | null = null;
   box: { start: { x: number; y: number }; end: { x: number; y: number }; add: boolean } | null = null;
   drag: { kind: "vertex" | "point"; i: number } | { group: number[]; from: { x: number; y: number }; start: Pt[] } | null = null;
+  /** Where what's dragged (a vertex, a height point, the first of a group) started, for how far it's gone (see dragMoved). */
+  private dragStart: Pt | null = null;
   xf: Transform | null = null;
   /** The drag in hand as a map of the relief's cells (from where it started), while it lasts. */
   xfMap: Affine | null = null;
@@ -333,6 +340,15 @@ export class ReliefEditor {
       this.knife = { a: [p.x, p.y], b: [p.x, p.y], only: this.sel?.kind === "shape" ? this.sel.i : null };
       return;
     }
+    // A ready-made shape put down here, picked, to be changed with Elegir.
+    if (this.tool === "stamp") {
+      this.pushUndo();
+      placePrefab(this, this.settings.stamp, this.gridded(p));
+      this.setTool("edit");
+      this.changed();
+      this.host.showProps();
+      return;
+    }
     if (this.tool === "edit" && !this.drawing && mods.ctrl) {
       const si = this.shapeAt(p.x, p.y);
       if (si >= 0) {
@@ -379,14 +395,15 @@ export class ReliefEditor {
       if (at && "vertex" in at && this.drawing.includes(at.vertex)) {
         return;
       }
-      this.drawing.push(vertexAt(this, p, at));
+      this.drawing.push(vertexAt(this, at ? p : this.gridded(p), at));
       this.changed();
       return;
     }
     if (this.isShapeTool()) {
       this.pushUndo();
-      // Where it started, for Shift (square) and Alt (from the middle).
-      this.shape = { start: p, end: p, path: [[p.x, p.y]], origin: this.tool === "lasso" ? undefined : { x: p.x, y: p.y } };
+      // Where it started, for Shift (square) and Alt (from the middle); on the grid if it's on (not a lasso: drawn free).
+      const q = this.tool === "lasso" ? p : this.gridded(p);
+      this.shape = { start: q, end: q, path: [[q.x, q.y]], origin: this.tool === "lasso" ? undefined : { x: q.x, y: q.y } };
       return;
     }
     // Edit: a vertex, a point, the shape under it; or, on nothing, a box to pick vertices with.
@@ -402,10 +419,13 @@ export class ReliefEditor {
       // A vertex in the group picked drags the group.
       if (vi >= 0 && sel?.kind === "verts" && sel.list.includes(vi)) {
         this.drag = { group: sel.list, from: p, start: sel.list.map((i): Pt => [this.data.verts[i].x, this.data.verts[i].y]) };
+        this.dragStart = this.drag.start[0];
       } else {
         const picked = vi >= 0 ? ({ kind: "vertex", i: vi } as const) : ({ kind: "point", i: pi } as const);
         this.sel = picked;
         this.drag = picked;
+        const at = vi >= 0 ? this.data.verts[vi] : this.data.points[pi];
+        this.dragStart = [at.x, at.y];
       }
     } else if (shapesOnly && this.shapeAt(p.x, p.y) < 0) {
       // On nothing: a box to pick the shapes wholly inside it with (Shift: more of them).
@@ -503,7 +523,8 @@ export class ReliefEditor {
     }
     if (held && this.shape?.origin) {
       const o = this.shape.origin;
-      let [dx, dy] = [p.x - o.x, p.y - o.y];
+      const q = this.gridded(p);
+      let [dx, dy] = [q.x - o.x, q.y - o.y];
       if (mods.shift) {
         const d = Math.max(Math.abs(dx), Math.abs(dy));
         [dx, dy] = [(dx < 0 ? -1 : 1) * d, (dy < 0 ? -1 : 1) * d];
@@ -530,6 +551,12 @@ export class ReliefEditor {
       this.host.redraw();
       return;
     }
+    if (this.tool === "stamp") {
+      this.cursor = this.gridded(p);
+      this.host.setCursor("crosshair");
+      this.host.redraw();
+      return;
+    }
     if (this.tool === "cut") {
       this.cursor = p;
       this.host.setCursor("crosshair");
@@ -550,7 +577,8 @@ export class ReliefEditor {
       this.host.redraw();
       return;
     }
-    this.cursor = { ...p, snap: this.tool === "polygon" ? snap(this, p, !!mods.shift) : null };
+    const at = this.tool === "polygon" ? snap(this, p, !!mods.shift) : null;
+    this.cursor = { ...(this.tool === "polygon" && !at ? this.gridded(p) : p), snap: at };
     if (held && this.xf) {
       this.transform(p, mods);
       return;
@@ -571,14 +599,16 @@ export class ReliefEditor {
       const verts = this.data.verts;
       if ("group" in this.drag) {
         const drag = this.drag;
+        const [dx, dy] = [this.onGrid(p.x - drag.from.x), this.onGrid(p.y - drag.from.y)];
         drag.group.forEach((i, k) => {
-          verts[i].x = drag.start[k][0] + p.x - drag.from.x;
-          verts[i].y = drag.start[k][1] + p.y - drag.from.y;
+          verts[i].x = drag.start[k][0] + dx;
+          verts[i].y = drag.start[k][1] + dy;
         });
       } else {
         const target = this.drag.kind === "vertex" ? verts[this.drag.i] : this.data.points[this.drag.i];
-        target.x = p.x;
-        target.y = p.y;
+        const q = this.gridded(p);
+        target.x = q.x;
+        target.y = q.y;
       }
       this.changed();
       return;
@@ -995,12 +1025,32 @@ export class ReliefEditor {
     return true;
   }
 
+  /** A distance (cells) in steps of the grid, when it's on (see Settings.grid). */
+  onGrid(d: number): number {
+    return this.settings.grid ? Math.round(d * 2) / 2 : d;
+  }
+
+  /** A point on the half-cell grid, when it's on. */
+  gridded(p: { x: number; y: number }): { x: number; y: number } {
+    return this.settings.grid ? { x: this.onGrid(p.x), y: this.onGrid(p.y) } : p;
+  }
+
+  /** How far (cells) what's dragged (a vertex, a height point, a group of them) has gone; null: nothing is. */
+  dragMoved(): number | null {
+    const drag = this.drag;
+    if (!drag || !this.dragStart) {
+      return null;
+    }
+    const now = "group" in drag ? this.data.verts[drag.group[0]] : drag.kind === "vertex" ? this.data.verts[drag.i] : this.data.points[drag.i];
+    return now ? Math.hypot(now.x - this.dragStart[0], now.y - this.dragStart[1]) : null;
+  }
+
   /** The drag in hand applied to the picked vertices (and a ramp's arrow, and a painted relief), from where they started. */
   transform(p: { x: number; y: number }, mods: Mods = {}) {
     const xf = this.xf!;
     let f: (x: number, y: number) => Pt;
     if (xf.kind === "move") {
-      const [dx, dy] = [p.x - xf.from.x, p.y - xf.from.y];
+      const [dx, dy] = [this.onGrid(p.x - xf.from.x), this.onGrid(p.y - xf.from.y)];
       f = (x, y) => [x + dx, y + dy];
       this.xfMap = [1, 0, 0, 1, dx, dy];
     } else if (xf.kind === "rotate") {

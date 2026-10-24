@@ -8,9 +8,11 @@ import type { Detail } from "../types";
 // (a wall between a shape and what's beside it slopes away). With "only the
 // ground", just the ground, under the shapes too; smoothed, it's still pulled
 // toward the shapes beside it, their edges holding it to their height there.
+// The eraser takes off what was painted (back to the ground's 0, or a shape's
+// own surface), whatever's round it.
 
-export type BrushKind = "raise" | "lower" | "flatten" | "smooth";
-export const BRUSHES: readonly BrushKind[] = ["raise", "lower", "flatten", "smooth"];
+export type BrushKind = "raise" | "lower" | "flatten" | "smooth" | "erase";
+export const BRUSHES: readonly BrushKind[] = ["raise", "lower", "flatten", "smooth", "erase"];
 
 export type BrushOptions = { kind: BrushKind; radius: number; strength: number; level: number; groundOnly: boolean };
 
@@ -36,7 +38,7 @@ type Dab = {
 /** One dab of the brush at `p` (cells). */
 export function paintBrush(relief: Relief, p: { x: number; y: number }, o: BrushOptions) {
   const { kind, radius: R } = o;
-  const reach = kind === "flatten" ? R + 1 : R;
+  const reach = kind === "flatten" || kind === "erase" ? R + 1 : R;
   const ground = relief.data.ground;
   const fall = (x: number, y: number) => {
     const t = Math.hypot(x - p.x, y - p.y) / R;
@@ -174,6 +176,11 @@ export function paintBrush(relief: Relief, p: { x: number; y: number }, o: Brush
     }
     if (kind === "flatten") {
       return (o.level - now) * weight(q.x, q.y);
+    }
+    if (kind === "erase") {
+      // What's painted there, taken off (as flattening does, full inside, fading past it).
+      const painted = q.grid === ground ? ground[q.k] : ((q.grid as Map<number, number>).get(q.k) ?? 0);
+      return -painted * weight(q.x, q.y);
     }
     if (q.pin !== undefined) {
       return (q.pin - ground[q.k]) * 0.5 * fall(q.x, q.y);

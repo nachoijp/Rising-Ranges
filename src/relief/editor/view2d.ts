@@ -3,6 +3,7 @@ import { G, apply, cellOf } from "../relief";
 import { standSide } from "../stand";
 import type { Pt } from "../types";
 import type { Mods, ReliefEditor } from "./editor";
+import { prefabOutlines } from "./prefabs";
 import { vertsOf } from "./shapes";
 import { time } from "../../timing";
 
@@ -59,6 +60,11 @@ const C = {
 };
 /** The shapes' outlines' width (px). */
 const WIDTH = 2.5;
+
+/** A finger held still this long (ms): the menu (the right button's). */
+const LONG_PRESS_MS = 550;
+/** How far (px) a finger moves before it's a drag (not still, for a tap or the menu). */
+const TOUCH_SLOP = 8;
 
 export class MapView {
   canvas: HTMLCanvasElement;
@@ -149,12 +155,110 @@ export class MapView {
     let pan: { sx: number; sy: number; ox: number; oy: number; right: boolean; moved: boolean } | null = null;
     let held = false;
     let last = { at: 0, sx: 0, sy: 0 };
+    // ---------- Touch ----------
+    // One finger is the left button, once it's moved (or let go: a tap), so a second one landing first
+    // makes it a pinch instead (zoom and move the map) with nothing drawn. Held still: the right
+    // button's menu.
+    const touches = new Map<number, [number, number]>();
+    let waiting: { id: number; sx: number; sy: number; clicks: number; mods: Mods; menu: ReturnType<typeof setTimeout> } | null = null;
+    let pinch: { d: number; scale: number; world: { x: number; y: number }; mid: [number, number] } | null = null;
+    /** A pinch ended with a finger still down: nothing more till every one's lifted. */
+    let spent = false;
+    const midOf = (): [number, number] => {
+      const [a, b] = [...touches.values()];
+      return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    };
+    const spread = () => {
+      const [a, b] = [...touches.values()];
+      return Math.max(1, Math.hypot(a[0] - b[0], a[1] - b[1]));
+    };
+    /** The finger's press, at last, as the left button's. */
+    const press = () => {
+      const w = waiting!;
+      clearTimeout(w.menu);
+      waiting = null;
+      held = true;
+      this.onDown();
+      this.editor.down(this.toWorld(w.sx, w.sy), w.mods);
+    };
+    const touchDown = (event: PointerEvent, sx: number, sy: number) => {
+      touches.set(event.pointerId, [sx, sy]);
+      if (touches.size === 2 && !held) {
+        if (waiting) {
+          clearTimeout(waiting.menu);
+          waiting = null;
+        }
+        const mid = midOf();
+        pinch = { d: spread(), scale: this.scale, world: this.toWorld(...mid), mid };
+        return;
+      }
+      if (touches.size > 1 || spent) {
+        return;
+      }
+      const now = performance.now();
+      const clicks = now - last.at < DOUBLE_CLICK.ms && Math.hypot(sx - last.sx, sy - last.sy) < DOUBLE_CLICK.px * 2 ? 2 : 1;
+      last = { at: clicks === 2 ? 0 : now, sx, sy };
+      waiting = {
+        id: event.pointerId,
+        sx,
+        sy,
+        clicks,
+        mods: mods(event, clicks),
+        menu: setTimeout(() => {
+          if (waiting?.id === event.pointerId) {
+            waiting = null;
+            spent = true;
+            this.onMenu(sx, sy, this.toWorld(sx, sy));
+          }
+        }, LONG_PRESS_MS),
+      };
+    };
+    const touchMove = (event: PointerEvent, sx: number, sy: number) => {
+      if (!touches.has(event.pointerId)) {
+        return;
+      }
+      touches.set(event.pointerId, [sx, sy]);
+      if (pinch && touches.size === 2) {
+        const [mx, my] = midOf();
+        this.scale = Math.min(200, Math.max(4, (pinch.scale * spread()) / pinch.d));
+        this.ox = mx - pinch.world.x * this.scale;
+        this.oy = my - pinch.world.y * this.scale;
+        this.redraw();
+        return;
+      }
+      if (waiting?.id === event.pointerId && Math.hypot(sx - waiting.sx, sy - waiting.sy) > TOUCH_SLOP) {
+        press();
+      }
+      if (held) {
+        this.editor.move(this.toWorld(sx, sy), mods(event), true);
+      }
+    };
+    const touchUp = (event: PointerEvent) => {
+      touches.delete(event.pointerId);
+      if (pinch) {
+        pinch = null;
+        spent = touches.size > 0;
+        return;
+      }
+      if (waiting?.id === event.pointerId) {
+        // A tap: pressed and let go there.
+        press();
+      }
+      if (touches.size === 0) {
+        spent = false;
+      }
+      end();
+    };
     canvas.addEventListener("contextmenu", (event) => event.preventDefault(), { signal });
     canvas.addEventListener("mousedown", (event) => event.button === 1 && event.preventDefault(), { signal });
     canvas.addEventListener("pointerdown", (event) => {
       canvas.setPointerCapture(event.pointerId);
       canvas.focus();
       const [sx, sy] = local(event);
+      if (event.pointerType === "touch") {
+        touchDown(event, sx, sy);
+        return;
+      }
       if (event.button !== 0) {
         pan = { sx, sy, ox: this.ox, oy: this.oy, right: event.button === 2, moved: false };
         return;
@@ -169,6 +273,10 @@ export class MapView {
     }, { signal });
     canvas.addEventListener("pointermove", (event) => {
       const [sx, sy] = local(event);
+      if (event.pointerType === "touch") {
+        touchMove(event, sx, sy);
+        return;
+      }
       if (pan) {
         pan.moved ||= Math.hypot(sx - pan.sx, sy - pan.sy) > 4;
         this.ox = pan.ox + sx - pan.sx;
@@ -189,8 +297,9 @@ export class MapView {
         this.onUp();
       }
     };
-    canvas.addEventListener("pointerup", end, { signal });
-    canvas.addEventListener("pointercancel", end, { signal });
+    const up = (event: PointerEvent) => (event.pointerType === "touch" ? touchUp(event) : end());
+    canvas.addEventListener("pointerup", up, { signal });
+    canvas.addEventListener("pointercancel", up, { signal });
     canvas.addEventListener("pointerleave", () => {
       if (!held) {
         this.editor.cursor = null;
@@ -507,6 +616,18 @@ export class MapView {
         points.forEach(([x, y], k) => (k === 0 ? ctx.moveTo(...this.toScreen(x, y)) : ctx.lineTo(...this.toScreen(x, y))));
       }
       ctx.stroke();
+    }
+    // A ready-made shape: where it'd go.
+    if (ed.tool === "stamp" && ed.cursor) {
+      ctx.save();
+      ctx.strokeStyle = C.white;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      for (const ring of prefabOutlines(ed.settings.stamp, ed.cursor)) {
+        this.path([ring]);
+        ctx.stroke();
+      }
+      ctx.restore();
     }
     if (ed.box) {
       const [ax, ay] = this.toScreen(ed.box.start.x, ed.box.start.y);

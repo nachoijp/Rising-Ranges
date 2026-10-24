@@ -867,19 +867,49 @@ async function start() {
     const rect = stage.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   };
-  const endMove = () => {
+  /**
+   * Tokens let go, shown where they landed (see live) till the scene has them there: the token's saved
+   * along the way it went, a step at a time (so the fog's walls don't stop it), and those steps come
+   * back later than they're written, some after the last. By token: where it landed, and the wait's end.
+   */
+  const landing = new Map<string, { at: Vector2 | null; until: number }>();
+  /** How long (ms) a landing is waited for at most (a save that never shows): then the scene's place. */
+  const LANDING_MS = 3000;
+  /** The tokens whose landing the scene now shows (or waited for long enough): following the scene again. */
+  const landed = () => {
+    let any = false;
+    for (const [id, wait] of landing) {
+      const item = items.find((i) => i.id === id);
+      const there = !!wait.at && !!item && Math.hypot(item.position.x - wait.at.x, item.position.y - wait.at.y) < 0.5;
+      if (there || performance.now() > wait.until) {
+        landing.delete(id);
+        live.delete(id);
+        any = true;
+      }
+    }
+    if (any) {
+      showDistances();
+      // Now the relief can follow the fog (see refresh).
+      later();
+    }
+  };
+  /**
+   * The drag over: shown where it was let go till `saved` (the place it's saved at, null: back where it
+   * started) is what the scene has (see landing); then the scene's own place, the rings following it.
+   */
+  const endMove = (saved: Promise<Vector2 | null | void> = Promise.resolve(null)) => {
     moving = null;
     cancelMove = null;
-    // The rings follow it again (once the scene has it where it landed).
     if (draggingId) {
       const id = draggingId;
       draggingId = null;
-      setTimeout(() => {
-        live.delete(id);
-        showDistances();
-        // Now the relief can follow the fog (see refresh).
-        later();
-      }, 300);
+      void saved
+        .catch(() => null)
+        .then((at) => {
+          landing.set(id, { at: at ?? null, until: performance.now() + LANDING_MS });
+          landed();
+          setTimeout(landed, LANDING_MS + 50);
+        });
     }
   };
   let lastClick = { token: "", at: 0, x: 0, y: 0 };
@@ -1159,9 +1189,8 @@ async function start() {
   const up = (event: PointerEvent) => {
     const move = moving;
     if (move && (move.started || move.own !== move.startOwn) && event.type === "pointerup") {
-      endMove();
       press = null;
-      void finishMove(move);
+      endMove(finishMove(move));
     } else if (move) {
       // Cancelled (or never really moved): Owlbear's drag, if it began, ends where it started.
       if (move.started) {
@@ -1656,21 +1685,28 @@ async function start() {
   let showFrame = 0;
 
   /** A move here released: its position saved (ending Owlbear's drag), then its height marker if it changed. */
-  async function finishMove(move: NonNullable<typeof moving>) {
+  async function finishMove(move: NonNullable<typeof moving>): Promise<Vector2 | null> {
     try {
       if (move.started && move.interaction) {
         const [update, stop] = await move.interaction;
         // Snapped to the grid where it's let go, as Owlbear's own move does.
         const snapped = await OBR.scene.grid.snapPosition(move.position);
         move.position = snapped;
+        // Shown there now (not where it was let go, nor the steps it's saved along: see endMove); the
+        // drag's over (it isn't taken for one again: showTokenAt would).
+        if (live.has(move.id) && scene) {
+          live.set(move.id, { position: snapped, own: move.own });
+          scene = placed(scene, move.id, snapped, move.own);
+          view.setScene(scene);
+        }
         const final = update((token) => {
           token.position = snapped;
         });
         try {
           // Along the way it was dragged, so the fog's walls don't stop it where it went around them, with
           // its attachments, as the Medición saves it (see saveDraggedToken).
-          const landed = await saveDraggedToken(final, move.path);
-          if (!landed) {
+          const saved = await saveDraggedToken(final, move.path);
+          if (!saved) {
             // Not saved: ending the drag puts it back where it started (its height marker too, below).
             move.position = move.item.position;
             refresh();
@@ -1682,9 +1718,11 @@ async function start() {
       if (move.own !== move.startOwn) {
         await setTokenHeightMarker([{ ...move.item, position: move.position }], move.own);
       }
+      return move.position;
     } catch (error) {
       console.error("Rising Ranges: Vistazo couldn't save the moved token", error);
       refresh();
+      return null;
     }
   }
 
@@ -2022,6 +2060,9 @@ async function start() {
   );
   OBR.scene.items.onChange((next) => {
     items = next;
+    if (landing.size > 0) {
+      landed();
+    }
     later();
   });
   OBR.scene.onMetadataChange((next) => {

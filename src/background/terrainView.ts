@@ -273,7 +273,7 @@ function label(shape: TerrainShape, scale: GridScale, color: Color, size: number
   const top = points.reduce((best, p) => (p[1] < best[1] ? p : best), points[0]);
   // A ramp says where it goes from and to.
   const text = shape.slope
-    ? `${formatDistance(scale, shape.slope.low)} → ${formatDistance(scale, shape.height)}`
+    ? `${formatDistance(scale, shape.slope.low)} -> ${formatDistance(scale, shape.height)}`
     : `${shape.height > 0 ? "▲" : shape.height < 0 ? "▼" : ""} ${formatDistance(scale, Math.abs(shape.height))}`.trim();
   const item = buildLabel()
     .plainText(text)

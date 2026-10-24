@@ -5,6 +5,7 @@ import { HEIGHT_LIMIT, quarter } from "../relief";
 import { BRUSHES, type BrushKind } from "./brush";
 import type { PickMode, ReliefEditor, RollerMode, ToolId } from "./editor";
 import { icon, type IconName } from "./icons";
+import { PREFABS, type PrefabId } from "./prefabs";
 import { combine, defaultRamp, moveLayer, setKind, setRel, setType, togglePick, type Combine, type ShapeType } from "./shapes";
 
 // The editor's pieces over the map, as Owlbear's own: the tools in a column,
@@ -78,6 +79,12 @@ export const TOOLS: (ToolDef | null)[] = [
       ["relief.key.ring", "relief.key.ringDo"],
       ["relief.key.escape", "relief.key.escapeNewDo"],
     ],
+  },
+  {
+    id: "stamp",
+    icon: "stamp",
+    key: "t",
+    keys: [["relief.key.clickPlace", "relief.key.clickPlaceDo"]],
   },
   null,
   {
@@ -444,11 +451,49 @@ export function shortcutsHtml(ed: ReliefEditor, t: T): string {
 // ---------- What the keys do now (the chip over the map) ----------
 
 /**
- * What the keys do in what's being done right now (a rectangle being drawn,
- * an outline being clicked, the brush painting...), as a line: empty when
- * nothing is.
+ * What's being done right now measured (a rectangle's size, how far what's dragged went, a side of an
+ * outline being clicked), cells and the scene's measure (`unit`): empty when nothing is.
  */
-export function liveHint(ed: ReliefEditor, t: T): string {
+function measureOf(ed: ReliefEditor, t: T, unit: (cells: number) => string): string {
+  const length = (d: number) => `${fmt(d)} (${unit(d)})`;
+  if (ed.shape?.origin && (ed.tool === "rect" || ed.tool === "ellipse")) {
+    const [w, h] = [Math.abs(ed.shape.end.x - ed.shape.start.x), Math.abs(ed.shape.end.y - ed.shape.start.y)];
+    return t("relief.measure.size", { w: fmt(w), h: fmt(h), uw: unit(w), uh: unit(h) });
+  }
+  if (ed.drawing?.length && ed.cursor) {
+    const last = ed.data.verts[ed.drawing[ed.drawing.length - 1]];
+    return last ? t("relief.measure.side", { d: length(Math.hypot(ed.cursor.x - last.x, ed.cursor.y - last.y)) }) : "";
+  }
+  if (ed.stroke) {
+    return t("relief.measure.width", { d: length(ed.settings.shapeRadius * 2) });
+  }
+  const m = ed.xf ? ed.xfMap : null;
+  if (ed.xf && m) {
+    if (ed.xf.kind === "move") {
+      return t("relief.measure.moved", { d: length(Math.hypot(m[4], m[5])) });
+    }
+    if (ed.xf.kind === "rotate") {
+      return t("relief.measure.turned", { a: String(Math.round((Math.atan2(m[1], m[0]) * 180) / Math.PI)) });
+    }
+    return t("relief.measure.scaled", { k: fmt(Math.round(Math.hypot(m[0], m[1]) * 100) / 100) });
+  }
+  const moved = ed.dragMoved();
+  return moved !== null ? t("relief.measure.moved", { d: length(moved) }) : "";
+}
+
+/**
+ * What the keys do in what's being done right now (a rectangle being drawn,
+ * an outline being clicked, the brush painting...), with its measure first,
+ * as a line: empty when nothing is.
+ */
+export function liveHint(ed: ReliefEditor, t: T, unit: (cells: number) => string = fmt): string {
+  const measure = measureOf(ed, t, unit);
+  const keys = keysHint(ed, t);
+  return measure && keys ? `${measure}  ·  ${keys}` : measure || keys;
+}
+
+/** What the keys do in what's being done right now (see liveHint). */
+function keysHint(ed: ReliefEditor, t: T): string {
   const pairs = (list: [TranslationKey, TranslationKey][]) => list.map(([k, v]) => `${t(k)}: ${t(v)}`).join(" · ");
   if (ed.skinPick !== null) {
     return `${t("relief.shape.picking")} · ${t("relief.key.escape")}: ${t("relief.key.cancelDo")}`;
@@ -722,6 +767,17 @@ export function renderOptions(el: HTMLElement, ed: ReliefEditor, t: T) {
   }
   if (ed.tool === "cut") {
     el.innerHTML = "";
+    bindUnders(el, unders, saved);
+    return;
+  }
+  if (ed.tool === "stamp") {
+    el.innerHTML = seg("stamp", PREFABS.map(({ id, icon: ic, label, hint }): [string, IconName, string, string] => [id, ic, t(label), t(hint)]), s.stamp);
+    onSeg(el, "stamp", (v) => {
+      s.stamp = v as PrefabId;
+      saved();
+      ed.host.showProps();
+      ed.host.redraw();
+    });
     bindUnders(el, unders, saved);
     return;
   }

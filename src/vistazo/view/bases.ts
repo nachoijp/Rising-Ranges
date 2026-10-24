@@ -6,11 +6,13 @@ export type BaseSeat = { meshes: THREE.InstancedMesh[]; index: number };
 const place = new THREE.Matrix4();
 
 /**
- * The bases under the tokens (or the props), all drawn together: a dark
- * disc and, if `ringed`, a thin light ring round it, one mesh of each per
- * size (most tokens share one) with every base of that size an instance of
- * it, not two meshes a token. Each base is added (add), then all are made
- * at once (build); a base moved is put right in place (moveBase).
+ * The flat bases under the tokens (or the props) that aren't on the terrain
+ * (a slab's top, in the air: those on it are painted on it, see
+ * VistazoView.paintBases), all drawn together: a dark disc and, if
+ * `ringed`, a thin light ring round it, one mesh of each per size (most
+ * tokens share one) with every base of that size an instance of it, not two
+ * meshes a token. Each base is added (add), then all are made at once
+ * (build); a base moved is put right in place (moveBase).
  */
 export class BaseBatch {
   private readonly bySize = new Map<number, { seat: BaseSeat; x: number; y: number; z: number }[]>();

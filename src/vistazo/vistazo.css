@@ -298,15 +298,14 @@ body {
 .tok .disc {
   position: absolute;
 }
+/* Drawn as Owlbear draws it: whole, art past its circle too (not cut round). */
 .tok img,
 .tok video {
   pointer-events: auto;
   cursor: pointer;
-  border-radius: 50%;
 }
 .tok.prop img,
 .tok.prop video {
-  border-radius: 0;
   filter: drop-shadow(0 3px 3px rgba(0, 0, 0, 0.5));
 }
 .tok.prop.noshadow img,
@@ -316,8 +315,9 @@ body {
 .tok.prop.flat .lbl {
   pointer-events: none;
 }
-.tok.selected img,
-.tok.selected video {
+/* Picked: a ring round its place (its circle), whatever its art is like. */
+.tok.selected .disc {
+  border-radius: 50%;
   box-shadow: 0 0 0 3px var(--accent), 0 0 12px var(--accent);
 }
 
@@ -742,13 +742,15 @@ fieldset {
   height: 16px;
   margin: 0;
 }
-@media (max-width: 640px) {
-  .app {
+/* A phone's width: the 3D over the controls (which scroll, under it), not beside them. */
+@media (max-width: 480px) {
+  .glass-inner {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) auto;
   }
   aside {
     max-height: 40vh;
+    border-top: 1px solid var(--divider);
   }
 }
 

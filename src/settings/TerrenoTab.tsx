@@ -134,6 +134,19 @@ export function TerrenoTab({
           <Typography variant="caption" color="text.secondary" sx={{ px: 1 }}>
             {t("settings.terreno.visibilityHint")}
           </Typography>
+
+          <Stack>
+            <Stack sx={{ px: 1 }}>
+              <FieldLabel id="falls-label" tooltip={t("settings.terreno.fallsTooltip")}>
+                {t("settings.terreno.falls")}
+              </FieldLabel>
+            </Stack>
+            <SettingSwitch
+              label={t("settings.terreno.showFalls")}
+              checked={settings.showFalls ?? true}
+              onChange={(showFalls) => onChangeSettings({ showFalls })}
+            />
+          </Stack>
         </>
       )}
     </Stack>
