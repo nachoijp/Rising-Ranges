@@ -100,6 +100,12 @@ export const TOOLS: (ToolDef | null)[] = [
 ];
 export const TOOL_LIST = TOOLS.filter((tool): tool is ToolDef => tool !== null);
 
+/** The tools that make a shape: one button in the column ("Dibujar"), showing the last of them used. */
+const DRAW_TOOLS: ToolId[] = ["rect", "ellipse", "lasso", "polygon", "paintShape", "stamp"];
+let lastDraw: ToolId = "rect";
+/** How long (ms) the "Dibujar" button is held for its menu to open. */
+const HOLD_MS = 400;
+
 /** Keys for everything, whatever the tool. */
 export const GENERAL_KEYS: [TranslationKey, TranslationKey][] = [
   ["relief.key.undo", "relief.key.undoDo"],
@@ -413,15 +419,70 @@ const edgeSlider = (t: T, key: string) =>
 
 // ---------- Tools ----------
 
-/** The tools' column: an icon each, its name, key and what it does on the pointer. */
-export function renderTools(el: HTMLElement, ed: ReliefEditor, t: T, onTool: (id: ToolId) => void) {
+/**
+ * The tools' column: an icon each, its name, key and what it does on the pointer. The shape tools
+ * share one button, the last of them used: a click takes it, and held (or clicked with it in hand,
+ * or right-clicked) it opens the menu of all of them, `menu` opening it beside it.
+ */
+export function renderTools(el: HTMLElement, ed: ReliefEditor, t: T, onTool: (id: ToolId) => void, menu: (button: HTMLElement, items: MenuItem[]) => void) {
+  if (DRAW_TOOLS.includes(ed.tool)) {
+    lastDraw = ed.tool;
+  }
+  const button = (tool: ToolDef, group: boolean) =>
+    `<button type="button" class="ib${ed.tool === tool.id ? " on" : ""}${group ? " group" : ""}" data-tool="${tool.id}" aria-pressed="${ed.tool === tool.id}"${group ? ' aria-haspopup="menu"' : ""} ${tip(t(toolLabel(tool.id)), group ? `${t(toolHint(tool.id))} ${t("relief.drawMore")}` : t(toolHint(tool.id)), tool.key.toUpperCase(), "right")}>${icon(tool.icon)}</button>`;
   el.innerHTML = TOOLS.map((tool) =>
     tool === null
       ? '<div class="hsep" role="separator"></div>'
-      : `<button type="button" class="ib${ed.tool === tool.id ? " on" : ""}" data-tool="${tool.id}" aria-pressed="${ed.tool === tool.id}" ${tip(t(toolLabel(tool.id)), t(toolHint(tool.id)), tool.key.toUpperCase(), "right")}>${icon(tool.icon)}</button>`
+      : DRAW_TOOLS.includes(tool.id)
+        ? tool.id === DRAW_TOOLS[0]
+          ? button(TOOL_LIST.find((x) => x.id === lastDraw)!, true)
+          : ""
+        : button(tool, false)
   ).join("");
-  for (const button of el.querySelectorAll<HTMLButtonElement>("[data-tool]")) {
-    button.onclick = () => onTool(button.dataset.tool as ToolId);
+  const drawMenu = (): MenuItem[] =>
+    TOOL_LIST.filter((tool) => DRAW_TOOLS.includes(tool.id)).map((tool) => ({
+      icon: tool.icon,
+      label: ed.tool === tool.id ? `${t(toolLabel(tool.id))} ✓` : t(toolLabel(tool.id)),
+      key: tool.key.toUpperCase(),
+      run: () => onTool(tool.id),
+    }));
+  for (const b of el.querySelectorAll<HTMLButtonElement>("[data-tool]")) {
+    if (!b.classList.contains("group")) {
+      b.onclick = () => onTool(b.dataset.tool as ToolId);
+      continue;
+    }
+    // Held: the menu, and the click that ends the press does nothing more.
+    let timer = 0;
+    let held = false;
+    // Its menu open at the press (closed by it, see session's outside): the click only closes it.
+    let wasOpen = false;
+    b.onpointerdown = () => {
+      held = false;
+      wasOpen = !!document.querySelector(".re-menu");
+      timer = window.setTimeout(() => {
+        held = true;
+        menu(b, drawMenu());
+      }, HOLD_MS);
+    };
+    b.onpointerup = b.onpointerleave = () => clearTimeout(timer);
+    b.onclick = () => {
+      // Once: a keyboard click has no press before it.
+      const skip = held || wasOpen;
+      held = wasOpen = false;
+      if (skip) {
+        return;
+      }
+      if (ed.tool === lastDraw) {
+        menu(b, drawMenu());
+      } else {
+        onTool(lastDraw);
+      }
+    };
+    b.oncontextmenu = (event) => {
+      event.preventDefault();
+      clearTimeout(timer);
+      menu(b, drawMenu());
+    };
   }
 }
 

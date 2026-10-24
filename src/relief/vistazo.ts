@@ -122,7 +122,7 @@ export function reliefTerrain(
           parts = clip.difference(parts, ...over) as Pt[][][];
         }
       } catch (error) {
-        console.error("Rising Ranges: Vistazo left out a part of the relief", error);
+        console.error("Rising Ranges: 3D Glance left out a part of the relief", error);
         continue;
       }
       if (parts.length === 0) {
@@ -183,7 +183,7 @@ export function reliefTerrain(
       ground = clip.difference(ground, ...above.map((o) => [o.polygon])) as Pt[][][];
     }
   } catch (error) {
-    console.error("Rising Ranges: Vistazo couldn't cut the relief's ground", error);
+    console.error("Rising Ranges: 3D Glance couldn't cut the relief's ground", error);
   }
   const plainGround = relief.data.ground.every((v) => v === 0) && !relief.layers.some((layer) => layer.soft > 0);
   // Under the fog: each shape's piece cut to what's clear, the ground taking the rest, flat there.
@@ -198,14 +198,14 @@ export function reliefTerrain(
           pieces.splice(i, 1);
         }
       } catch (error) {
-        console.error("Rising Ranges: Vistazo couldn't cut a part of the relief to the fog", error);
+        console.error("Rising Ranges: 3D Glance couldn't cut a part of the relief to the fog", error);
       }
     }
     try {
       const taken = pieces.map((piece) => piece.shape);
       groundScene = taken.length > 0 ? clip.difference(area, ...taken) : area;
     } catch (error) {
-      console.error("Rising Ranges: Vistazo couldn't cut the relief's ground to the fog", error);
+      console.error("Rising Ranges: 3D Glance couldn't cut the relief's ground to the fog", error);
     }
   }
   if (groundScene.length > 0) {

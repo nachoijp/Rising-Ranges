@@ -1,4 +1,4 @@
-import OBR, { type GridScale } from "@owlbear-rodeo/sdk";
+import OBR, { type GridScale, type GridType } from "@owlbear-rodeo/sdk";
 import { createContext, useContext, useState, useEffect } from "react";
 import { bandSetFromMetadata, customBandSetsFromMetadata, resolveBandSet } from "../bandSets/bandSets";
 import { BandSet } from "../engine/types";
@@ -7,6 +7,8 @@ import { displayFromMetadata, type DisplaySettings } from "./display";
 
 type OBRContextValue = {
   gridScale: GridScale;
+  /** The scene's grid type, live (Elevación's perspective options only work on some). */
+  gridType: GridType;
   bandSet: BandSet;
   customBandSets: BandSet[];
   // Live (not just the initial fetch) and shared via context — most of the
@@ -36,6 +38,21 @@ export function OBRContextProvider({
     });
     return () => {
       mounted = false;
+    };
+  }, []);
+
+  const [gridType, setGridType] = useState<GridType | null>(null);
+  useEffect(() => {
+    let mounted = true;
+    OBR.scene.grid.getType().then((type) => {
+      if (mounted) {
+        setGridType(type);
+      }
+    });
+    const stop = OBR.scene.grid.onChange((grid) => setGridType(grid.type));
+    return () => {
+      mounted = false;
+      stop();
     };
   }, []);
 
@@ -70,13 +87,13 @@ export function OBRContextProvider({
     persistLanguage(next);
   }
 
-  if (!gridScale || !bandSet || !customBandSets || !language || !display) {
+  if (!gridScale || !gridType || !bandSet || !customBandSets || !language || !display) {
     return null;
   }
 
   return (
     <OBRContext.Provider
-      value={{ gridScale, bandSet, customBandSets, language, onChangeLanguage, display }}
+      value={{ gridScale, gridType, bandSet, customBandSets, language, onChangeLanguage, display }}
     >
       {children}
     </OBRContext.Provider>

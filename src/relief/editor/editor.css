@@ -191,7 +191,6 @@
 }
 .re-map button:focus-visible,
 .re-map input:focus-visible,
-.re-map select:focus-visible,
 .re-map [tabindex]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -208,9 +207,9 @@
   margin: 4px 6px;
   background: var(--re-divider);
 }
-.re-map .field,
-.re-map input.num,
-.re-map select {
+/* (Its dropdowns: as every one on the page, see vistazo.css.) */
+.re-map .field:not(select),
+.re-map input.num {
   height: 32px;
   box-sizing: border-box;
   border: 0;
@@ -219,10 +218,6 @@
   color: var(--fg);
   font: inherit;
   padding: 0 8px;
-}
-.re-map select option {
-  background: var(--re-panel);
-  color: var(--fg);
 }
 .re-map .field {
   cursor: pointer;
@@ -403,9 +398,6 @@
   margin-left: 6px;
   cursor: pointer;
 }
-.re-map .check input {
-  accent-color: var(--accent);
-}
 .re-map .done {
   height: 36px;
   padding: 0 16px;
@@ -430,6 +422,19 @@
   flex-direction: column;
   gap: 2px;
   padding: 4px;
+}
+/* "Dibujar": the shape tools in one button, a corner mark for the menu it holds. */
+.re-map .ib.group {
+  position: relative;
+}
+.re-map .ib.group::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  border-left: 5px solid transparent;
+  border-bottom: 5px solid currentColor;
+  opacity: 0.6;
 }
 .re-map .ib.re-help {
   font-weight: 500;

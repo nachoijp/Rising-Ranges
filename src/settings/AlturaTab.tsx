@@ -10,11 +10,13 @@ import { HotkeyRecorder } from "./HotkeyRecorder";
 import { IconPositionButtonGroup } from "./IconPositionButtonGroup";
 import { SHAPE_LABEL_KEYS, ShapePreview } from "./ShapePreview";
 import { LabeledSlider } from "./LabeledSlider";
-import { AdvancedSection, ChoiceGroup, FoldedSection, SECTION_GAP, SettingSwitch } from "./controls";
+import { ChoiceGroup, FoldedSection, ResetButton, SECTION_GAP, SettingSwitch } from "./controls";
 import { useTranslation } from "../i18n/useTranslation";
-import { SIZE_RANGES, type DisplaySettings } from "./display";
-import { groundHotkey, type GlobalSettings, type MarkerStyle } from "./globalSettings";
+import { FACTORY_DISPLAY, SIZE_RANGES, type DisplaySettings } from "./display";
+import { DEFAULT_GLOBAL_SETTINGS, DEFAULT_HOTKEY_GROUND, groundHotkey, type GlobalSettings, type MarkerStyle } from "./globalSettings";
 import { clearAllTokenHeightMarkers } from "../tokenHeight/markers";
+import { liftsOn } from "../engine/axonometry";
+import { useOBRContext } from "./OBRContext";
 
 /** Everything about height in one place: the feature itself, how markers look, its menu and its hotkeys. */
 export function AlturaTab({
@@ -31,6 +33,8 @@ export function AlturaTab({
   const t = useTranslation();
   const enabled = settings.enableAltitude ?? true;
   const marker = display.marker;
+  // The perspective options only do something on these grids: kept, but not to be changed, on others.
+  const lifts = liftsOn(useOBRContext().gridType);
 
   function onToggleAltitude(next: boolean) {
     onChangeSettings({ enableAltitude: next });
@@ -40,6 +44,23 @@ export function AlturaTab({
     if (!next) {
       clearAllTokenHeightMarkers();
     }
+  }
+
+  /** Everything here back as a new room has it, the feature itself aside. */
+  function reset() {
+    onChangeSettings({
+      markerStyle: DEFAULT_GLOBAL_SETTINGS.markerStyle,
+      showAltitudeMenu: DEFAULT_GLOBAL_SETTINGS.showAltitudeMenu,
+      hotkeyRaise: DEFAULT_GLOBAL_SETTINGS.hotkeyRaise,
+      hotkeyLower: DEFAULT_GLOBAL_SETTINGS.hotkeyLower,
+      hotkeyGround: DEFAULT_HOTKEY_GROUND,
+      isoLift: undefined,
+      isoShadow: undefined,
+      isoTether: undefined,
+      isoSunkHead: undefined,
+      // In the same change: two in a row would each start from the same old settings.
+      display: { ...display, iconShape: FACTORY_DISPLAY.iconShape, marker: FACTORY_DISPLAY.marker },
+    });
   }
 
   return (
@@ -72,37 +93,69 @@ export function AlturaTab({
             ]}
           />
 
+          <SettingSwitch
+            label={t("settings.global.altitudeMenuToggle")}
+            checked={settings.showAltitudeMenu}
+            onChange={(showAltitudeMenu) => onChangeSettings({ showAltitudeMenu })}
+          />
 
-          <Stack sx={{ px: 1 }}>
-            <FieldLabel id="icon-shape-label" tooltip={t("settings.altura.iconShapeTooltip")}>
-              {t("settings.altura.iconShape")}
-            </FieldLabel>
-            <ToggleButtonGroup
-              value={display.iconShape}
-              onChange={(_, iconShape: IconShape | null) => {
-                if (iconShape) {
-                  onChangeDisplay({ iconShape });
-                }
-              }}
-              exclusive
-              aria-labelledby="icon-shape-label"
-              size="small"
-              fullWidth
-              sx={{ my: 0.5 }}
-            >
-              {ICON_SHAPES.map((shape) => (
-                <ToggleButton key={shape} value={shape} aria-label={t(SHAPE_LABEL_KEYS[shape])} sx={{ px: 0 }}>
-                  <Tooltip title={t(SHAPE_LABEL_KEYS[shape])}>
-                    <span style={{ display: "flex" }}>
-                      <ShapePreview shape={shape} />
-                    </span>
-                  </Tooltip>
-                </ToggleButton>
-              ))}
-            </ToggleButtonGroup>
-          </Stack>
+          <FoldedSection label={t("settings.altura.hotkeys")}>
+            <Stack sx={{ px: 1 }}>
+              <Typography variant="caption" color="text.secondary">
+                {t("settings.altura.hotkeysTooltip")}
+              </Typography>
+              <Stack direction="row" gap={1} justifyContent="space-around" sx={{ mt: 0.5 }}>
+                <HotkeyRecorder
+                  label={t("settings.global.hotkeyRaise")}
+                  value={settings.hotkeyRaise}
+                  reservedLetters={[settings.hotkeyActivate, settings.hotkeyLower, groundHotkey(settings)]}
+                  onChange={(hotkeyRaise) => onChangeSettings({ hotkeyRaise })}
+                />
+                <HotkeyRecorder
+                  label={t("settings.global.hotkeyLower")}
+                  value={settings.hotkeyLower}
+                  reservedLetters={[settings.hotkeyActivate, settings.hotkeyRaise, groundHotkey(settings)]}
+                  onChange={(hotkeyLower) => onChangeSettings({ hotkeyLower })}
+                />
+                <HotkeyRecorder
+                  label={t("settings.global.hotkeyGround")}
+                  value={groundHotkey(settings)}
+                  reservedLetters={[settings.hotkeyActivate, settings.hotkeyRaise, settings.hotkeyLower]}
+                  onChange={(hotkeyGround) => onChangeSettings({ hotkeyGround })}
+                />
+              </Stack>
+            </Stack>
+          </FoldedSection>
 
-          <AdvancedSection title={t("settings.altura.marker")}>
+          <FoldedSection label={t("settings.altura.markerLook")}>
+            <Stack sx={{ px: 1 }}>
+              <FieldLabel id="icon-shape-label" tooltip={t("settings.altura.iconShapeTooltip")}>
+                {t("settings.altura.iconShape")}
+              </FieldLabel>
+              <ToggleButtonGroup
+                value={display.iconShape}
+                onChange={(_, iconShape: IconShape | null) => {
+                  if (iconShape) {
+                    onChangeDisplay({ iconShape });
+                  }
+                }}
+                exclusive
+                aria-labelledby="icon-shape-label"
+                size="small"
+                fullWidth
+                sx={{ my: 0.5 }}
+              >
+                {ICON_SHAPES.map((shape) => (
+                  <ToggleButton key={shape} value={shape} aria-label={t(SHAPE_LABEL_KEYS[shape])} sx={{ px: 0 }}>
+                    <Tooltip title={t(SHAPE_LABEL_KEYS[shape])}>
+                      <span style={{ display: "flex" }}>
+                        <ShapePreview shape={shape} />
+                      </span>
+                    </Tooltip>
+                  </ToggleButton>
+                ))}
+              </ToggleButtonGroup>
+            </Stack>
             <Stack sx={{ px: 1 }}>
               <IconPositionButtonGroup
                 value={marker.position}
@@ -142,48 +195,17 @@ export function AlturaTab({
               step={1}
               valueLabelFormat={(value) => `${value}%`}
             />
-          </AdvancedSection>
-
-          <SettingSwitch
-            label={t("settings.global.altitudeMenuToggle")}
-            checked={settings.showAltitudeMenu}
-            onChange={(showAltitudeMenu) => onChangeSettings({ showAltitudeMenu })}
-          />
-
-          <Stack sx={{ px: 1 }}>
-            <FieldLabel id="altitude-hotkeys-label" tooltip={t("settings.altura.hotkeysTooltip")}>
-              {t("settings.altura.hotkeys")}
-            </FieldLabel>
-            <Stack direction="row" gap={1} justifyContent="space-around" sx={{ mt: 0.5 }}>
-              <HotkeyRecorder
-                label={t("settings.global.hotkeyRaise")}
-                value={settings.hotkeyRaise}
-                reservedLetters={[settings.hotkeyActivate, settings.hotkeyLower, groundHotkey(settings)]}
-                onChange={(hotkeyRaise) => onChangeSettings({ hotkeyRaise })}
-              />
-              <HotkeyRecorder
-                label={t("settings.global.hotkeyLower")}
-                value={settings.hotkeyLower}
-                reservedLetters={[settings.hotkeyActivate, settings.hotkeyRaise, groundHotkey(settings)]}
-                onChange={(hotkeyLower) => onChangeSettings({ hotkeyLower })}
-              />
-              <HotkeyRecorder
-                label={t("settings.global.hotkeyGround")}
-                value={groundHotkey(settings)}
-                reservedLetters={[settings.hotkeyActivate, settings.hotkeyRaise, settings.hotkeyLower]}
-                onChange={(hotkeyGround) => onChangeSettings({ hotkeyGround })}
-              />
-            </Stack>
-          </Stack>
+          </FoldedSection>
 
           <FoldedSection label={t("settings.altura.iso")}>
             <Stack>
-              <Typography variant="caption" color="text.secondary" sx={{ px: 1 }}>
-                {t("settings.altura.isoTooltip")}
+              <Typography variant="caption" color={lifts ? "text.secondary" : "warning.main"} sx={{ px: 1 }}>
+                {t(lifts ? "settings.altura.isoTooltip" : "settings.altura.isoSquare")}
               </Typography>
               <SettingSwitch
                 label={t("settings.altura.isoLift")}
                 checked={settings.isoLift ?? false}
+                disabled={!lifts}
                 onChange={(isoLift) => onChangeSettings({ isoLift })}
               />
               <Typography variant="caption" color="text.secondary" sx={{ px: 1 }}>
@@ -192,19 +214,19 @@ export function AlturaTab({
               <SettingSwitch
                 label={t("settings.altura.isoShadow")}
                 checked={settings.isoShadow ?? true}
-                disabled={!settings.isoLift}
+                disabled={!lifts || !settings.isoLift}
                 onChange={(isoShadow) => onChangeSettings({ isoShadow })}
               />
               <SettingSwitch
                 label={t("settings.altura.isoTether")}
                 checked={settings.isoTether ?? true}
-                disabled={!settings.isoLift}
+                disabled={!lifts || !settings.isoLift}
                 onChange={(isoTether) => onChangeSettings({ isoTether })}
               />
               <SettingSwitch
                 label={t("settings.altura.isoSunkHead")}
                 checked={settings.isoSunkHead ?? true}
-                disabled={!settings.isoLift}
+                disabled={!lifts || !settings.isoLift}
                 onChange={(isoSunkHead) => onChangeSettings({ isoSunkHead })}
               />
               <Typography variant="caption" color="text.secondary" sx={{ px: 1 }}>
@@ -212,6 +234,7 @@ export function AlturaTab({
               </Typography>
             </Stack>
           </FoldedSection>
+          <ResetButton onReset={reset} />
         </>
       )}
     </Stack>

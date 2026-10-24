@@ -146,3 +146,31 @@ export function displayFromMetadata(metadata: Record<string, unknown>): DisplayS
 
 export const showsBandName =(label: LecturaLabel | RingLabel) => label === "band" || label === "name" || label === "both";
 export const showsDistance = (label: LecturaLabel | RingLabel) => label === "distance" || label === "both";
+
+/** The display a new room has (no set's old fallbacks): what the tabs' "valores de fábrica" go back to. */
+export const FACTORY_DISPLAY: DisplaySettings = resolveDisplay({}, { id: "", name: "", bands: [] } as unknown as BandSet);
+
+/**
+ * Medidas' "Estilo de las Lecturas": a few looks set at once, each a Lectura,
+ * its label and the rings' label. "normal" is a new room's.
+ */
+export const LECTURA_PRESETS = {
+  minimal: { lecturaStyle: "none", lecturaLabel: "distance", ringLabel: "none" },
+  normal: { lecturaStyle: FACTORY_DISPLAY.lecturaStyle, lecturaLabel: FACTORY_DISPLAY.lecturaLabel, ringLabel: FACTORY_DISPLAY.ringLabel },
+  full: { lecturaStyle: "icon", lecturaLabel: "both", ringLabel: "both" },
+} satisfies Record<string, Pick<DisplaySettings, "lecturaStyle" | "lecturaLabel" | "ringLabel">>;
+export type LecturaPreset = keyof typeof LECTURA_PRESETS | "custom";
+
+/** The preset a display matches ("custom": none). */
+export function lecturaPresetOf(display: DisplaySettings): LecturaPreset {
+  for (const [name, preset] of Object.entries(LECTURA_PRESETS)) {
+    if (
+      preset.lecturaStyle === display.lecturaStyle &&
+      preset.lecturaLabel === display.lecturaLabel &&
+      preset.ringLabel === display.ringLabel
+    ) {
+      return name as LecturaPreset;
+    }
+  }
+  return "custom";
+}

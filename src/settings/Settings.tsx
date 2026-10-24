@@ -65,7 +65,7 @@ export function Settings() {
   const [settings, setSettings] = useState<GlobalSettings | null>(null);
 
   // The popover's height follows the content: the set selector and tab
-  // strip, plus whatever the open tab holds (an open Avanzado included),
+  // strip, plus whatever the open tab holds (an open folded section included),
   // within fixed bounds — past the max, the tab body scrolls. While a
   // dropdown is open it's held at the max, so the list gets room (see
   // util/menuRoom.ts).
@@ -123,7 +123,7 @@ export function Settings() {
     });
   }, [fit]);
   // Re-fit after every render (tab switches, new content) and whenever the
-  // content changes size on its own (an Avanzado folding open or shut).
+  // content changes size on its own (a folded section opening or shutting).
   useLayoutEffect(fit);
   useEffect(() => {
     const content = contentRef.current;

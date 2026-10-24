@@ -2,9 +2,10 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import { FieldLabel } from "./FieldLabel";
 import { LabeledSlider } from "./LabeledSlider";
-import { ChoiceGroup, SECTION_GAP, SettingSwitch } from "./controls";
+import { ChoiceGroup, FoldedSection, ResetButton, SECTION_GAP, SettingSwitch } from "./controls";
 import { useTranslation } from "../i18n/useTranslation";
 import {
+  DEFAULT_TERRAIN_LOOK,
   resolveTerrainLook,
   type GlobalSettings,
   type GroundLevel,
@@ -70,71 +71,6 @@ export function TerrenoTab({
             ]}
           />
 
-          <ChoiceGroup<TerrainLook["style"]>
-            id="terrain-style-label"
-            label={t("settings.terreno.style")}
-            tooltip={t("settings.terreno.styleTooltip")}
-            value={look.style}
-            onChange={(style) => onChangeLook({ style })}
-            options={[
-              { value: "outline", label: t("settings.terreno.styleOutline") },
-              { value: "layers", label: t("settings.terreno.styleLayers") },
-            ]}
-          />
-
-          {look.style === "layers" && (
-            <>
-              <ChoiceGroup<TerrainLook["color"]>
-                id="terrain-color-label"
-                label={t("settings.terreno.color")}
-                tooltip={t("settings.terreno.colorTooltip")}
-                value={look.color}
-                onChange={(color) => onChangeLook({ color })}
-                options={[
-                  { value: "grey", label: t("settings.terreno.colorGrey") },
-                  { value: "height", label: t("settings.terreno.colorHeight") },
-                ]}
-              />
-              <LabeledSlider
-                id="terrain-shadow"
-                label={t("settings.terreno.shadow")}
-                tooltip={t("settings.terreno.shadowTooltip")}
-                value={look.shadow}
-                onChange={(shadow) => onChangeLook({ shadow })}
-                min={0}
-                max={100}
-                step={5}
-                valueLabelFormat={(value) => `${value}%`}
-              />
-              <LabeledSlider
-                id="terrain-opacity"
-                label={t("settings.terreno.opacity")}
-                tooltip={t("settings.terreno.opacityTooltip")}
-                value={look.opacity}
-                onChange={(opacity) => onChangeLook({ opacity })}
-                min={10}
-                max={100}
-                step={5}
-                valueLabelFormat={(value) => `${value}%`}
-              />
-              <Stack>
-                <SettingSwitch
-                  label={t("settings.terreno.outline")}
-                  checked={look.outline}
-                  onChange={(outline) => onChangeLook({ outline })}
-                />
-                <SettingSwitch
-                  label={t("settings.terreno.labels")}
-                  checked={look.labels}
-                  onChange={(labels) => onChangeLook({ labels })}
-                />
-              </Stack>
-            </>
-          )}
-          <Typography variant="caption" color="text.secondary" sx={{ px: 1 }}>
-            {t("settings.terreno.visibilityHint")}
-          </Typography>
-
           <Stack>
             <Stack sx={{ px: 1 }}>
               <FieldLabel id="falls-label" tooltip={t("settings.terreno.fallsTooltip")}>
@@ -147,6 +83,77 @@ export function TerrenoTab({
               onChange={(showFalls) => onChangeSettings({ showFalls })}
             />
           </Stack>
+
+          <FoldedSection label={t("settings.terreno.look")}>
+            <ChoiceGroup<TerrainLook["style"]>
+              id="terrain-style-label"
+              label={t("settings.terreno.style")}
+              tooltip={t("settings.terreno.styleTooltip")}
+              value={look.style}
+              onChange={(style) => onChangeLook({ style })}
+              options={[
+                { value: "outline", label: t("settings.terreno.styleOutline") },
+                { value: "layers", label: t("settings.terreno.styleLayers") },
+              ]}
+            />
+
+            {look.style === "layers" && (
+              <>
+                <ChoiceGroup<TerrainLook["color"]>
+                  id="terrain-color-label"
+                  label={t("settings.terreno.color")}
+                  tooltip={t("settings.terreno.colorTooltip")}
+                  value={look.color}
+                  onChange={(color) => onChangeLook({ color })}
+                  options={[
+                    { value: "grey", label: t("settings.terreno.colorGrey") },
+                    { value: "height", label: t("settings.terreno.colorHeight") },
+                  ]}
+                />
+                <LabeledSlider
+                  id="terrain-shadow"
+                  label={t("settings.terreno.shadow")}
+                  tooltip={t("settings.terreno.shadowTooltip")}
+                  value={look.shadow}
+                  onChange={(shadow) => onChangeLook({ shadow })}
+                  min={0}
+                  max={100}
+                  step={5}
+                  valueLabelFormat={(value) => `${value}%`}
+                />
+                <LabeledSlider
+                  id="terrain-opacity"
+                  label={t("settings.terreno.opacity")}
+                  tooltip={t("settings.terreno.opacityTooltip")}
+                  value={look.opacity}
+                  onChange={(opacity) => onChangeLook({ opacity })}
+                  min={10}
+                  max={100}
+                  step={5}
+                  valueLabelFormat={(value) => `${value}%`}
+                />
+                <Stack>
+                  <SettingSwitch
+                    label={t("settings.terreno.outline")}
+                    checked={look.outline}
+                    onChange={(outline) => onChangeLook({ outline })}
+                  />
+                  <SettingSwitch
+                    label={t("settings.terreno.labels")}
+                    checked={look.labels}
+                    onChange={(labels) => onChangeLook({ labels })}
+                  />
+                </Stack>
+              </>
+            )}
+            <Typography variant="caption" color="text.secondary" sx={{ px: 1 }}>
+              {t("settings.terreno.visibilityHint")}
+            </Typography>
+          </FoldedSection>
+
+          <ResetButton
+            onReset={() => onChangeSettings({ groundLevel: undefined, showFalls: undefined, terrainLook: DEFAULT_TERRAIN_LOOK })}
+          />
         </>
       )}
     </Stack>

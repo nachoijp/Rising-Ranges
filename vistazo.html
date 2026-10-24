@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Rising Ranges — Vistazo 3D</title>
+    <title>Rising Ranges — 3D Glance</title>
   </head>
   <body>
     <p class="message" id="message" hidden></p>
@@ -62,111 +62,18 @@
           <button class="ghost" id="reliefEdit" type="button" data-title="vistazo.editReliefHint" data-t="vistazo.editRelief" hidden></button>
         </div>
 
-        <fieldset data-section="interface">
-          <legend data-t="vistazo.interface"></legend>
-          <label class="check" for="playerView" data-title="vistazo.playerViewHint"><input id="playerView" type="checkbox" /><span data-t="vistazo.playerView"></span></label>
+        <div class="everyday">
           <label class="check" for="showTok"><input id="showTok" type="checkbox" /><span data-t="vistazo.showTokens"></span></label>
-          <div class="sub" id="tokensMore">
-            <label class="row" for="anchor"
-              ><span data-t="vistazo.anchor"></span>
-              <select id="anchor">
-                <option value="center" data-t="vistazo.anchorCenter"></option>
-                <option value="base" data-t="vistazo.anchorBase"></option>
-              </select>
-            </label>
-            <label class="check" for="distances"><input id="distances" type="checkbox" /><span data-t="vistazo.distances"></span></label>
+          <label class="check" for="playerView" data-title="vistazo.playerViewHint"><input id="playerView" type="checkbox" /><span data-t="vistazo.playerView"></span></label>
+          <div class="row quality" role="group" aria-labelledby="qualityLabel"
+            ><span class="titled"><span id="qualityLabel" data-t="vistazo.quality"></span><span class="info" tabindex="0" data-title="vistazo.qualityHint">i</span></span>
+            <div class="seg" id="quality">
+              <button type="button" value="low" data-t="vistazo.qualityLow"></button>
+              <button type="button" value="medium" data-t="vistazo.qualityMedium"></button>
+              <button type="button" value="high" data-t="vistazo.qualityHigh"></button>
+            </div>
           </div>
-          <label class="check" for="rings"><input id="rings" type="checkbox" /><span data-t="vistazo.rings"></span></label>
-          <label class="check" for="ringFill"><input id="ringFill" type="checkbox" /><span data-t="vistazo.ringFill"></span></label>
-          <label class="check" for="weather" data-title="vistazo.weatherHint"><input id="weather" type="checkbox" /><span data-t="vistazo.weather"></span></label>
-          <label class="row" for="clouds" id="cloudsRow" hidden
-            ><span data-t="vistazo.clouds"></span>
-            <select id="clouds">
-              <option value="mist" data-t="vistazo.cloudsMist"></option>
-              <option value="shadows" data-t="vistazo.cloudsShadows"></option>
-            </select>
-          </label>
-          <label class="row" for="quality" data-title="vistazo.qualityHint"
-            ><span data-t="vistazo.quality"></span>
-            <select id="quality">
-              <option value="high" data-t="vistazo.qualityHigh"></option>
-              <option value="medium" data-t="vistazo.qualityMedium"></option>
-              <option value="low" data-t="vistazo.qualityLow"></option>
-            </select>
-          </label>
-        </fieldset>
-
-        <fieldset data-section="labels">
-          <legend data-t="vistazo.labels"></legend>
-          <label class="row" for="tokenLabels"
-            ><span data-t="vistazo.tokenLabels"></span>
-            <select id="tokenLabels">
-              <option value="full" data-t="vistazo.labelFull"></option>
-              <option value="height" data-t="vistazo.labelHeight"></option>
-              <option value="name" data-t="vistazo.labelName"></option>
-              <option value="none" data-t="vistazo.labelNone"></option>
-            </select>
-          </label>
-          <label class="row" for="distanceLabels"
-            ><span data-t="vistazo.distanceLabels"></span>
-            <select id="distanceLabels">
-              <option value="full" data-t="vistazo.labelBandDistance"></option>
-              <option value="distance" data-t="vistazo.labelDistance"></option>
-              <option value="none" data-t="vistazo.labelNone"></option>
-            </select>
-          </label>
-          <label class="row" for="labelSize"><span data-t="vistazo.labelSize"></span><output id="labelSizeOut"></output><input id="labelSize" type="range" min="0.6" max="1.6" step="0.1" /></label>
-        </fieldset>
-        <fieldset data-section="camera">
-          <legend data-t="vistazo.camera"></legend>
-          <label class="row" for="tilt"><span data-t="vistazo.tilt"></span><output id="tiltOut"></output><input id="tilt" type="range" min="0" max="150" step="1" /></label>
-          <label class="row" for="yaw"><span data-t="vistazo.turn"></span><output id="yawOut"></output><input id="yaw" type="range" min="-180" max="180" step="1" /></label>
-          <label class="row" for="persp"><span data-t="vistazo.perspective"></span><output id="perspOut"></output><input id="persp" type="range" min="0" max="100" step="1" /></label>
-          <div><button class="ghost" id="reset" type="button" data-t="vistazo.reset"></button></div>
-        </fieldset>
-
-        <fieldset data-section="relief">
-          <legend data-t="vistazo.relief"></legend>
-          <label class="row" for="hscale"><span data-t="vistazo.heightScale"></span><output id="hscaleOut"></output><input id="hscale" type="range" min="0.5" max="3" step="0.25" /></label>
-          <label class="row" for="shade"><span data-t="vistazo.wallShade"></span><output id="shadeOut"></output><input id="shade" type="range" min="0" max="100" step="5" /></label>
-          <label class="row" for="relief"><span data-t="vistazo.reliefHeight"></span><output id="reliefOut"></output><input id="relief" type="range" min="0" max="100" step="5" /></label>
-          <label class="check" for="tint"><input id="tint" type="checkbox" /><span data-t="vistazo.tint"></span></label>
-          <label class="check" for="xray"><input id="xray" type="checkbox" /><span data-t="vistazo.xray"></span></label>
-          <label class="check" for="edges"><input id="edges" type="checkbox" /><span data-t="vistazo.edges"></span></label>
-          <label class="check" for="waterMotion"><input id="waterMotion" type="checkbox" /><span data-t="vistazo.waterMotion"></span></label>
-          <label class="check" for="levels"><input id="levels" type="checkbox" /><span data-t="vistazo.levels"></span></label>
-          <label class="check" for="grid"><input id="grid" type="checkbox" /><span data-t="vistazo.grid"></span></label>
-          <label class="row" for="wallStyle"
-            ><span data-t="vistazo.wallStyle"></span>
-            <select id="wallStyle">
-              <option value="flat" data-t="vistazo.wallFlat"></option>
-              <option value="stretch" data-t="vistazo.wallStretch"></option>
-              <option value="fold" data-t="vistazo.wallFold"></option>
-              <option value="stone" data-t="vistazo.wallBrick"></option>
-              <option value="rubble" data-t="vistazo.wallRubble"></option>
-              <option value="earth" data-t="vistazo.wallEarth"></option>
-              <option value="wood" data-t="vistazo.wallWood"></option>
-            </select>
-          </label>
-        </fieldset>
-
-        <fieldset data-section="props">
-          <legend data-t="vistazo.props"></legend>
-          <label class="check" for="showProps"><input id="showProps" type="checkbox" /><span data-t="vistazo.showProps"></span></label>
-          <div class="sub" id="propsMore">
-          <label class="row" for="props"
-            ><span data-t="vistazo.propsPosition"></span>
-            <select id="props">
-              <option value="flat" data-t="vistazo.propsFlat"></option>
-              <option value="stand" data-t="vistazo.propsStand"></option>
-            </select>
-          </label>
-          <label class="check" for="propShadows"><input id="propShadows" type="checkbox" /><span data-t="vistazo.propShadows"></span></label>
-          <label class="check" for="propLines"><input id="propLines" type="checkbox" /><span data-t="vistazo.propLines"></span></label>
-          <label class="check" for="propLabels"><input id="propLabels" type="checkbox" /><span data-t="vistazo.propLabels"></span></label>
-          <label class="check" for="propDistances"><input id="propDistances" type="checkbox" /><span data-t="vistazo.propDistances"></span></label>
-          </div>
-        </fieldset>
+        </div>
 
         <fieldset data-section="templates">
           <legend data-t="vistazo.templates"></legend>
@@ -198,12 +105,113 @@
             </select>
           </label>
           <label class="row" for="templateSize" data-title="vistazo.templateSizeHint"
-            ><span data-t="vistazo.templateSize"></span><span class="with-unit"><input id="templateSize" type="number" min="1" step="1" value="20" class="number" /><output id="templateUnit"></output></span></label>
+            ><span data-t="vistazo.templateSize"></span><span class="with-unit"><span class="numbox"><input id="templateSize" type="text" inputmode="numeric" maxlength="3" value="20" class="number" /><button type="button" class="step" data-by="-1" data-title="vistazo.less"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg></button><button type="button" class="step" data-by="1" data-title="vistazo.more"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12M12 6v12" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg></button></span><output id="templateUnit"></output></span></label>
           <div class="buttons">
             <button class="ghost" id="templatePlace" type="button" aria-pressed="false" data-t="vistazo.templatePlace"></button>
             <button class="ghost" id="templateClear" type="button" data-t="vistazo.templateClear"></button>
           </div>
           <ul class="template-list" id="templateList"></ul>
+        </fieldset>
+
+        <fieldset data-section="tokens">
+          <legend data-t="vistazo.tokensSection"></legend>
+          <div class="sub" id="tokensMore">
+            <label class="row" for="anchor"
+              ><span data-t="vistazo.anchor"></span>
+              <select id="anchor">
+                <option value="center" data-t="vistazo.anchorCenter"></option>
+                <option value="base" data-t="vistazo.anchorBase"></option>
+              </select>
+            </label>
+            <label class="check" for="distances"><input id="distances" type="checkbox" /><span data-t="vistazo.distances"></span></label>
+          </div>
+          <label class="check" for="rings"><input id="rings" type="checkbox" /><span data-t="vistazo.rings"></span></label>
+          <label class="check" for="ringFill"><input id="ringFill" type="checkbox" /><span data-t="vistazo.ringFill"></span></label>
+          <div class="sub" id="labelsMore">
+            <label class="row" for="tokenLabels"
+              ><span data-t="vistazo.tokenLabels"></span>
+              <select id="tokenLabels">
+                <option value="full" data-t="vistazo.labelFull"></option>
+                <option value="height" data-t="vistazo.labelHeight"></option>
+                <option value="name" data-t="vistazo.labelName"></option>
+                <option value="none" data-t="vistazo.labelNone"></option>
+              </select>
+            </label>
+            <label class="row" for="distanceLabels"
+              ><span data-t="vistazo.distanceLabels"></span>
+              <select id="distanceLabels">
+                <option value="full" data-t="vistazo.labelBandDistance"></option>
+                <option value="distance" data-t="vistazo.labelDistance"></option>
+                <option value="none" data-t="vistazo.labelNone"></option>
+              </select>
+            </label>
+            <label class="row" for="labelSize"><span data-t="vistazo.labelSize"></span><output id="labelSizeOut"></output><input id="labelSize" type="range" min="0.6" max="1.6" step="0.1" /></label>
+          </div>
+        </fieldset>
+        <fieldset data-section="camera">
+          <legend data-t="vistazo.camera"></legend>
+          <label class="row" for="tilt"><span data-t="vistazo.tilt"></span><output id="tiltOut"></output><input id="tilt" type="range" min="0" max="150" step="1" /></label>
+          <label class="row" for="yaw"><span data-t="vistazo.turn"></span><output id="yawOut"></output><input id="yaw" type="range" min="-180" max="180" step="1" /></label>
+          <label class="row" for="persp"><span data-t="vistazo.perspective"></span><output id="perspOut"></output><input id="persp" type="range" min="0" max="100" step="1" /></label>
+          <div><button class="ghost" id="reset" type="button" data-t="vistazo.reset"></button></div>
+        </fieldset>
+
+        <fieldset data-section="relief">
+          <legend data-t="vistazo.relief"></legend>
+          <label class="row" for="hscale"><span data-t="vistazo.heightScale"></span><output id="hscaleOut"></output><input id="hscale" type="range" min="0.5" max="3" step="0.25" /></label>
+          <label class="row" for="wallStyle"
+            ><span data-t="vistazo.wallStyle"></span>
+            <select id="wallStyle">
+              <option value="flat" data-t="vistazo.wallFlat"></option>
+              <option value="stretch" data-t="vistazo.wallStretch"></option>
+              <option value="fold" data-t="vistazo.wallFold"></option>
+              <option value="stone" data-t="vistazo.wallBrick"></option>
+              <option value="rubble" data-t="vistazo.wallRubble"></option>
+              <option value="earth" data-t="vistazo.wallEarth"></option>
+              <option value="wood" data-t="vistazo.wallWood"></option>
+            </select>
+          </label>
+          <label class="check" for="edges"><input id="edges" type="checkbox" /><span data-t="vistazo.edges"></span></label>
+          <label class="check" for="grid"><input id="grid" type="checkbox" /><span data-t="vistazo.grid"></span></label>
+          <fieldset data-section="reliefLook">
+            <legend data-t="vistazo.look"></legend>
+            <label class="row" for="shade"><span data-t="vistazo.wallShade"></span><output id="shadeOut"></output><input id="shade" type="range" min="0" max="100" step="5" /></label>
+            <label class="row" for="relief"><span data-t="vistazo.reliefHeight"></span><output id="reliefOut"></output><input id="relief" type="range" min="0" max="100" step="5" /></label>
+            <label class="check" for="tint"><input id="tint" type="checkbox" /><span data-t="vistazo.tint"></span></label>
+            <label class="check" for="xray"><input id="xray" type="checkbox" /><span data-t="vistazo.xray"></span></label>
+            <label class="check" for="waterMotion"><input id="waterMotion" type="checkbox" /><span data-t="vistazo.waterMotion"></span></label>
+            <label class="check" for="levels"><input id="levels" type="checkbox" /><span data-t="vistazo.levels"></span></label>
+          </fieldset>
+        </fieldset>
+
+        <fieldset data-section="props">
+          <legend data-t="vistazo.props"></legend>
+          <label class="check" for="showProps"><input id="showProps" type="checkbox" /><span data-t="vistazo.showProps"></span></label>
+          <div class="sub" id="propsMore">
+          <label class="row" for="props"
+            ><span data-t="vistazo.propsPosition"></span>
+            <select id="props">
+              <option value="flat" data-t="vistazo.propsFlat"></option>
+              <option value="stand" data-t="vistazo.propsStand"></option>
+            </select>
+          </label>
+          <label class="check" for="propShadows"><input id="propShadows" type="checkbox" /><span data-t="vistazo.propShadows"></span></label>
+          <label class="check" for="propLines"><input id="propLines" type="checkbox" /><span data-t="vistazo.propLines"></span></label>
+          <label class="check" for="propLabels"><input id="propLabels" type="checkbox" /><span data-t="vistazo.propLabels"></span></label>
+          <label class="check" for="propDistances"><input id="propDistances" type="checkbox" /><span data-t="vistazo.propDistances"></span></label>
+          </div>
+        </fieldset>
+
+        <fieldset data-section="weather">
+          <legend data-t="vistazo.weather"></legend>
+          <label class="check" for="weather" data-title="vistazo.weatherHint"><input id="weather" type="checkbox" /><span data-t="vistazo.weatherShow"></span></label>
+          <label class="row" for="clouds" id="cloudsRow" hidden
+            ><span data-t="vistazo.clouds"></span>
+            <select id="clouds">
+              <option value="mist" data-t="vistazo.cloudsMist"></option>
+              <option value="shadows" data-t="vistazo.cloudsShadows"></option>
+            </select>
+          </label>
         </fieldset>
       </aside>
       </div>

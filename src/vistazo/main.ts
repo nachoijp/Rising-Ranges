@@ -56,6 +56,10 @@ import { DragPath } from "../util/dragPath";
 import { saveDraggedToken } from "../util/saveDrag";
 import "./vistazo.css";
 import { since, stamp, time } from "../timing";
+import { enhanceSelects } from "./dropdown";
+
+// Before any other key listener: an open dropdown's keys are its own (see dropdown.ts).
+enhanceSelects();
 
 /**
  * The same page opened full screen (an Owlbear modal, `?full`): the
@@ -127,7 +131,7 @@ function underShapes(relief: Relief, anchor: Anchor, dpi: number, moving: Moving
     const within = (where.length === 1 ? where : clip.union(where[0], ...where.slice(1))) as [number, number][][][];
     return reliefTerrain(relief, anchor, dpi, null, true, new Set(moving.shapes), within).pieces;
   } catch (error) {
-    console.error("Rising Ranges: Vistazo couldn't work out what's under the shapes dragged", error);
+    console.error("Rising Ranges: 3D Glance couldn't work out what's under the shapes dragged", error);
     return [];
   }
 }
@@ -176,17 +180,25 @@ function withAlpha(color: string, alpha: number): string {
   return color;
 }
 
-const SECTIONS_KEY = "rising-ranges/vistazo-sections";
+// "-2": the sections as they are since they were regrouped, each folded at first.
+const SECTIONS_KEY = "rising-ranges/vistazo-sections-2";
 
-/** Each section of the controls folds away by its title, remembered per browser. */
+/**
+ * Each section of the controls folds away by its title, remembered per
+ * browser: all folded at first, what's used every day above them.
+ */
 function setUpSections() {
-  let folded: string[] = [];
+  const sections = [...document.querySelectorAll<HTMLFieldSetElement>("fieldset[data-section]")];
+  let folded: string[] = sections.map((section) => section.dataset.section!);
   try {
-    folded = JSON.parse(localStorage.getItem(SECTIONS_KEY) ?? "[]");
+    const stored = localStorage.getItem(SECTIONS_KEY);
+    if (stored) {
+      folded = JSON.parse(stored);
+    }
   } catch {
-    // All open, then.
+    // All folded, then.
   }
-  for (const section of document.querySelectorAll<HTMLFieldSetElement>("fieldset[data-section]")) {
+  for (const section of sections) {
     const legend = section.querySelector("legend")!;
     const title = legend.querySelector<HTMLElement>("[data-t]") ?? legend;
     const button = document.createElement("button");
@@ -436,7 +448,7 @@ async function start() {
     try {
       reachTokens(scene);
     } catch (error) {
-      console.error("Rising Ranges: Vistazo couldn't tell which tokens the templates reach", error);
+      console.error("Rising Ranges: 3D Glance couldn't tell which tokens the templates reach", error);
     }
   }
   function reachTokens(scene: VistazoScene) {
@@ -572,6 +584,8 @@ async function start() {
 
   // ---------- Texts ----------
   const fill = () => {
+    // The page's name in its language too (a browser tab's, a screen reader's).
+    document.title = `Rising Ranges — ${t("vistazo.title")}`;
     for (const el of document.querySelectorAll<HTMLElement>("[data-t]")) {
       el.textContent = t(el.dataset.t as TranslationKey);
     }
@@ -1207,7 +1221,7 @@ async function start() {
       try {
         showTemplates();
       } catch (error) {
-        console.error("Rising Ranges: Vistazo couldn't redraw the templates", error);
+        console.error("Rising Ranges: 3D Glance couldn't redraw the templates", error);
       }
     }
     // A click on the free point's marker or a template's handle: nothing (no token, no ground).
@@ -1415,11 +1429,13 @@ async function start() {
     check("showTok").checked = options.tokens;
     // A token's point and its distance lines only mean something with the tokens shown.
     $("tokensMore").hidden = !options.tokens;
-    document.querySelector<HTMLElement>('fieldset[data-section="labels"]')!.hidden = !options.tokens;
+    $("labelsMore").hidden = !options.tokens;
     check("xray").checked = options.xray;
     check("edges").checked = options.edges;
     check("waterMotion").checked = options.waterMotion;
-    $<HTMLSelectElement>("quality").value = options.quality;
+    for (const button of $("quality").querySelectorAll("button")) {
+      button.setAttribute("aria-pressed", String(button.value === options.quality));
+    }
     check("levels").checked = options.levels;
     check("grid").checked = options.grid;
     check("distances").checked = options.distances;
@@ -1453,8 +1469,9 @@ async function start() {
   check("xray").onchange = () => set({ xray: check("xray").checked });
   check("edges").onchange = () => set({ edges: check("edges").checked });
   check("waterMotion").onchange = () => set({ waterMotion: check("waterMotion").checked });
-  const quality = $<HTMLSelectElement>("quality");
-  quality.onchange = () => set({ quality: quality.value === "low" ? "low" : quality.value === "medium" ? "medium" : "high" });
+  for (const button of $("quality").querySelectorAll("button")) {
+    button.onclick = () => set({ quality: button.value === "low" ? "low" : button.value === "medium" ? "medium" : "high" });
+  }
   check("levels").onchange = () => set({ levels: check("levels").checked });
   check("grid").onchange = () => set({ grid: check("grid").checked });
   check("distances").onchange = () => set({ distances: check("distances").checked });
@@ -1490,6 +1507,14 @@ async function start() {
   let [dpi, scale] = await Promise.all([OBR.scene.grid.getDpi(), OBR.scene.grid.getScale()]);
   // The templates' size is typed in the grid's own unit.
   $("templateUnit").textContent = scale.parsed.unit;
+  // Digits only, 1 to 999, typed or stepped.
+  const templateSize = $<HTMLInputElement>("templateSize");
+  const sizeTo = (value: number) => (templateSize.value = String(Math.min(999, Math.max(1, Math.round(value) || 1))));
+  templateSize.oninput = () => (templateSize.value = templateSize.value.replace(/\D/g, ""));
+  templateSize.onchange = () => sizeTo(Number(templateSize.value));
+  for (const step of templateSize.parentElement!.querySelectorAll<HTMLButtonElement>(".step")) {
+    step.onclick = () => sizeTo(Number(templateSize.value) + Number(step.dataset.by));
+  }
   // On a hex grid, one cell's center: where its cells are drawn from (see useTexture).
   const findHexCenter = async () =>
     gridType === "HEX_HORIZONTAL" || gridType === "HEX_VERTICAL" ? await OBR.scene.grid.snapPosition({ x: 0, y: 0 }, 1, false, true) : null;
@@ -1720,7 +1745,7 @@ async function start() {
       }
       return move.position;
     } catch (error) {
-      console.error("Rising Ranges: Vistazo couldn't save the moved token", error);
+      console.error("Rising Ranges: 3D Glance couldn't save the moved token", error);
       refresh();
       return null;
     }
@@ -1880,7 +1905,7 @@ async function start() {
       time("vistazo.setScene", () => view.setScene(scene!));
       showDistances();
     } catch (error) {
-      console.error("Rising Ranges: Vistazo couldn't draw the scene", error);
+      console.error("Rising Ranges: 3D Glance couldn't draw the scene", error);
     } finally {
       $("loading").hidden = true;
     }
@@ -1921,6 +1946,8 @@ async function start() {
   let session: EditSession | null = null;
   /** Opened to edit (from the panel's button): editing starts once the reliefs are known. */
   let editAsked = FULL && new URLSearchParams(location.search).has("edit");
+  /** Opened to edit from the panel: done editing, back to the panel as it was (its size, where it was). */
+  const backToPanel = FULL && new URLSearchParams(location.search).has("back");
   /** While editing, the scene drawn again a few times a second at most (not only once it's still). */
   let soonTimer = 0;
   const soon = (ms = 150) => {
@@ -1951,6 +1978,8 @@ async function start() {
     $("reMap").hidden = false;
     // Every piece with its surface while it's edited: a brush's heights move them where they are.
     reliefs.surfaced = true;
+    // Opened from a map image's menu: that one (see createReliefMenu); otherwise the largest.
+    const asked = new URLSearchParams(location.search).get("image");
     session = startEditing({
       t,
       images,
@@ -2012,7 +2041,7 @@ async function start() {
       scene: () => ({ items, dpi }),
       onPick: (shapes) => view.highlight(shapes, getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#bb99ff"),
       onDone: leaveEdit,
-    });
+    }, images.some((image) => image.id === asked) ? asked! : undefined);
   }
   function leaveEdit() {
     session?.stop();
@@ -2023,6 +2052,9 @@ async function start() {
     heightsOnly = null;
     view.setLite(false);
     refresh();
+    if (backToPanel) {
+      leaveFull();
+    }
   }
   const reliefButton = $("reliefEdit");
   reliefButton.hidden = !isGM;
@@ -2033,7 +2065,7 @@ async function start() {
     }
     // From the panel: to full screen, editing there.
     handCamera();
-    void OBR.modal.open({ id: FULL_MODAL_ID, url: "/vistazo.html?full&edit", fullScreen: true });
+    void OBR.modal.open({ id: FULL_MODAL_ID, url: "/vistazo.html?full&edit&back", fullScreen: true });
     void closeVistazoPanel(true);
   };
   // While editing, the keys are the editor's first. An Escape it had no use for is the Vistazo's

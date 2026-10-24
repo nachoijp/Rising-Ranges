@@ -396,7 +396,11 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "")
     }
     frame = requestAnimationFrame(() => {
       frame = 0;
-      time("editor.panel.tools", () => renderTools($("tools"), editor, t, setTool));
+      time("editor.panel.tools", () => renderTools($("tools"), editor, t, setTool, (button, items) => {
+        const r = button.getBoundingClientRect();
+        const [x, y] = rootPoint(r.right + 6, r.top);
+        openMenu(root, x, y, items);
+      }));
       time("editor.panel.options", () => renderOptions($("options"), editor, t));
       $("toolBtn").innerHTML = toolButton(editor, t);
       time("editor.panel.fit", fitOptions);

@@ -3,6 +3,7 @@ import { getPluginId } from "../util/getPluginId";
 import { languageFromMetadata } from "../i18n/language";
 import { globalSettingsFromMetadata, liftsTokens, terrainOn, terrainVisibility, vistazoAccess } from "../settings/globalSettings";
 import { createVistazoAction } from "./createVistazoAction";
+import { createReliefMenu, RELIEF_MENU_ID } from "./createReliefMenu";
 import { getGridType } from "../util/gridAxonometry";
 import { createMeasureTool } from "./createMeasureTool";
 import { createThemeAction } from "./createThemeAction";
@@ -93,6 +94,12 @@ export function registerToolbar(metadata: Record<string, unknown>) {
     createTerrainVisibilityAction(language, terrainMode);
   } else if (!firstTime) {
     OBR.tool.removeAction(getPluginId("action/terrainVisibility"));
+  }
+  // The relief is edited in the Vistazo: its entry on the map's menu while both are on.
+  if (terrain && vistazo !== "off") {
+    createReliefMenu(language);
+  } else if (!firstTime) {
+    OBR.contextMenu.remove(RELIEF_MENU_ID).catch(() => {});
   }
 }
 

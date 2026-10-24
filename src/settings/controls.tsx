@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Stack from "@mui/material/Stack";
 import Button from "@mui/material/Button";
 import Collapse from "@mui/material/Collapse";
@@ -99,15 +99,28 @@ export function SettingSwitch({
   );
 }
 
-/** A folded "Avanzado" section for the fine-tuning options most people never need. */
-export function AdvancedSection({ title, children }: { title?: string; children: ReactNode }) {
-  const t = useTranslation();
-  return <FoldedSection label={title ? `${t("settings.advanced")} · ${title}` : t("settings.advanced")}>{children}</FoldedSection>;
-}
-
-/** A section folded shut until opened, under its label. */
-export function FoldedSection({ label, children }: { label: string; children: ReactNode }) {
-  const [open, setOpen] = useState(false);
+/**
+ * A section folded shut until opened, under its label. `open`/`onOpenChange`
+ * to open it from elsewhere (see MapaTab's "Propio").
+ */
+export function FoldedSection({
+  label,
+  children,
+  open: shown,
+  onOpenChange,
+}: {
+  label: string;
+  children: ReactNode;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}) {
+  const [own, setOwn] = useState(false);
+  const open = shown ?? own;
+  const setOpen = (next: (value: boolean) => boolean) => {
+    const value = next(open);
+    setOwn(value);
+    onOpenChange?.(value);
+  };
   return (
     <Stack
       sx={{
@@ -140,5 +153,38 @@ export function FoldedSection({ label, children }: { label: string; children: Re
   );
 }
 
-/** Space between a tab's sections (and an Avanzado section's own). */
+/** Space between a tab's sections (and a folded section's own). */
 export const SECTION_GAP = "14px";
+
+/**
+ * "Volver a los valores de fábrica" for a tab, at its end: a first click asks
+ * (the button says so), a second within a few seconds resets.
+ */
+export function ResetButton({ onReset }: { onReset: () => void }) {
+  const t = useTranslation();
+  const [asking, setAsking] = useState(false);
+  useEffect(() => {
+    if (!asking) {
+      return;
+    }
+    const timer = setTimeout(() => setAsking(false), 4000);
+    return () => clearTimeout(timer);
+  }, [asking]);
+  return (
+    <Button
+      size="small"
+      color={asking ? "warning" : "primary"}
+      onClick={() => {
+        if (asking) {
+          setAsking(false);
+          onReset();
+        } else {
+          setAsking(true);
+        }
+      }}
+      sx={{ alignSelf: "flex-end", textTransform: "none" }}
+    >
+      {asking ? t("settings.resetConfirm") : t("settings.reset")}
+    </Button>
+  );
+}

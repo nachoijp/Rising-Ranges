@@ -41,7 +41,7 @@ export function clearOf(fog: Fog, world: MultiPolygon): MultiPolygon | null {
     const fogged = covered.length > 0 && lit.length > 0 ? polygonClipping.difference(covered, lit) : covered;
     return fogged.length > 0 ? polygonClipping.difference(world, fogged) : world;
   } catch (error) {
-    console.error("Rising Ranges: Vistazo couldn't work out what the fog leaves clear", error);
+    console.error("Rising Ranges: 3D Glance couldn't work out what the fog leaves clear", error);
     return null;
   }
 }
