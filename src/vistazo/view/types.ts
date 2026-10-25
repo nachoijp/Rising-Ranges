@@ -1,4 +1,5 @@
 import type * as THREE from "three";
+import type { BandShape } from "../../engine/types";
 import type { TerrainSkin } from "../../terrain/terrain";
 import type { Prop, Token } from "../scene";
 import type { CloudStyle } from "../weather";
@@ -69,18 +70,19 @@ export type Options = {
 };
 
 /**
- * The Bandas' rings around a token, as on the map: each Banda's radius plus
- * the Tolerancia (`reach`) and the token's excess bulk, across only, by the
- * metric (hex steps on a hex grid). `z` (its body's middle) isn't used by
- * the rings, which leave height out.
+ * The Bandas' rings around a token, as on the map (bandRings.ts): each
+ * Banda's radius plus the Tolerancia (`reach`) and the token's excess bulk,
+ * across only, in the Bandas' shape (Forma: a circle, a square, or whole hex
+ * cells counted from the Origen's `cells`, offsets in cells). `z` (its
+ * body's middle) isn't used by the rings, which leave height out.
  */
 export type Reach = {
   x: number;
   y: number;
   z: number;
   excess: number;
-  metric: "spherical" | "cubic" | "cylindrical";
-  hex: "hexHorizontal" | "hexVertical" | null;
+  shape: BandShape;
+  cells: { x: number; y: number }[];
   bands: { reach: number; color: string }[];
 };
 

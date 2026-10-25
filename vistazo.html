@@ -9,11 +9,14 @@
   <body>
     <p class="message" id="message" hidden></p>
     <div class="bar" id="bar">
-      <div class="bar-grip" id="barGrip" role="button" data-title="vistazo.drag"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="currentColor"><circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" /><circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" /><circle cx="9" cy="18" r="1.6" /><circle cx="15" cy="18" r="1.6" /></g></svg></div>
-      <svg class="bar-icon" viewBox="-2.07 -15.67 86.5 86.5" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="6.6" stroke-linejoin="round" stroke-linecap="round"><path transform="translate(311.98113 5.3345015)" d="m -310.65822,25.487482 22.92096,-13.233417 m 33.86531,-8.2e-5 22.9211,13.233506 -39.85368,23.009532 -39.85369,-23.009539 m 39.85362,-9.833026 v 19.666059 m -16.93266,-29.4990908 16.93266,9.8330318 m 16.93265,-9.8330318 -16.93265,9.8330318 m 16.93265,9.833031 -16.93266,9.833031 -16.93265,-9.833032 V 5.8214242 l 16.93266,-9.8330314 16.93265,9.8330314 z" /></svg>
+      <div class="bar-grip" id="barGrip" role="button" data-title="vistazo.drag"><i data-icon="grip"></i></div>
+      <span class="bar-icon" id="barIcon" aria-hidden="true"></span>
       <span class="bar-title" data-t="vistazo.title"></span>
       <button class="bar-restore" id="restore" type="button" data-title="vistazo.restore">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14v12H5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" /></svg>
+        <i data-icon="restore"></i>
+      </button>
+      <button class="bar-restore" id="barClose" type="button" data-title="vistazo.close">
+        <i data-icon="close"></i>
       </button>
     </div>
     <div class="app" id="app">
@@ -38,16 +41,20 @@
           <div class="help-tip" id="helpTip" role="tooltip"><strong data-t="vistazo.helpTitle"></strong><ul id="helpList"></ul></div>
         </div>
         <div class="guided-badge" data-t="vistazo.guided"></div>
-        <div class="panel-toggle grip" id="grip" role="button" data-title="vistazo.drag"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="currentColor"><circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" /><circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" /><circle cx="9" cy="18" r="1.6" /><circle cx="15" cy="18" r="1.6" /></g></svg></div>
+        <div class="panel-toggle grip" id="grip" role="button" data-title="vistazo.drag"><i data-icon="grip"></i></div>
         <div class="tools" id="tools">
+        <button class="panel-toggle" id="panelToggle" type="button" data-title="vistazo.panel" aria-pressed="true">
+          <i data-icon="panel"></i>
+        </button>
+        <span class="tools-sep" aria-hidden="true"></span>
         <button class="panel-toggle minimize-toggle" id="minimize" type="button" data-title="vistazo.minimize">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 17h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+          <i data-icon="minimize"></i>
         </button>
         <button class="panel-toggle full-toggle" id="fullToggle" type="button" data-title="vistazo.full">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path id="fullIcon" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
+          <i data-icon="fullscreen"></i>
         </button>
-        <button class="panel-toggle" id="panelToggle" type="button" data-title="vistazo.panel" aria-pressed="true">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM15 5v14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" /></svg>
+        <button class="panel-toggle" id="close" type="button" data-title="vistazo.close">
+          <i data-icon="close"></i>
         </button>
         </div>
         <div class="loading" id="loading" data-t="vistazo.loading"></div>
@@ -66,7 +73,7 @@
           <label class="check" for="showTok"><input id="showTok" type="checkbox" /><span data-t="vistazo.showTokens"></span></label>
           <label class="check" for="playerView" data-title="vistazo.playerViewHint"><input id="playerView" type="checkbox" /><span data-t="vistazo.playerView"></span></label>
           <div class="row quality" role="group" aria-labelledby="qualityLabel"
-            ><span class="titled"><span id="qualityLabel" data-t="vistazo.quality"></span><span class="info" tabindex="0" data-title="vistazo.qualityHint">i</span></span>
+            ><span class="titled"><span id="qualityLabel" data-t="vistazo.quality"></span><span class="info" tabindex="0" data-title="vistazo.qualityHint"><i data-icon="info"></i></span></span>
             <div class="seg" id="quality">
               <button type="button" value="low" data-t="vistazo.qualityLow"></button>
               <button type="button" value="medium" data-t="vistazo.qualityMedium"></button>
@@ -105,7 +112,7 @@
             </select>
           </label>
           <label class="row" for="templateSize" data-title="vistazo.templateSizeHint"
-            ><span data-t="vistazo.templateSize"></span><span class="with-unit"><span class="numbox"><input id="templateSize" type="text" inputmode="numeric" maxlength="3" value="20" class="number" /><button type="button" class="step" data-by="-1" data-title="vistazo.less"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg></button><button type="button" class="step" data-by="1" data-title="vistazo.more"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12M12 6v12" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg></button></span><output id="templateUnit"></output></span></label>
+            ><span data-t="vistazo.templateSize"></span><span class="with-unit"><span class="numbox"><input id="templateSize" type="text" inputmode="numeric" maxlength="3" value="20" class="number" /><button type="button" class="step" data-by="-1" data-title="vistazo.less"><i data-icon="minus"></i></button><button type="button" class="step" data-by="1" data-title="vistazo.more"><i data-icon="plus"></i></button></span><output id="templateUnit"></output></span></label>
           <div class="buttons">
             <button class="ghost" id="templatePlace" type="button" aria-pressed="false" data-t="vistazo.templatePlace"></button>
             <button class="ghost" id="templateClear" type="button" data-t="vistazo.templateClear"></button>
@@ -175,12 +182,14 @@
           <label class="check" for="grid"><input id="grid" type="checkbox" /><span data-t="vistazo.grid"></span></label>
           <fieldset data-section="reliefLook">
             <legend data-t="vistazo.look"></legend>
+            <div class="nested">
             <label class="row" for="shade"><span data-t="vistazo.wallShade"></span><output id="shadeOut"></output><input id="shade" type="range" min="0" max="100" step="5" /></label>
             <label class="row" for="relief"><span data-t="vistazo.reliefHeight"></span><output id="reliefOut"></output><input id="relief" type="range" min="0" max="100" step="5" /></label>
             <label class="check" for="tint"><input id="tint" type="checkbox" /><span data-t="vistazo.tint"></span></label>
             <label class="check" for="xray"><input id="xray" type="checkbox" /><span data-t="vistazo.xray"></span></label>
             <label class="check" for="waterMotion"><input id="waterMotion" type="checkbox" /><span data-t="vistazo.waterMotion"></span></label>
             <label class="check" for="levels"><input id="levels" type="checkbox" /><span data-t="vistazo.levels"></span></label>
+            </div>
           </fieldset>
         </fieldset>
 
@@ -216,7 +225,7 @@
       </aside>
       </div>
       <div class="resize" id="resize" data-title="vistazo.resize">
-        <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M10.5 1.5 1.5 10.5M10.5 5.5 5.5 10.5M10.5 9.5 9.5 10.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" /></svg>
+        <i data-icon="resize"></i>
       </div>
     </div>
     <script type="module" src="/src/vistazo/main.ts"></script>

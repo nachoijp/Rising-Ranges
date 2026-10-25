@@ -51,7 +51,7 @@ function popoverOptions(position: PanelPosition, width: number, height: number) 
     anchorPosition: position,
     anchorOrigin: { horizontal: "LEFT" as const, vertical: "TOP" as const },
     transformOrigin: { horizontal: "LEFT" as const, vertical: "TOP" as const },
-    // Meant to stay up while the map's used: only its button, its Esc or full screen close it.
+    // Meant to stay up while the map's used: only its button, its X, its Esc or full screen close it.
     disableClickAway: true,
     hidePaper: true,
   };
@@ -69,8 +69,7 @@ export async function moveVistazoPanel(position: PanelPosition, width: number, h
 export const SIZE_KEY = "rising-ranges/vistazo-size";
 export const MIN_WIDTH = 220;
 export const MIN_HEIGHT = 180;
-/** Shrunk to a bar (see the page's minimize button). */
-export const BAR_WIDTH = 200;
+/** Shrunk to a bar (see the page's minimize button), as wide as its contents (see barWidth in main.ts). */
 export const BAR_HEIGHT = 44;
 
 export type PanelSize = { width: number; height: number; compact: boolean };

@@ -284,6 +284,39 @@ function onSeg(el: HTMLElement, name: string, f: (v: string) => void) {
   }
 }
 
+/**
+ * How a slider shows its value: always as many decimals as its step has (1.00, 1.25, 1.50), so they
+ * don't come and go as it's moved; and room for its longest (in ch, with tabular digits), so the width
+ * of what shows it doesn't change either and move what's beside.
+ */
+type SliderValue = { format: (v: number) => string; width: string };
+function sliderValue(input: HTMLInputElement): SliderValue {
+  const min = Number(input.min);
+  const max = Number(input.max);
+  const step = Number(input.step) || 1;
+  const decimals = (String(step).split(".")[1] ?? "").length;
+  const format = (v: number) => v.toFixed(decimals);
+  let longest = 1;
+  for (let i = 0, v = min; v <= max + 1e-9 && i < 1000; i++, v = min + i * step) {
+    longest = Math.max(longest, format(v).length);
+  }
+  return { format, width: `${longest}ch` };
+}
+
+/** The same, from a slider's HTML (see rangeHtml), for its button in the bar and the box under it. */
+const sliderValues = new Map<string, SliderValue>();
+function sliderValueOf(html: string): SliderValue {
+  let value = sliderValues.get(html);
+  if (!value) {
+    const box = document.createElement("template");
+    box.innerHTML = html;
+    const input = box.content.querySelector<HTMLInputElement>('input[type="range"]');
+    value = input ? sliderValue(input) : { format: fmt, width: "auto" };
+    sliderValues.set(html, value);
+  }
+  return value;
+}
+
 /** A slider, set as it's moved; `done` after each move. */
 function bindRange(el: HTMLElement, key: string, get: () => number, set: (v: number) => void, done: () => void) {
   const input = el.querySelector<HTMLInputElement>(`[data-k="${key}"]`);
@@ -292,13 +325,15 @@ function bindRange(el: HTMLElement, key: string, get: () => number, set: (v: num
   }
   const show = el.querySelector<HTMLElement>(`[data-v="${key}"]`);
   input.value = String(get());
+  const shown = sliderValue(input);
   if (show) {
-    show.textContent = fmt(get());
+    show.style.minWidth = shown.width;
+    show.textContent = shown.format(get());
   }
   input.oninput = () => {
     set(Number(input.value));
     if (show) {
-      show.textContent = fmt(Number(input.value));
+      show.textContent = shown.format(Number(input.value));
     }
     done();
   };
@@ -661,7 +696,9 @@ function bindUnders(el: HTMLElement, unders: Record<string, Under>, saved: () =>
     const key = button.dataset.under!;
     const u = unders[key];
     const value = button.querySelector<HTMLElement>(".pv")!;
-    value.textContent = fmt(u.get());
+    const shown = sliderValueOf(u.html);
+    value.style.minWidth = shown.width;
+    value.textContent = shown.format(u.get());
     button.onclick = () => {
       if (!ui) {
         return;
@@ -689,7 +726,7 @@ function bindUnders(el: HTMLElement, unders: Record<string, Under>, saved: () =>
     const u = unders[open];
     if (document.activeElement !== input) {
       input.value = String(u.get());
-      box.querySelector<HTMLElement>(".sv")!.textContent = fmt(u.get());
+      box.querySelector<HTMLElement>(".sv")!.textContent = sliderValueOf(u.html).format(u.get());
     }
     button.classList.add("on");
     button.setAttribute("aria-expanded", "true");
@@ -712,7 +749,7 @@ function openUnder(ui: HTMLElement, button: HTMLElement, key: string, u: Under, 
     saved();
     const value = ui.querySelector<HTMLElement>(`[data-under="${key}"] .pv`);
     if (value) {
-      value.textContent = fmt(u.get());
+      value.textContent = sliderValueOf(u.html).format(u.get());
     }
   });
   place(ui, box, button);

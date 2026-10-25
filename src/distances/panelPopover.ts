@@ -49,6 +49,34 @@ export function savePanelPosition(position: PanelPosition | null) {
   }
 }
 
+// Its size when set by hand (the corner handle), per browser too; none: it fits its content.
+const SIZE_KEY = "rising-ranges/distances/size";
+
+export function readPanelSize(): { width: number; height: number } | null {
+  try {
+    const stored = JSON.parse(localStorage.getItem(SIZE_KEY) ?? "null");
+    if (stored && Number.isFinite(stored.width) && Number.isFinite(stored.height)) {
+      return { width: stored.width, height: stored.height };
+    }
+  } catch {
+    // Fitted to its content, then.
+  }
+  return null;
+}
+
+/** null: back to fitting its content. */
+export function savePanelSize(size: { width: number; height: number } | null) {
+  try {
+    if (size) {
+      localStorage.setItem(SIZE_KEY, JSON.stringify(size));
+    } else {
+      localStorage.removeItem(SIZE_KEY);
+    }
+  } catch {
+    // Not remembered, but it's that size until it closes.
+  }
+}
+
 /** Keeps a panel of the given size fully on a screen of the given size. */
 export function clampPanelPosition(
   position: PanelPosition,

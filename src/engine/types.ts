@@ -1,4 +1,5 @@
-export type DistanceMetric = "spherical" | "cubic" | "cylindrical";
+/** How the ground distance and the height are combined (see distance3D); "octagonal" is the 5-10-5 rule. */
+export type DistanceMetric = "spherical" | "cubic" | "cylindrical" | "octagonal";
 
 /** Which side of a token's baseline a marker represents. */
 export type Direction = "up" | "down";

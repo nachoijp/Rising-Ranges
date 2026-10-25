@@ -1,73 +1,24 @@
+import { useTheme } from "@mui/material/styles";
 import { DistanceMetric } from "../engine/types";
+import { DIAGRAM_SIZE, metricDiagram } from "./metricDrawing";
+import { useTranslation } from "../i18n/useTranslation";
 
-const SIZE = 96;
-const CENTER = SIZE / 2;
+/** Shown at twice its drawing's size: smaller, its letters and lines can't be read. */
+const SHOWN = DIAGRAM_SIZE * 2;
 
-const ringProps = {
-  fill: "none",
-  stroke: "currentColor",
-  strokeOpacity: 0.6,
-  strokeDasharray: "3 3",
-};
-
+/** What a calculation mode measures (see metricDrawing.ts), drawn on the tooltip it's in. */
 export function MetricDiagram({ metric }: { metric: DistanceMetric }) {
-  if (metric === "spherical") {
-    return (
-      <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}>
-        {[38, 26, 14].map((r) => (
-          <circle key={r} cx={CENTER} cy={CENTER} r={r} {...ringProps} />
-        ))}
-        <circle cx={CENTER} cy={CENTER} r={2.5} fill="currentColor" />
-      </svg>
-    );
-  }
-
-  if (metric === "cubic") {
-    return (
-      <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}>
-        {[38, 26, 14].map((r) => (
-          <rect
-            key={r}
-            x={CENTER - r}
-            y={CENTER - r}
-            width={r * 2}
-            height={r * 2}
-            {...ringProps}
-          />
-        ))}
-        <circle cx={CENTER} cy={CENTER} r={2.5} fill="currentColor" />
-      </svg>
-    );
-  }
-
-  // Cylindrical: a top-down horizontal radius on the left, and a separate
-  // vertical "floors" ladder on the right to show height is its own axis.
-  const originX = 26;
+  const theme = useTheme();
+  const t = useTranslation();
+  // Its letters' halo: the tooltip's own grey (MUI's Tooltip background).
+  const halo = theme.palette.grey[700];
   return (
-    <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}>
-      {[28, 18].map((r) => (
-        <circle key={r} cx={originX} cy={CENTER} r={r} {...ringProps} />
-      ))}
-      <circle cx={originX} cy={CENTER} r={2.5} fill="currentColor" />
-      <line
-        x1={76}
-        y1={10}
-        x2={76}
-        y2={86}
-        stroke="currentColor"
-        strokeOpacity={0.6}
-      />
-      {[24, 40, 56, 72].map((y) => (
-        <line
-          key={y}
-          x1={70}
-          y1={y}
-          x2={82}
-          y2={y}
-          stroke="currentColor"
-          strokeOpacity={0.6}
-        />
-      ))}
-    </svg>
+    <svg
+      width={SHOWN}
+      height={SHOWN}
+      viewBox={`0 0 ${DIAGRAM_SIZE} ${DIAGRAM_SIZE}`}
+      aria-hidden
+      dangerouslySetInnerHTML={{ __html: metricDiagram(metric, theme.palette.primary.main, halo, t("settings.metric.groundLetter")) }}
+    />
   );
 }

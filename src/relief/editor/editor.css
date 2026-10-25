@@ -23,7 +23,8 @@
   bottom: 0;
   left: 4px;
   width: 2px;
-  background: transparent;
+  /* Seen at all times: a light line (the map and the 3D are dark in either theme), the accent on the pointer. */
+  background: color-mix(in srgb, var(--stage-fg) 35%, transparent);
   transition: background 0.15s;
 }
 .re-split:hover::after,
@@ -77,18 +78,20 @@
 }
 .re-map {
   --re-glass: var(--glass-outer, rgba(48, 52, 63, 0.62));
-  --re-panel: #30343f;
+  --re-panel: var(--glass-solid, #30343f);
   --re-divider: color-mix(in srgb, var(--fg) 12%, transparent);
-  --re-icon: color-mix(in srgb, var(--fg) 87%, transparent);
+  --re-icon: var(--icon, color-mix(in srgb, var(--fg) 87%, transparent));
   --re-hover: color-mix(in srgb, var(--fg) 8%, transparent);
   --re-field: color-mix(in srgb, var(--fg) 6%, transparent);
   --re-picked: color-mix(in srgb, var(--accent) 18%, transparent);
   --re-warn: #ffb74d;
   --re-map-bg: #111318;
-  /* Rounding: fields and small buttons; buttons and boxes; panels and menus. */
+  /* Rounding: small buttons; icon buttons and rows; panels and menus; what holds a value or a word
+     (fields, dropdowns, buttons with text), as the Vistazo's controls (vistazo.css). */
   --re-radius-s: 6px;
   --re-radius-m: 8px;
   --re-radius-l: 12px;
+  --re-radius-f: 12px;
   /* Notes over the map (the tooltip, the keys' chip, the toast): dark, their text light. */
   --re-tip-bg: rgba(97, 97, 97, 0.94);
   --re-chip-bg: rgba(20, 22, 28, 0.72);
@@ -101,7 +104,8 @@
   min-height: 0;
   overflow: hidden;
   background: var(--re-map-bg);
-  border-right: 1px solid var(--line);
+  /* Between the map and the 3D, both dark in either theme: a light line, not the theme's. */
+  border-right: 1px solid color-mix(in srgb, var(--stage-fg) 16%, transparent);
 }
 .re-map canvas {
   position: absolute;
@@ -207,13 +211,42 @@
   margin: 4px 6px;
   background: var(--re-divider);
 }
-/* (Its dropdowns: as every one on the page, see vistazo.css.) */
+/* Its dropdowns: the page's (vistazo.css, its list and triangle), filled as its other fields, not outlined. */
+.re-map select {
+  border-color: transparent;
+  border-radius: var(--re-radius-f);
+  background-color: var(--re-field);
+}
+/*
+ * Its fields react as the Vistazo's and the settings' (MUI's outlined ones), filled all the same: a
+ * border that's clear, the text's colour on the pointer, the accent (2px) while in use. A box holding
+ * a number (.numbox, .height) as one field, the number in it with no border of its own.
+ */
+.re-map select:hover:not(:disabled),
+.re-map input.num:hover,
+.re-map .numbox:hover,
+.re-props .height:hover {
+  border-color: var(--fg);
+}
+.re-map select:focus-visible,
+.re-map input.num:focus,
+.re-map .numbox:focus-within,
+.re-props .height:focus-within {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.re-map .numbox input.num,
+.re-props .height input.num {
+  border: 0;
+  box-shadow: none;
+}
 .re-map .field:not(select),
 .re-map input.num {
   height: 32px;
   box-sizing: border-box;
-  border: 0;
-  border-radius: var(--re-radius-s);
+  border: 1px solid transparent;
+  border-radius: var(--re-radius-f);
   background: var(--re-field);
   color: var(--fg);
   font: inherit;
@@ -231,7 +264,7 @@
   width: 18px;
   height: 18px;
 }
-.re-map .field:hover {
+.re-map .field:not(select):hover {
   background: var(--re-hover);
 }
 .re-map input.num {
@@ -301,6 +334,11 @@
   margin: 0 6px;
   color: var(--muted);
 }
+/* A slider first in its line: room for its halo at the start (14px past it held, see vistazo.css), the
+   bar's options clipped at their edge. */
+.re-map .slider > input[type="range"]:first-child {
+  margin-left: 8px;
+}
 .re-map .slider input[type="range"] {
   width: 96px;
 }
@@ -317,6 +355,12 @@
 }
 .re-map button.field.under .pl {
   color: var(--muted);
+}
+/* Its value: as wide as its longest (and its decimals, see sliderValue in panel.ts), so the bar doesn't shift. */
+.re-map button.field.under .pv {
+  display: inline-block;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 .re-map button.field.under svg.ri {
   width: 16px;
@@ -336,9 +380,10 @@
   margin: 0 2px;
   color: var(--muted);
 }
+/* On: as a picked choice in the settings' button groups (MUI's, grey), not in the accent. */
 .re-map button.field.toggle.on {
-  background: var(--accent);
-  color: var(--accent-fg);
+  background: color-mix(in srgb, var(--fg) 16%, transparent);
+  color: var(--fg);
 }
 /* A number with −/+ round it (and what else picks it, inside the same box). */
 .re-map .numbox {
@@ -349,7 +394,8 @@
   box-sizing: border-box;
   padding: 0 2px;
   margin: 0 2px;
-  border-radius: var(--re-radius-m);
+  border: 1px solid transparent;
+  border-radius: var(--re-radius-f);
   background: var(--re-field);
 }
 .re-map .numbox .ib.sm {
@@ -384,7 +430,7 @@
 .re-map .re-under .slider input[type="range"] {
   width: 140px;
 }
-.re-under .sv {
+.re-map .sv {
   min-width: 28px;
   text-align: right;
   color: var(--fg);
@@ -403,7 +449,7 @@
   padding: 0 16px;
   margin-left: 4px;
   border: 0;
-  border-radius: var(--re-radius-m);
+  border-radius: var(--re-radius-f);
   background: var(--accent);
   color: var(--accent-fg);
   font: 500 14px Roboto, "Segoe UI", system-ui, sans-serif;
@@ -503,7 +549,7 @@
   min-width: 0;
   height: 32px;
   border: 1px solid transparent;
-  border-radius: var(--re-radius-s);
+  border-radius: var(--re-radius-f);
   background: transparent;
   color: var(--fg);
   font: 500 14px Roboto, "Segoe UI", system-ui, sans-serif;
@@ -559,16 +605,23 @@
   display: inline-flex;
   gap: 2px;
   padding: 2px;
-  border-radius: var(--re-radius-m);
+  border-radius: var(--re-radius-f);
   background: var(--re-field);
   justify-self: start;
+}
+/* Buttons inside a box (2px in): rounded as its corners less those 2px, so their edges run alongside. */
+.re-map .seg .ib,
+.re-map .numbox .ib,
+.re-props .height .ib {
+  border-radius: calc(var(--re-radius-f) - 2px);
 }
 .re-props .height {
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 2px;
-  border-radius: var(--re-radius-m);
+  padding: 1px;
+  border: 1px solid transparent;
+  border-radius: var(--re-radius-f);
   background: var(--re-field);
 }
 .re-props .height .num {
@@ -588,9 +641,6 @@
   text-align: center;
   font: 500 18px Roboto, "Segoe UI", system-ui, sans-serif;
   outline: none;
-}
-.re-props .height:focus-within {
-  box-shadow: inset 0 0 0 1px var(--accent);
 }
 .re-props .height .unit {
   color: var(--muted);
@@ -631,7 +681,7 @@
   height: 36px;
   padding: 0 8px;
   border: 0;
-  border-radius: var(--re-radius-m);
+  border-radius: var(--re-radius-f);
   background: var(--re-field);
   color: var(--fg);
   font: inherit;

@@ -14,7 +14,20 @@ export function distance3D(
       return Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz));
     case "cylindrical":
       return Math.max(Math.sqrt(dx * dx + dy * dy), Math.abs(dz));
+    case "octagonal":
+      // Alternating diagonals (5-10-5): on the ground the longer leg and half the shorter (whole
+      // squares, as counted at the table), then the same between that and the height.
+      return alternate(alternate(Math.abs(dx), Math.abs(dy)), Math.abs(dz));
   }
+}
+
+/**
+ * Two legs (in squares) by the 5-10-5 rule: the longer, plus one square for every second diagonal
+ * (half the shorter, rounded down): 1 diagonal is 1 square, 2 are 3, 3 are 4, 4 are 6. A hair of
+ * slack so that 3.9999999 squares (floating point) still count as 4.
+ */
+function alternate(a: number, b: number): number {
+  return Math.max(a, b) + Math.floor(Math.min(a, b) / 2 + 1e-6);
 }
 
 // Every Banda radius is implicitly calibrated against a "standard" 1×1

@@ -7,21 +7,24 @@ import Select from "@mui/material/Select";
 import MenuItem from "@mui/material/MenuItem";
 import IconButton from "@mui/material/IconButton";
 import ButtonBase from "@mui/material/ButtonBase";
+import { alpha } from "@mui/material/styles";
+import Box from "@mui/material/Box";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import Tooltip from "@mui/material/Tooltip";
-import Close from "@mui/icons-material/Close";
+import CloseRounded from "@mui/icons-material/CloseRounded";
 
 import { useTranslation } from "../i18n/useTranslation";
 import { GLASS_FRAME } from "../util/glass";
 import { roomBelow, roomBeside } from "../util/roomBelow";
 import { DragHandle } from "./DragHandle";
+import { ResizeHandle, type PanelSize } from "./ResizeHandle";
 import { measuredBands } from "../engine/bands";
-import VisibilityRounded from "@mui/icons-material/VisibilityRounded";
-import VisibilityOffRounded from "@mui/icons-material/VisibilityOffRounded";
+// The eyes outlined, as the rows' own and the relief editor's (visible.svg, hidden.svg).
+import VisibilityOutlined from "@mui/icons-material/VisibilityOutlined";
 import LandscapeRounded from "@mui/icons-material/LandscapeRounded";
 import VisibilityOffOutlined from "@mui/icons-material/VisibilityOffOutlined";
 import { EYE, inSight } from "../relief/sight";
@@ -46,6 +49,8 @@ import {
   PANEL_MAX_WIDTH,
   PANEL_MIN_WIDTH,
   closeDistancesPanel,
+  readPanelSize,
+  savePanelSize,
 } from "./panelPopover";
 
 /** `axonometry`: the grid's rhombus ratio, 0 on a flat grid (see axonometry.ts). */
@@ -53,15 +58,29 @@ type Grid = { dpi: number; scale: GridScale; axonometry: number; type: GridType 
 
 // Five columns in a narrow popover: tighter than MUI's small-table padding.
 const cellSx = { px: 0.75, py: 0.5 };
-// The header row is a pill, like the rest of the extension's controls:
-// rounded ends, no rule underneath, a solid tint (it stays stuck on top
-// while rows scroll under it, so it can't be see-through).
+// The columns' names as the extension's other labels (small, grey) over a
+// thin rule, on the panel itself: no colour of their own. They stay put over
+// the rows, which scroll on their own under them (see the panel's layout).
 const headSx = {
   ...cellSx,
-  borderBottom: "none",
-  bgcolor: "background.default",
-  "&:first-of-type": { borderTopLeftRadius: 999, borderBottomLeftRadius: 999, pl: 1.5 },
-  "&:last-of-type": { borderTopRightRadius: 999, borderBottomRightRadius: 999, pr: 1.5 },
+  fontSize: 12,
+  fontWeight: 500,
+  color: "text.secondary",
+  borderBottom: 1,
+  borderColor: "divider",
+  bgcolor: "transparent",
+};
+// The same names in the rows' own table, there only to size its columns to
+// them too (and for screen readers: the head they're read with), not seen.
+const sizerSx = {
+  ...headSx,
+  py: 0,
+  height: 0,
+  lineHeight: 0,
+  border: 0,
+  color: "transparent",
+  pointerEvents: "none",
+  userSelect: "none",
 };
 // The page's own side padding (p: 1), added to the table's natural width
 // when sizing the popover to fit it — plus room for a vertical scrollbar,
@@ -71,6 +90,8 @@ const SCROLLBAR_WIDTH = 14;
 // The glass frames around the content (see GlassFrame): the popover is
 // this much bigger than the content it fits.
 const FRAME = GLASS_FRAME;
+/** The least a hand-set size can be: the token, the buttons, the head and a couple of rows. */
+const PANEL_MIN_HEIGHT = 160;
 // Rough room the open dropdown list needs: where it starts (just under the
 // select) plus one row per option, the "pick a token" one included.
 const MENU_TOP = 64;
@@ -79,13 +100,16 @@ const menuHeight = (options: number) => MENU_TOP + (options + 1) * MENU_ITEM_HEI
 
 const THUMB_SIZE = 24;
 
-/** The token's own image, small — many tokens show no name on the map, so this is how they're recognized here. */
+/**
+ * The token's own image, small — many tokens show no name on the map, so this is how they're recognized
+ * here. Whole, as Owlbear draws it (as the Vistazo does too), not cut round: its art may go past its circle.
+ */
 function TokenThumb({ token }: { token: Image }) {
   const [broken, setBroken] = useState(false);
-  const style = { width: THUMB_SIZE, height: THUMB_SIZE, flexShrink: 0, borderRadius: "50%" };
+  const style = { width: THUMB_SIZE, height: THUMB_SIZE, flexShrink: 0 };
   if (broken || !token.image?.url) {
     return (
-      <span aria-hidden style={{ ...style, display: "inline-block", background: "rgba(127,127,127,0.4)" }} />
+      <span aria-hidden style={{ ...style, display: "inline-block", borderRadius: "50%", background: "rgba(127,127,127,0.4)" }} />
     );
   }
   return (
@@ -157,7 +181,16 @@ export function DistancePanel() {
   const tableRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // The rows' part (it scrolls on its own), the head over it and its columns' widths, taken from the
+  // rows' table (see the sizer row in it).
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const headRef = useRef<HTMLDivElement>(null);
+  const sizerRef = useRef<HTMLTableRowElement>(null);
+  const [headWidths, setHeadWidths] = useState<number[]>([]);
   const panelSize = useRef({ width: PANEL_MIN_WIDTH, height: 0 });
+  // Its size set by hand with the corner handle (then it no longer fits its content: the rows scroll
+  // in it, both ways); null, it fits its content.
+  const [manualSize, setManualSize] = useState<PanelSize | null>(readPanelSize);
   // The dropdown list opens inside the popover and sizes itself to the room
   // there is at the moment it opens, so the popover grows to fit it first
   // and the list only opens once that's done. menuWanted covers the gap in
@@ -264,13 +297,23 @@ export function DistancePanel() {
     if (!content) {
       return;
     }
-    const contentHeight = Math.ceil(content.getBoundingClientRect().height);
-    const height =
-      Math.min(
-        maxHeight,
-        Math.max(contentHeight, menuOpen || menuWanted.current ? menuHeight(tokens.length) : 0)
-      ) + FRAME;
-    const scrollbar = contentHeight > maxHeight ? SCROLLBAR_WIDTH : 0;
+    // The head's columns as wide as the rows' (each as the widest of its name and its values).
+    const widths = [...(sizerRef.current?.children ?? [])].map((cell) => cell.getBoundingClientRect().width);
+    if (widths.length !== headWidths.length || widths.some((width, i) => Math.abs(width - headWidths[i]) > 0.5)) {
+      setHeadWidths(widths);
+    }
+    // All of it: what stays put (the token, the buttons, the head) and the rows, however tall.
+    const contentHeight = Math.ceil(
+      content.getBoundingClientRect().height + (bodyRef.current?.getBoundingClientRect().height ?? 0)
+    );
+    const menuRoom = menuOpen || menuWanted.current ? menuHeight(tokens.length) : 0;
+    // The room inside: its size set by hand, or as much as the screen allows. The size set by hand is
+    // as big as it gets: with fewer rows (or no token picked) it's only as tall as they are, and with
+    // a narrower table only as wide.
+    const roomHeight = manualSize ? Math.min(maxHeight, manualSize.height - FRAME) : maxHeight;
+    const roomWidth = manualSize ? Math.min(maxWidth, Math.max(PANEL_MIN_WIDTH, manualSize.width - FRAME)) : maxWidth;
+    const height = Math.min(maxHeight, Math.max(Math.min(contentHeight, roomHeight), menuRoom)) + FRAME;
+    const scrollbar = contentHeight > roomHeight ? SCROLLBAR_WIDTH : 0;
     // Only scrolls when the content really is taller than the panel can get;
     // otherwise the scrollbar flashed while Owlbear caught up with a resize.
     if (scrollRef.current) {
@@ -278,10 +321,10 @@ export function DistancePanel() {
     }
     const natural = tableRef.current?.getBoundingClientRect().width;
     const wanted = natural ? Math.ceil(natural) + PANEL_PADDING_WIDTH + scrollbar : 0;
-    const width = Math.min(maxWidth, Math.max(PANEL_MIN_WIDTH, wanted)) + FRAME;
-    // A table wider than the screen allows scrolls sideways instead.
+    const width = Math.min(roomWidth, Math.max(PANEL_MIN_WIDTH, wanted)) + FRAME;
+    // A table wider than the panel can be (or than it's been made) scrolls sideways instead.
     if (scrollRef.current) {
-      scrollRef.current.style.overflowX = wanted > maxWidth ? "auto" : "hidden";
+      scrollRef.current.style.overflowX = wanted > roomWidth ? "auto" : "hidden";
     }
     if (Math.abs(width - panelSize.current.width) > 2) {
       panelSize.current.width = width;
@@ -362,12 +405,27 @@ export function DistancePanel() {
   const theme = getStoredTheme();
   const distanceText = (gridUnits: number) => formatDistance(grid.scale, gridUnits);
 
-  // Scrolls inside its own box rather than the page: the extension's
-  // scrollbar style (settings/index.css) deliberately leaves the page's own
-  // scrollbar alone.
+  // The columns' names, in the head that stays put and (unseen) in the rows' table.
+  const heads: { label: string; tooltip?: string; right?: boolean }[] = [
+    { label: t("distances.token") },
+    { label: t("distances.band") },
+    ...(altitude
+      ? [
+          { label: t("distances.horizontal"), tooltip: t("distances.horizontalTooltip"), right: true },
+          { label: t("distances.vertical"), tooltip: t("distances.verticalTooltip"), right: true },
+        ]
+      : []),
+    { label: t(altitude ? "distances.total" : "distances.distance"), tooltip: t("distances.totalTooltip"), right: true },
+  ];
+  const showTable = !!origin && rows.length > 0;
+
+  // The token, the buttons and the columns' names stay put; only the rows
+  // scroll, in their own box (so nothing has to be drawn over them). It
+  // scrolls rather than the page: the extension's scrollbar style
+  // (settings/index.css) deliberately leaves the page's own scrollbar alone.
   return (
-    <div ref={scrollRef} style={{ height: "100%", overflowY: "hidden" }}>
-      <Stack ref={contentRef} sx={{ p: 1, gap: 1 }}>
+    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      <Stack ref={contentRef} sx={{ p: 1, pb: showTable ? 0 : 1, gap: 1, flexShrink: 0 }}>
         <Stack direction="row" alignItems="center" gap={0.5}>
           <DragHandle position={position} size={() => panelSize.current} onMoved={setPosition} />
           <Select
@@ -379,10 +437,11 @@ export function DistancePanel() {
             open={menuOpen}
             onOpen={openMenu}
             onClose={closeMenu}
-            sx={{ flexGrow: 1, minWidth: 0 }}
+            // 32px as the other small fields: the token's picture (24px) sets its height.
+            sx={{ flexGrow: 1, minWidth: 0, "& .MuiSelect-select": { py: "3px" } }}
           >
             <MenuItem value="">
-              <em>{t("distances.pickToken")}</em>
+              <Box component="span" sx={{ color: "text.secondary" }}>{t("distances.pickToken")}</Box>
             </MenuItem>
             {tokens.map((token) => (
               <MenuItem key={token.id} value={token.id}>
@@ -401,6 +460,8 @@ export function DistancePanel() {
               title={t(sightOn ? "distances.sightOff" : "distances.sightOn")}
               aria-pressed={sightOn}
               color={sightOn ? "primary" : "default"}
+              // On: its icon in the accent on a faint accent, as Owlbear's toolbar (and the Vistazo's buttons).
+              sx={sightOn ? { bgcolor: (theme) => alpha(theme.palette.primary.main, 0.18), "&:hover": { bgcolor: (theme) => alpha(theme.palette.primary.main, 0.26) } } : undefined}
               onClick={() => {
                 setSightOn(!sightOn);
                 writeSight(!sightOn);
@@ -420,7 +481,7 @@ export function DistancePanel() {
                 writeShowHidden(!showHidden);
               }}
             >
-              {showHidden ? <VisibilityRounded fontSize="small" /> : <VisibilityOffRounded fontSize="small" />}
+              {showHidden ? <VisibilityOutlined fontSize="small" /> : <VisibilityOffOutlined fontSize="small" />}
             </IconButton>
           )}
           <IconButton
@@ -429,51 +490,84 @@ export function DistancePanel() {
             title={t("distances.close")}
             onClick={closeDistancesPanel}
           >
-            <Close fontSize="small" />
+            <CloseRounded fontSize="small" />
           </IconButton>
         </Stack>
-        {origin && (
-          <Stack>
-            {rows.length === 0 ? (
-              <Typography sx={{ p: 1 }} variant="body2" color="text.secondary">
-                {t("distances.noOtherTokens")}
-              </Typography>
-            ) : (
-              <div ref={tableRef} style={{ width: "max-content" }}>
-                <Table
-                  size="small"
-                  stickyHeader
-                  aria-label={t("distances.tableLabel", { name: tokenName(origin) })}
-                >
-                  <TableHead>
-                    <TableRow>
-                      <TableCell sx={headSx}>{t("distances.token")}</TableCell>
-                      <TableCell sx={headSx}>{t("distances.band")}</TableCell>
-                      {altitude && (
-                        <>
-                          <TableCell sx={headSx} align="right">
-                            <Tooltip title={t("distances.horizontalTooltip")}>
-                              <span>{t("distances.horizontal")}</span>
-                            </Tooltip>
-                          </TableCell>
-                          <TableCell sx={headSx} align="right">
-                            <Tooltip title={t("distances.verticalTooltip")}>
-                              <span>{t("distances.vertical")}</span>
-                            </Tooltip>
-                          </TableCell>
-                        </>
-                      )}
-                      <TableCell sx={headSx} align="right">
-                        <Tooltip title={t("distances.totalTooltip")}>
-                          <span>{t(altitude ? "distances.total" : "distances.distance")}</span>
+        {origin && rows.length === 0 && (
+          <Typography sx={{ p: 1 }} variant="body2" color="text.secondary">
+            {t("distances.noOtherTokens")}
+          </Typography>
+        )}
+        {/* The head that's seen: its columns as wide as the rows' (see the sizer row); moved
+            sideways with them when they scroll that way. Screen readers get the rows' own. */}
+        {showTable && (
+          <div ref={headRef} aria-hidden style={{ overflow: "hidden" }}>
+            <Table
+              size="small"
+              sx={{ tableLayout: "fixed", width: headWidths.reduce((sum, width) => sum + width, 0) || "max-content" }}
+            >
+              <colgroup>
+                {headWidths.map((width, i) => (
+                  <col key={i} style={{ width }} />
+                ))}
+              </colgroup>
+              <TableHead>
+                <TableRow>
+                  {heads.map((head, i) => (
+                    <TableCell key={i} sx={headSx} align={head.right ? "right" : "left"}>
+                      {head.tooltip ? (
+                        <Tooltip title={head.tooltip}>
+                          <span>{head.label}</span>
                         </Tooltip>
+                      ) : (
+                        head.label
+                      )}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              </TableHead>
+            </Table>
+          </div>
+        )}
+      </Stack>
+      <ResizeHandle
+        min={{ width: PANEL_MIN_WIDTH + FRAME, height: PANEL_MIN_HEIGHT }}
+        onResize={setManualSize}
+        onDone={savePanelSize}
+        onReset={() => {
+          setManualSize(null);
+          savePanelSize(null);
+        }}
+      />
+      {showTable && origin && (
+        <div
+          ref={scrollRef}
+          style={{ flex: "1 1 auto", minHeight: 0, overflowY: "hidden" }}
+          onScroll={(event) => {
+            if (headRef.current) {
+              headRef.current.scrollLeft = event.currentTarget.scrollLeft;
+            }
+          }}
+        >
+          <Box ref={bodyRef} sx={{ px: 1, pb: 1 }}>
+            <div ref={tableRef} style={{ width: "max-content" }}>
+              <Table size="small" aria-label={t("distances.tableLabel", { name: tokenName(origin) })}>
+                <TableHead>
+                  <TableRow ref={sizerRef}>
+                    {heads.map((head, i) => (
+                      <TableCell key={i} sx={sizerSx} align={head.right ? "right" : "left"}>
+                        {head.label}
                       </TableCell>
-                    </TableRow>
-                  </TableHead>
+                    ))}
+                  </TableRow>
+                </TableHead>
                   <TableBody>
                     {rows.map((row) => {
                       const band = row.bandIndex === null ? null : measuredBands(bandSet)[row.bandIndex];
                       const height = distanceText(Math.abs(row.heightDifference));
+                      // Up or down only if it shows as more than 0 (a hair's difference reads as level):
+                      // "0 ft" then, with no arrow (nor a dash: it would read as a minus).
+                      const level = height === distanceText(0);
                       return (
                         <TableRow key={row.token.id}>
                           <TableCell sx={cellSx}>
@@ -482,7 +576,7 @@ export function DistancePanel() {
                               onClick={() => setOriginId(row.token.id)}
                               aria-label={t("distances.measureFrom", { name: tokenName(row.token) })}
                               title={t("distances.measureFrom", { name: tokenName(row.token) })}
-                              sx={{ borderRadius: 999, pr: 0.75, textAlign: "left", font: "inherit" }}
+                              sx={{ borderRadius: 999, pr: 0.75, textAlign: "left", font: "inherit", "&:hover": { bgcolor: "action.hover" } }}
                             >
                               <TokenLabel token={row.token} />
                             </ButtonBase>
@@ -518,8 +612,8 @@ export function DistancePanel() {
                                 {distanceText(row.horizontal)}
                               </TableCell>
                               <TableCell sx={{ ...cellSx, whiteSpace: "nowrap", color: "text.secondary" }} align="right">
-                                {row.heightDifference === 0 ? (
-                                  <span aria-label={t("distances.sameHeight")}>—</span>
+                                {level ? (
+                                  <span aria-label={t("distances.sameHeight")}>{height}</span>
                                 ) : (
                                   <span
                                     aria-label={t(
@@ -535,7 +629,7 @@ export function DistancePanel() {
                           )}
                           <TableCell sx={{ ...cellSx, whiteSpace: "nowrap", fontWeight: 600 }} align="right">
                             {/* Same arrow as the Vert. column, so it reads on its own too (and with no height columns). */}
-                            {row.heightDifference > 0 ? "↑ " : row.heightDifference < 0 ? "↓ " : ""}
+                            {level ? "" : row.heightDifference > 0 ? "↑ " : "↓ "}
                             {distanceText(row.distance)}
                           </TableCell>
                         </TableRow>
@@ -543,11 +637,10 @@ export function DistancePanel() {
                     })}
                   </TableBody>
                 </Table>
-              </div>
-            )}
-          </Stack>
-        )}
-      </Stack>
+            </div>
+          </Box>
+        </div>
+      )}
     </div>
   );
 }

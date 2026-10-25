@@ -1,5 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+// Roboto, as the extension's other pages (PluginThemeProvider): not every computer has it.
+import "@fontsource/roboto/400.css";
+import "@fontsource/roboto/500.css";
 
 import { TokenHeightPicker } from "./TokenHeightPicker";
 import { ElevationPanel } from "./ElevationPanel";

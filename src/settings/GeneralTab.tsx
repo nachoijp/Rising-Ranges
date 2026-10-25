@@ -97,7 +97,8 @@ export function GeneralTab({
         value={vistazoAccess(settings)}
         onChange={(vistazo) => onChangeSettings({ vistazo })}
         options={[
-          { value: "off", label: t("settings.global.distancePanelOff") },
+          // "off" hides it: its button only (the relief's still edited from the map's menu).
+          { value: "off", label: t("settings.global.vistazoHidden") },
           { value: "gm", label: t("settings.global.distancePanelGm") },
           { value: "everyone", label: t("settings.global.distancePanelEveryone") },
         ]}

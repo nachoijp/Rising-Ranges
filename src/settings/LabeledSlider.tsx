@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import Slider from "@mui/material/Slider";
 import Stack from "@mui/material/Stack";
+import Typography from "@mui/material/Typography";
 import { FieldLabel } from "./FieldLabel";
 
 export function LabeledSlider({
@@ -38,9 +39,15 @@ export function LabeledSlider({
 
   return (
     <Stack sx={{ px: 1 }}>
-      <FieldLabel id={id} tooltip={tooltip}>
-        {label}
-      </FieldLabel>
+      {/* Its value at the label's far end, always shown (as the Vistazo's sliders), not in a bubble over the thumb. */}
+      <Stack direction="row" alignItems="center" justifyContent="space-between" gap={1}>
+        <FieldLabel id={id} tooltip={tooltip}>
+          {label}
+        </FieldLabel>
+        <Typography component="output" aria-hidden sx={{ fontSize: 12, color: "text.secondary", fontVariantNumeric: "tabular-nums" }}>
+          {valueLabelFormat ? valueLabelFormat(localValue) : localValue}
+        </Typography>
+      </Stack>
       <Slider
         aria-labelledby={id}
         value={localValue}
@@ -58,11 +65,15 @@ export function LabeledSlider({
         min={min}
         max={max}
         marks={marks}
-        valueLabelDisplay="auto"
+        valueLabelDisplay="off"
         valueLabelFormat={valueLabelFormat}
         size="small"
         disabled={disabled}
         sx={{
+          // Room for the thumb's halo (20px past the track's ends while held; the tab clips
+          // sideways): 12px each side, on top of the 8px the row has.
+          mx: "12px",
+          width: "calc(100% - 24px)",
           // The first and last mark labels are aligned to the track's
           // edges instead of centered, so they don't stick out past it.
           "& .MuiSlider-markLabel[data-index='0']": {

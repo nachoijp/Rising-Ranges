@@ -1,5 +1,6 @@
-// The editor's icons: one SVG file each in ./icons (edited by hand, in
-// Inkscape too), drawn in the colour of the text round them. Taken in as
+// The editor's icons, and the Vistazo's own (its window's buttons, its
+// controls): one SVG file each in ./icons (edited by hand, in Inkscape
+// too), drawn in the colour of the text round them. Taken in as
 // they are, less what an editor leaves in them (its own markup, a colour
 // set where it should be the text's).
 
@@ -37,7 +38,8 @@ export type IconName =
   | "duplicate" | "rename" | "layer-up" | "layer-down" | "convert" | "combine" | "texture"
   | "plus" | "minus" | "pick-shapes" | "pick-points" | "edge-wall" | "edge-soft" | "eyedropper"
   | "visible" | "hidden" | "locked" | "unlocked" | "size" | "strength" | "magnet"
-  | "stamp" | "column" | "pit" | "stairs" | "platform" | "wall" | "mound" | "erase";
+  | "stamp" | "column" | "pit" | "stairs" | "platform" | "wall" | "mound" | "erase"
+  | "grip" | "panel" | "minimize" | "fullscreen" | "fullscreen-exit" | "restore" | "info" | "resize";
 
 /** An icon, as markup. */
 export const icon = (name: IconName) => `<svg class="ri" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">${ICONS.get(name) ?? ""}</svg>`;

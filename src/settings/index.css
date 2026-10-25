@@ -1,3 +1,4 @@
+/* In the text's colour (currentColor), so they show in the light theme too. */
 :not(html):not(body)::-webkit-scrollbar {
   background-color: transparent;
   border-radius: 100px;
@@ -9,11 +10,11 @@
   height: 10px;
 }
 :not(html):not(body)::-webkit-scrollbar:hover {
-  background-color: rgba(255, 255, 255, 0.09);
+  background-color: color-mix(in srgb, currentColor 9%, transparent);
 }
 
 :not(html):not(body)::-webkit-scrollbar-thumb {
-  background-color: rgba(255, 255, 255, 0.5);
+  background-color: color-mix(in srgb, currentColor 50%, transparent);
   border-radius: 16px;
   background-clip: padding-box;
   border: 2px solid transparent;
@@ -26,7 +27,7 @@
   min-width: 10px;
 }
 :not(html):not(body)::-webkit-scrollbar-thumb:active {
-  background-color: rgba(255, 255, 255, 0.61);
+  background-color: color-mix(in srgb, currentColor 61%, transparent);
 }
 
 /* Without this, the corner where a horizontal and vertical scrollbar meet

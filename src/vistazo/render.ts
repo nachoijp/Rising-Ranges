@@ -3,8 +3,7 @@ import { TessellateModifier } from "three/examples/jsm/modifiers/TessellateModif
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { MultiPolygon } from "polygon-clipping";
 import { inShape, pieceHeight, type Bridge, type Piece, type Prop, type Token, type VistazoScene } from "./scene";
-import { distance3D } from "../engine/distance";
-import { cellCorners, groundOffset } from "../engine/hex";
+import { cellCorners, cellStepsFrom, cellsOutline, isHexShape, ringSteps } from "../engine/hex";
 import type { Fog } from "./fog";
 import { visibleBox } from "./visibleBox";
 import { buildWeather, cloudShadowMaterial, setWeatherTime } from "./weather";
@@ -50,6 +49,9 @@ THREE.ColorManagement.enabled = false;
 /** The painted bases' picture (see paintBases): pixels a cell, and the most a side (as a texture holds). */
 const BASES_PER_CELL = 48;
 const BASES_MAX = 4096;
+
+/** Which grid a scene's cells are drawn on the map for (see useTexture): to tell when Owlbear's changes. */
+const gridDrawn = (scene: VistazoScene) => JSON.stringify([scene.dpi, scene.squareGrid, scene.hexGrid]);
 
 export class VistazoView {
   private readonly canvas: HTMLCanvasElement;
@@ -119,6 +121,8 @@ export class VistazoView {
   private readonly tokenOverlay: HTMLElement;
   private scene: VistazoScene | null = null;
   private terrainKey = "";
+  /** The grid the map texture has its cells drawn for (see gridDrawn): drawn again when Owlbear's changes. */
+  private texturedGrid = "";
   private selected = new Set<string>();
   private distanceOrigin: string | null = null;
   private distanceLines: DistanceLine[] = [];
@@ -489,6 +493,10 @@ export class VistazoView {
       if (!time("3d.moveTokens", () => this.moveTokens(scene))) {
         time("3d.tokens", () => this.buildTokens());
       }
+      // The grid changed in Owlbear (square to hex, the hex cells moved): its cells drawn again on the map.
+      if (this.texture && gridDrawn(scene) !== this.texturedGrid) {
+        this.useTexture();
+      }
       this.updateWeather();
       this.requestApply();
       return;
@@ -551,11 +559,19 @@ export class VistazoView {
     const u = this.u;
     const k = this.k;
     const bands = r.bands.filter((band) => Number.isFinite(band.reach)).map((band) => ({ ...band, across: band.reach + r.excess }));
-    // How far across a scene point is, in grid units, as the Banda's shape measures it.
+    // How far across a scene point is, in grid units, as the map's rings take it (their Forma, not
+    // the calculation mode): a circle, a square, or the hex steps of the whole cell it's in.
+    const shape = r.shape;
     const acrossOf = (x: number, y: number) => {
-      const offset = groundOffset((x - r.x) / dpi, (y - r.y) / dpi, r.hex ?? "circle");
-      return distance3D(offset.x, offset.y, 0, r.metric);
+      const dx = (x - r.x) / dpi;
+      const dy = (y - r.y) / dpi;
+      if (isHexShape(shape)) {
+        return cellStepsFrom(dx, dy, shape, r.cells);
+      }
+      return shape === "square" ? Math.max(Math.abs(dx), Math.abs(dy)) : Math.hypot(dx, dy);
     };
+    // A Banda's edge, as compared with acrossOf: on hex cells, the whole steps it reaches (ringSteps).
+    const edgeOf = (across: number) => (isHexShape(shape) ? ringSteps(across * dpi, dpi) + 1e-6 : across);
     if (this.options.ringFill) {
       const { x0, y0, step, w, h, cells } = this.grid;
       const data = new Uint8Array(w * h * 4);
@@ -567,7 +583,7 @@ export class VistazoView {
             continue;
           }
           const across = acrossOf(x0 + i * step, y0 + j * step);
-          const index = bands.findIndex((band) => across <= band.across);
+          const index = bands.findIndex((band) => across <= edgeOf(band.across));
           if (index >= 0) {
             data.set([Math.round(colors[index].r * 255), Math.round(colors[index].g * 255), Math.round(colors[index].b * 255), 70], n * 4);
           }
@@ -590,15 +606,13 @@ export class VistazoView {
     if (!this.options.rings) {
       return;
     }
-    // The outline's corners, in grid units from the token, for a Banda `across` wide.
+    // The outline's corners, in grid units from the token, for a Banda `across` wide: as the map's
+    // rings, by the Forma (bandRings.ts); on hex cells, the outline of every cell it reaches.
     const outline = (across: number): [number, number][] => {
-      if (r.hex) {
-        // Six sides, their middles `across` cells away (hex steps), pointy side as the grid has it.
-        const corner = across / Math.cos(Math.PI / 6);
-        const turn = r.hex === "hexHorizontal" ? Math.PI / 6 : 0;
-        return Array.from({ length: 6 }, (_, i) => [Math.cos(turn + (i * Math.PI) / 3) * corner, Math.sin(turn + (i * Math.PI) / 3) * corner]);
+      if (isHexShape(shape)) {
+        return cellsOutline(ringSteps(across * dpi, dpi), shape, r.cells).map((p): [number, number] => [p.x, p.y]);
       }
-      if (r.metric === "cubic") {
+      if (shape === "square") {
         return [[-across, -across], [across, -across], [across, across], [-across, across]];
       }
       return Array.from({ length: 96 }, (_, i) => [Math.cos((i * Math.PI) / 48) * across, Math.sin((i * Math.PI) / 48) * across]);
@@ -1291,6 +1305,7 @@ export class VistazoView {
     if (!texture || !scene) {
       return;
     }
+    this.texturedGrid = gridDrawn(scene);
     let source: HTMLCanvasElement = texture.canvas;
     if (this.options.grid && (scene.squareGrid || scene.hexGrid)) {
       source = document.createElement("canvas");

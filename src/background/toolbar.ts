@@ -22,6 +22,30 @@ import { heightStepOf } from "../engine/heights";
 
 let lastSignature: string | null = null;
 let lastMetadata: Record<string, unknown> = {};
+/** Which of the panels' buttons are on the toolbar (see placePanelActions), to tell when that changes. */
+let lastShown: string | null = null;
+/** The panels' buttons are placed one registration after another (removed, then added again in order). */
+let placing: Promise<unknown> = Promise.resolve();
+
+const PANEL_ACTIONS = ["action/vistazo", "action/terrainVisibility", "action/distances"].map(getPluginId);
+
+/**
+ * The Vistazo 3D's, the terrain view's and the Distancias panel's buttons, in that order. Owlbear puts
+ * a new one last: when one comes back, all of them are taken away and added again, so it goes back in
+ * its place (registering one that's there replaces it where it is).
+ */
+function placePanelActions(shown: { vistazo: boolean; terrain: boolean; distances: boolean }, create: () => void) {
+  // The first time too: Owlbear may still have them from before this page loaded, in another order.
+  const key = JSON.stringify(shown);
+  const reorder = key !== lastShown;
+  lastShown = key;
+  placing = placing.then(async () => {
+    if (reorder) {
+      await Promise.all(PANEL_ACTIONS.map((id) => OBR.tool.removeAction(id).catch(() => {})));
+    }
+    create();
+  });
+}
 /** The scene grid's type: terrain is left out on isometric and dimetric grids (see terrainOn). */
 let gridType: GridType = "SQUARE";
 
@@ -64,19 +88,30 @@ export function registerToolbar(metadata: Record<string, unknown>) {
   createMeasureTool(language, settings);
   createThemeAction(language);
   createSettingsAction(language);
-  if (distancePanel !== "off") {
-    createDistancesAction(language, distancePanel);
-  } else if (!firstTime) {
-    OBR.tool.removeAction(getPluginId("action/distances"));
-  }
-  if (vistazo !== "off") {
-    createVistazoAction(language, vistazo);
-  } else if (!firstTime) {
-    OBR.tool.removeAction(getPluginId("action/vistazo"));
-  }
+  // Terrain is part of heights: off with them, or turned off, or on an axonometric grid. (Its shapes
+  // are made in the Vistazo now: see relief/; the old shapes' own terrain menu is gone.)
+  const shown = { vistazo: vistazo !== "off", terrain, distances: distancePanel !== "off" };
+  placePanelActions(shown, () => {
+    if (shown.vistazo) {
+      createVistazoAction(language, vistazo);
+    } else if (!firstTime) {
+      OBR.tool.removeAction(getPluginId("action/vistazo")).catch(() => {});
+    }
+    if (shown.terrain) {
+      createTerrainVisibilityAction(language, terrainMode);
+    } else if (!firstTime) {
+      OBR.tool.removeAction(getPluginId("action/terrainVisibility")).catch(() => {});
+    }
+    if (shown.distances) {
+      createDistancesAction(language, distancePanel);
+    } else if (!firstTime) {
+      OBR.tool.removeAction(getPluginId("action/distances")).catch(() => {});
+    }
+  });
   // The footprint is in the Elevation entry while heights are on, on its own otherwise; the Vistazo's
-  // base in either, for whoever can open the Vistazo.
-  const base: BaseShown = vistazo === "everyone" ? "all" : vistazo === "gm" ? "gm" : "none";
+  // base in either, for whoever can open the Vistazo (the GM even with it hidden: the relief editor
+  // shows the tokens in 3D too).
+  const base: BaseShown = vistazo === "everyone" ? "all" : "gm";
   if (altitudeMenu) {
     createTokenHeightMenu(language, heightStep, tall, base);
     if (!firstTime) {
@@ -88,15 +123,9 @@ export function registerToolbar(metadata: Record<string, unknown>) {
       removeTokenMenu(getPluginId("menu/tokenHeight"));
     }
   }
-  // Terrain is part of heights: off with them, or turned off, or on an axonometric grid. (Its shapes
-  // are made in the Vistazo now: see relief/; the old shapes' own terrain menu is gone.)
+  // The relief is edited in the Vistazo: its entry on the map's menu with the terrain on (the Vistazo
+  // hidden too: this is how it's opened then).
   if (terrain) {
-    createTerrainVisibilityAction(language, terrainMode);
-  } else if (!firstTime) {
-    OBR.tool.removeAction(getPluginId("action/terrainVisibility"));
-  }
-  // The relief is edited in the Vistazo: its entry on the map's menu while both are on.
-  if (terrain && vistazo !== "off") {
     createReliefMenu(language);
   } else if (!firstTime) {
     OBR.contextMenu.remove(RELIEF_MENU_ID).catch(() => {});

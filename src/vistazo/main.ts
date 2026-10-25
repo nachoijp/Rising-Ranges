@@ -22,6 +22,8 @@ import type { Affine } from "../relief/types";
 import { Relief } from "../relief/relief";
 import { watchReliefs } from "../relief/store";
 import { startEditing, type EditSession } from "../relief/editor/session";
+import { icon, type IconName } from "../relief/editor/icons";
+import vistazoLogo from "../assets/vistazo.svg?raw";
 import "../relief/editor/editor.css";
 import { FREE_POINT, TEMPLATE_HANDLE, VistazoView, type Camera, type DistanceLine, type Options } from "./render";
 import { templateReaches, type Template, type TemplateLook, type TemplateShape } from "./templates";
@@ -31,13 +33,12 @@ import { stepHeight } from "../engine/heights";
 import { globalSettingsFromMetadata, groundHotkey, letterToCode } from "../settings/globalSettings";
 import { setTokenHeightMarker } from "../tokenHeight/markers";
 import { bodyCenterHeight, DEFAULT_TOLERANCE, excessRadius } from "../engine/distance";
-import { isHexShape } from "../engine/hex";
+import { isHexShape, originCellsAt, snapToOrigin } from "../engine/hex";
 import { getTokenRadius } from "../render/iconAnchor";
 import { getPluginId } from "../util/getPluginId";
 import { globalSettingsFromMetadata as settingsOf, vistazoAccess } from "../settings/globalSettings";
 import {
   BAR_HEIGHT,
-  BAR_WIDTH,
   MIN_HEIGHT,
   MIN_WIDTH,
   VISTAZO_POPOVER_ID,
@@ -57,10 +58,22 @@ import { saveDraggedToken } from "../util/saveDrag";
 import "./vistazo.css";
 import { since, stamp, time } from "../timing";
 import { enhanceSelects } from "./dropdown";
+import { fillSliders } from "./slider";
+// Roboto, as the extension's other pages (PluginThemeProvider): not every computer has it.
+import "@fontsource/roboto/400.css";
+import "@fontsource/roboto/500.css";
+import "@fontsource/roboto/600.css";
+import "@fontsource/roboto/700.css";
 import { isMapImage } from "../relief/measure";
 
 // Before any other key listener: an open dropdown's keys are its own (see dropdown.ts).
 enhanceSelects();
+fillSliders();
+// The page's icons from the icon files (a placeholder each, see vistazo.html); the logo from the toolbar's.
+for (const el of document.querySelectorAll<HTMLElement>("[data-icon]")) {
+  el.outerHTML = icon(el.dataset.icon as IconName);
+}
+document.getElementById("barIcon")!.innerHTML = vistazoLogo.replace(/stroke="#[0-9a-fA-F]+"/, 'stroke="currentColor"');
 
 /**
  * The same page opened full screen (an Owlbear modal, `?full`): the
@@ -162,6 +175,14 @@ function applyTheme(theme: Theme) {
   // The extension's glass panel (see GlassFrame): measured in the dark theme; the light one keeps the theme's paper.
   const dark = theme.mode === "DARK";
   root.setProperty("--glass-outer", dark ? "rgba(48, 52, 63, 0.62)" : withAlpha(theme.background.paper, 0.62));
+  // Its colour without the see-through (what's drawn to look like a hole in it: the relief editor's icons).
+  root.setProperty("--glass-solid", dark ? "rgb(48, 52, 63)" : theme.background.paper);
+  // Icons' grey in the light theme: Owlbear's (MUI's action.active), lighter than the text's.
+  if (dark) {
+    root.removeProperty("--icon");
+  } else {
+    root.setProperty("--icon", "rgba(0, 0, 0, 0.54)");
+  }
   root.setProperty("--glass-inner", withAlpha(theme.background.default, 0.2));
   root.setProperty("--divider", dark ? "rgba(255,255,255,.09)" : "rgba(20,18,30,.10)");
 }
@@ -205,7 +226,7 @@ function setUpSections() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "section-toggle";
-    button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>`;
+    button.innerHTML = icon("expand");
     const label = document.createElement("span");
     label.dataset.t = title.dataset.t ?? "";
     button.append(label);
@@ -326,13 +347,32 @@ function setUpDrag(handle: HTMLElement) {
 /** Told when the panel's minimized or brought back (the view pauses its videos meanwhile; see start). */
 let onMinimized: (minimized: boolean) => void = () => {};
 
+/**
+ * The bar as wide as what's in it, its name whole and nothing left over (the name changes with the
+ * language): what's laid out, less the name as it shows, plus the name as long as it is.
+ */
+function barWidth(): number {
+  const bar = $("bar");
+  const title = bar.querySelector<HTMLElement>(".bar-title")!;
+  const style = getComputedStyle(bar);
+  const end = bar.lastElementChild!.getBoundingClientRect().right + parseFloat(style.paddingRight) + parseFloat(style.borderRightWidth);
+  return Math.ceil(end - bar.getBoundingClientRect().left - title.clientWidth + title.scrollWidth);
+}
+
+/** The bar fitted to its name again (after a change of language), if that's what shows. */
+function fitBar() {
+  if (document.documentElement.classList.contains("minimized")) {
+    resizePanel(barWidth(), BAR_HEIGHT);
+  }
+}
+
 function setUpResizing() {
   setUpDrag($("grip"));
   setUpDrag($("barGrip"));
   $("minimize").onclick = () => {
     document.documentElement.classList.add("minimized");
     onMinimized(true);
-    resizePanel(BAR_WIDTH, BAR_HEIGHT);
+    fitBar();
   };
   $("restore").onclick = () => {
     document.documentElement.classList.remove("minimized");
@@ -522,11 +562,12 @@ async function start() {
     }
   });
 
-  // Who may open it (Settings → General): off, the GM, or everyone (players as players).
+  // Who may open it (Settings → General): the GM always (hidden, "off", only takes its button away:
+  // the relief is still edited here, from the map's menu), and the players too with "everyone".
   const isGM = role === "GM";
   const access = vistazoAccess(settingsOf(metadata ?? {}));
-  if (access === "off" || (access === "gm" && !isGM)) {
-    message(t(access === "off" ? "vistazo.off" : "vistazo.gmOnly"));
+  if (access !== "everyone" && !isGM) {
+    message(t("vistazo.gmOnly"));
     return;
   }
   // The scene may still be loading when the popover opens: say so, and start over once it's there.
@@ -543,6 +584,12 @@ async function start() {
   let gridType: GridType = await getGridType();
   if (axonometryOf(gridType) > 0) {
     message(t("vistazo.axonometric"));
+    // Back to a grid seen from above: it starts over.
+    OBR.scene.grid.onChange((grid) => {
+      if (axonometryOf(grid.type) === 0) {
+        window.location.reload();
+      }
+    });
     return;
   }
 
@@ -578,8 +625,17 @@ async function start() {
     void OBR.modal.close(FULL_MODAL_ID);
   }
   $("fullToggle").onclick = () => (FULL ? leaveFull() : enterFull());
+  /** The X: closed for good, from the panel or full screen (not back to the panel). */
+  const closeAll = () => {
+    void closeVistazoPanel();
+    if (FULL) {
+      void OBR.modal.close(FULL_MODAL_ID);
+    }
+  };
+  $("close").onclick = closeAll;
+  $("barClose").onclick = closeAll;
   $("fullToggle").dataset.title = FULL ? "vistazo.exitFull" : "vistazo.full";
-  $("fullIcon").setAttribute("d", FULL ? "M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" : "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5");
+  $("fullToggle").innerHTML = icon(FULL ? "fullscreen-exit" : "fullscreen");
 
   setUpSections();
 
@@ -596,6 +652,10 @@ async function start() {
     }
     // The controls' help, a list (the ? at the stage's corner); its own tooltip, not the browser's.
     $("help").removeAttribute("title");
+    // The "i"s: their own tooltip (on keyboard focus too, see .info), not the browser's.
+    for (const el of document.querySelectorAll<HTMLElement>(".info")) {
+      el.removeAttribute("title");
+    }
     $("helpList").replaceChildren(
       ...HELP_KEYS.map((key) => {
         const item = document.createElement("li");
@@ -1561,6 +1621,11 @@ async function start() {
   /** The free point (scene px, and its own height over the ground there), or none. */
   let freePoint: { x: number; y: number; own: number } | null = null;
   function placePoint(point: { x: number; y: number; own: number } | null) {
+    // On a hex grid, as the map's Medición: at its cell's center or, near one, a corner (see snapToOrigin).
+    const shape = onGrid(bandSetFromMetadata(sceneMetadata), gridType).shape;
+    if (point && hexCenter && isHexShape(shape)) {
+      point = { ...snapToOrigin(point, hexCenter, dpi, shape).point, own: point.own };
+    }
     freePoint = point;
     // The scene's keys move the point now, not a template.
     if (point) {
@@ -1614,8 +1679,9 @@ async function start() {
       y: origin.y,
       z: bodyCenterHeight(origin.terrain + origin.own, radius),
       excess: excessRadius(radius),
-      metric: bandSet.metric,
-      hex: isHexShape(bandSet.shape) ? bandSet.shape : null,
+      shape: bandSet.shape,
+      // On a hex grid, the cells it's measured from: its own, or the three round a corner (as the map's).
+      cells: isHexShape(bandSet.shape) && hexCenter ? originCellsAt(origin, hexCenter, dpi, bandSet.shape) : [{ x: 0, y: 0 }],
       bands: bandSet.bands.map((band, index) => ({ reach: band.radius + tolerance, color: getColorString(theme.colors[index % theme.colors.length]) })),
     });
     showLines();
@@ -2062,6 +2128,9 @@ async function start() {
     refresh();
     if (backToPanel) {
       leaveFull();
+    } else if (vistazoAccess(settingsOf(sceneMetadata)) === "off") {
+      // Hidden: opened from the map's menu only to edit, it closes once that's done.
+      void OBR.modal.close(FULL_MODAL_ID);
     }
   }
   const reliefButton = $("reliefEdit");
@@ -2108,7 +2177,7 @@ async function start() {
   OBR.scene.onMetadataChange((next) => {
     sceneMetadata = next;
     const now = vistazoAccess(settingsOf(next));
-    if (now === "off" || (now === "gm" && !isGM)) {
+    if (now !== "everyone" && !isGM) {
       void (FULL ? OBR.modal.close(FULL_MODAL_ID) : closeVistazoPanel());
       return;
     }
@@ -2116,6 +2185,7 @@ async function start() {
     if (nextLanguage !== language) {
       language = nextLanguage;
       fill();
+      fitBar();
       session?.retext();
       showOptions();
       // What isn't filled in by key: the camera's readings, the templates' list, the tokens' labels.
@@ -2125,11 +2195,26 @@ async function start() {
     }
     later();
   });
+  /** Turned isometric or dimetric while open: said so, and it starts over once the grid's seen from above again. */
+  let axonometric = false;
   OBR.scene.grid.onChange(async (grid) => {
+    if (axonometryOf(grid.type) > 0) {
+      axonometric = true;
+      message(t("vistazo.axonometric"));
+      return;
+    }
+    if (axonometric) {
+      window.location.reload();
+      return;
+    }
     gridType = grid.type;
     [dpi, scale] = await Promise.all([OBR.scene.grid.getDpi(), OBR.scene.grid.getScale()]);
     $("templateUnit").textContent = scale.parsed.unit;
     hexCenter = await findHexCenter().catch(() => null);
+    // The free point on the new grid's cells (or a corner), as the map's Medición.
+    if (freePoint) {
+      placePoint(freePoint);
+    }
     later();
   });
   // A token dragged with the Medición tool, moved here as it goes; the scene catches up once it's dropped.

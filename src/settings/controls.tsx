@@ -140,7 +140,7 @@ export function FoldedSection({
             sx={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 150ms" }}
           />
         }
-        sx={{ alignSelf: "flex-start", opacity: 0.75, letterSpacing: "0.06em" }}
+        sx={{ alignSelf: "flex-start", opacity: 0.75, fontSize: 12, letterSpacing: "0.06em" }}
       >
         {label}
       </Button>

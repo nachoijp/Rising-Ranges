@@ -13,6 +13,7 @@ import AddRounded from "@mui/icons-material/AddRounded";
 import Tooltip from "@mui/material/Tooltip";
 
 import { BandItem } from "./BandItem";
+import { shownShape, useGridType } from "./BandShapeButtonGroup";
 import { getStoredTheme } from "../theme/themes";
 import { BandSet, IconShape } from "../engine/types";
 import { useTranslation } from "../i18n/useTranslation";
@@ -34,6 +35,8 @@ export function BandSetEditor({
 }) {
   const [theme] = useState(() => getStoredTheme());
   const t = useTranslation();
+  // The Bandas' icons in the shape they're drawn in on this grid (see shownShape).
+  const shape = shownShape(bandSet.shape, useGridType());
 
   function addBand() {
     const maxRadius = Math.max(...bandSet.bands.map((b) => b.radius));
@@ -92,7 +95,7 @@ export function BandSetEditor({
                 // Name on the left, radius on the right — what the ring
                 // labels show on the map is a Mapa setting now.
                 hideSize
-                bandShape={bandSet.shape}
+                bandShape={shape}
                 defaultIconShape={defaultIconShape}
               />
             );
