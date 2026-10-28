@@ -2,6 +2,19 @@ import { NOISE_2D } from "../glsl";
 
 // The fill under bridges (see buildUnderBridges) and the zones' water (see buildWater).
 
+/**
+ * A blended wall's (see buildWalls) grain: what its colour is multiplied by
+ * at a point (view units; `cell` a cell's size in them). Subtle, the height
+ * in it too, so a wall gets its own down it.
+ */
+export const WALL_GRAIN = /* glsl */ `
+  float wallGrain(vec3 p, float cell) {
+    vec2 q = vec2(p.x + p.z * 0.7, p.y - p.z * 0.7) / cell;
+    float grain = noise(q * 6.0) * 0.6 + noise(q * 17.0) * 0.4;
+    return 0.92 + grain * 0.16;
+  }
+`;
+
 export const UNDER_VERTEX = /* glsl */ `
   varying vec3 vAt;
   void main() {
@@ -12,39 +25,57 @@ export const UNDER_VERTEX = /* glsl */ `
 `;
 
 export const UNDER_FRAGMENT = /* glsl */ `
-  uniform sampler2D uMap;
   uniform float uU;
+  uniform float uCell;
+  uniform float uBelow;
+  uniform sampler2D uFill;
+  uniform vec4 uBox;
+  uniform float uMirror;
+  uniform sampler2D uMap;
   uniform vec4 uTex;
   uniform vec4 uFrame;
   uniform vec4 uAcross;
-  uniform float uBelow;
   varying vec3 vAt;
+  ${NOISE_2D}
   void main() {
-    // Only what's below the bridge's underside, inside its box.
+    // Only what's below the bridge's underside, within its outline (see bridgeFill), fading into the
+    // map over its last texel.
     if (vAt.z > uBelow) discard;
     vec2 p = vAt.xy / uU;
-    vec2 d = p - uFrame.xy;
-    float a = dot(d, uFrame.zw);
-    float b = dot(d, uAcross.xy);
-    if (abs(a) > uAcross.z || abs(b) > uAcross.w) discard;
-    // The map mirrored across each long side (just past it, going out as it goes in), the two blended
-    // across its width: each side's own next to it, fading into the other's, so no seam in the middle.
-    vec2 base = uFrame.xy + uFrame.zw * a;
-    // On a wall (an upright face: its slope from the screen's derivatives), the deeper below the bridge
-    // the farther out the picture comes from, as a folded wall's: not one colour streaked down it.
-    vec3 normal = normalize(cross(dFdx(vAt), dFdy(vAt)));
-    float upright = 1.0 - smoothstep(0.3, 0.7, abs(normal.z));
-    float deep = upright * max(0.0, uBelow - vAt.z) / uU;
-    vec2 north = base + uAcross.xy * (2.0 * uAcross.w - b + 2.0 + deep);
-    vec2 south = base + uAcross.xy * (-2.0 * uAcross.w - b - 2.0 - deep);
-    vec2 scale = vec2(1.0 / uTex.z, -1.0 / uTex.w);
-    vec3 fromNorth = texture2D(uMap, (north - uTex.xy) * scale + vec2(0.0, 1.0)).rgb;
-    vec3 fromSouth = texture2D(uMap, (south - uTex.xy) * scale + vec2(0.0, 1.0)).rgb;
-    vec3 color = mix(fromSouth, fromNorth, smoothstep(0.0, 1.0, (b + uAcross.w) / (2.0 * uAcross.w)));
-    // Faded out toward its ends, into what the map has there (no straight cut across the walls).
-    float ends = 1.0 - smoothstep(uAcross.z - uAcross.w * 0.6, uAcross.z, abs(a));
+    vec2 m = (p - uBox.xy) / uBox.zw;
+    if (m.x < 0.0 || m.x > 1.0 || m.y < 0.0 || m.y > 1.0) discard;
+    vec4 fill = texture2D(uFill, m);
+    if (fill.a < 0.01) discard;
+    if (uMirror > 0.5) {
+      // The map mirrored across each long side (just past it, going out as it goes in), the two blended
+      // across its width: each side's own next to it, fading into the other's, so no seam in the middle.
+      vec2 d = p - uFrame.xy;
+      float a = dot(d, uFrame.zw);
+      float b = dot(d, uAcross.xy);
+      vec2 base = uFrame.xy + uFrame.zw * a;
+      // On a wall (an upright face: its slope from the screen's derivatives), the deeper below the bridge
+      // the farther out the picture comes from, as a folded wall's: not one colour streaked down it.
+      vec3 normal = normalize(cross(dFdx(vAt), dFdy(vAt)));
+      float upright = 1.0 - smoothstep(0.3, 0.7, abs(normal.z));
+      float deep = upright * max(0.0, uBelow - vAt.z) / uU;
+      vec2 north = base + uAcross.xy * (2.0 * uAcross.w - b + 2.0 + deep);
+      vec2 south = base + uAcross.xy * (-2.0 * uAcross.w - b - 2.0 - deep);
+      vec2 scale = vec2(1.0 / uTex.z, -1.0 / uTex.w);
+      vec3 fromNorth = texture2D(uMap, (north - uTex.xy) * scale + vec2(0.0, 1.0)).rgb;
+      vec3 fromSouth = texture2D(uMap, (south - uTex.xy) * scale + vec2(0.0, 1.0)).rgb;
+      vec3 color = mix(fromSouth, fromNorth, smoothstep(0.0, 1.0, (b + uAcross.w) / (2.0 * uAcross.w)));
+      // Faded out toward its ends, into what the map has there (no straight cut across the walls).
+      float ends = 1.0 - smoothstep(uAcross.z - uAcross.w * 0.6, uAcross.z, abs(a));
+      // A little darker: in the bridge's shadow.
+      gl_FragColor = vec4(color * 0.82, ends * fill.a);
+      return;
+    }
+    // The map's colours round it, with a subtle grain so it isn't a flat smear: in cells, the height in
+    // it too (walls get theirs down them).
+    vec2 q = vec2(vAt.x + vAt.z * 0.7, vAt.y - vAt.z * 0.7) / uCell;
+    float grain = noise(q * 6.0) * 0.6 + noise(q * 17.0) * 0.4;
     // A little darker: in the bridge's shadow.
-    gl_FragColor = vec4(color * 0.82, ends);
+    gl_FragColor = vec4(fill.rgb * 0.82 * (0.92 + grain * 0.16), fill.a);
   }
 `;
 

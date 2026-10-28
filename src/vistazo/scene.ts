@@ -13,6 +13,7 @@ import { onFloor } from "../tokenHeight/lift";
 import { getTokenRadius } from "../render/iconAnchor";
 import { anchorOf } from "../relief/anchor";
 import type { Relief } from "../relief/relief";
+import type { UnderLook } from "../relief/types";
 import { reliefTerrain } from "../relief/vistazo";
 import { time } from "../timing";
 
@@ -166,7 +167,7 @@ type Terrain = {
 };
 
 /** A bridge or balcony drawn: its outline (scene px), top and underside (grid units), its wall style. */
-export type Bridge = { id: string; shape: MultiPolygon; top: number; bottom: number; walls?: TerrainWallStyle; skin?: TerrainSkin; frame: BridgeFrame; si?: number };
+export type Bridge = { id: string; shape: MultiPolygon; top: number; bottom: number; walls?: TerrainWallStyle; skin?: TerrainSkin; frame: BridgeFrame; si?: number; under?: UnderLook };
 
 /**
  * The player view's sight: what of the map the fog leaves clear (worked out

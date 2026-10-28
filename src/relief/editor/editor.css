@@ -701,7 +701,8 @@
   left: 8px;
   bottom: 8px;
   width: 248px;
-  max-height: 45%;
+  /* Up to just under the tools' column (measured: see session.ts), the top bar at least. */
+  max-height: calc(100% - max(var(--re-bar), var(--re-tools-end, 45%)) - 16px);
   box-sizing: border-box;
   display: flex;
   flex-direction: column-reverse;
@@ -757,6 +758,44 @@
   cursor: pointer;
   user-select: none;
 }
+/* In a group: a step in for each it's in. */
+.re-shapes .item[style*="--depth"] {
+  padding-left: calc(8px + var(--depth) * 14px);
+}
+.re-shapes .item.grp .n {
+  font-weight: 500;
+}
+/* A group's fold: down when open, sideways when folded. */
+.re-shapes .gchev {
+  display: flex;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0 -4px 0 -4px;
+  border-radius: 4px;
+}
+.re-shapes .gchev:hover {
+  background: var(--re-hover);
+}
+.re-shapes .item .gchev svg.ri {
+  width: 16px;
+  height: 16px;
+  transition: transform 0.15s;
+}
+.re-shapes .item .gchev.closed svg.ri {
+  transform: rotate(-90deg);
+}
+.re-shapes .item input.rename {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--re-field);
+  color: var(--fg);
+  font: inherit;
+}
 .re-shapes .item svg.ri {
   width: 20px;
   height: 20px;
@@ -771,8 +810,12 @@
 .re-shapes .item.more {
   border-color: var(--accent);
 }
-.re-shapes .item.drop {
-  border-top-color: var(--accent);
+/* Where a shape dragged falls: a line over the row or under it. */
+.re-shapes .item.drop-above {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.re-shapes .item.drop-below {
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 .re-shapes .item.dragging {
   opacity: 0.4;

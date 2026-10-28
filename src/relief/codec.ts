@@ -1,5 +1,5 @@
 import { G, cellKey, cellOf } from "./relief";
-import type { Affine, Detail, HeightPoint, ReliefData, Shape, Vert } from "./types";
+import type { Affine, Detail, Group, HeightPoint, ReliefData, Shape, Vert } from "./types";
 
 // A relief as it's kept (JSON): versioned; vertices and points as [x, y, h]
 // rounded to hundredths of a cell; the painted ground in 32nds of a level
@@ -20,6 +20,7 @@ export type StoredRelief = {
   shapes: StoredShape[];
   points: [number, number, number][];
   ground?: string;
+  groups?: Group[];
 };
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
@@ -43,6 +44,9 @@ export function toStored(data: ReliefData): StoredRelief {
     }),
     points: data.points.map((p) => [r2(p.x), r2(p.y), p.h]),
   };
+  if (data.groups?.length) {
+    stored.groups = data.groups.map((g) => ({ ...g }));
+  }
   if (data.ground.some((g) => Math.round(g * GROUND_SCALE) !== 0)) {
     const q = new Int16Array(data.ground.length);
     for (let i = 0; i < q.length; i++) {
@@ -76,7 +80,8 @@ export function fromStored(stored: unknown): ReliefData | null {
     const { detail, ...rest } = shape;
     return detail ? { ...rest, detail: readDetail(detail) } : { ...rest };
   });
-  return { w: s.w, h: s.h, verts, shapes, points, ground };
+  const groups = (s.groups ?? []).map((g) => ({ ...g }));
+  return { w: s.w, h: s.h, verts, shapes, points, ground, ...(groups.length > 0 ? { groups } : {}) };
 }
 
 /** An empty relief for a map `w` × `h` cells. */

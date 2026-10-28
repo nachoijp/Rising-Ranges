@@ -2,8 +2,9 @@ import clip from "../../terrain/clip";
 import { area, bbox, centroid, closed, inRing, open } from "../geom";
 import { compose, quarter, type Layer, type SlabLayer } from "../relief";
 import { corners, standDepth, standSide } from "../stand";
-import type { Pt, Ramp, Shape, ShapeKind, Skin } from "../types";
+import type { Pt, Ramp, ReliefData, Shape, ShapeKind, Skin } from "../types";
 import type { ReliefEditor } from "./editor";
+import { pickedGroup } from "./groups";
 
 // What the editor does to shapes, apart from the pointer: making them,
 // cutting them, putting them together, painting them, and what their
@@ -16,6 +17,67 @@ export const vertsOf = (s: Shape): number[] => (s.holes?.length ? [...s.ring, ..
 export const loopsOf = (s: Shape): number[][] => (s.holes?.length ? [s.ring, ...s.holes] : [s.ring]);
 
 const newKin = () => Math.random().toString(36).slice(2, 8);
+
+/**
+ * Every shape with vertices of its own: one another shape uses too (or used
+ * twice) copied, where it is. Reliefs made before shared them, and a cut's
+ * halves do: moving one then moves no other.
+ */
+export function unshare(data: Pick<ReliefData, "verts" | "shapes">) {
+  const seen = new Set<number>();
+  const own = (loop: number[]) =>
+    loop.map((i) => {
+      if (!seen.has(i)) {
+        seen.add(i);
+        return i;
+      }
+      data.verts.push({ ...data.verts[i] });
+      seen.add(data.verts.length - 1);
+      return data.verts.length - 1;
+    });
+  for (const s of data.shapes) {
+    s.ring = own(s.ring);
+    if (s.holes) {
+      s.holes = s.holes.map(own);
+    }
+  }
+}
+
+/**
+ * Every shape named for good, so its name doesn't follow its place in the
+ * list. One with none: `label` of its place (what the list called it), or
+ * of one past the highest number so named, if that's taken. One not in
+ * `seen` (new: a cut's half, a copy) with another's name: that name with a
+ * number, "Forma 3 (2)". With no `seen` (a relief opened, or undone) none is
+ * new. Those named are added to `seen`.
+ */
+export function nameShapes(shapes: Shape[], label: (n: number) => string, seen: WeakSet<Shape> | null) {
+  const [pre, post] = label(987654321).split("987654321");
+  const numbered = (name: string | undefined) => {
+    const n = name?.startsWith(pre) && name.endsWith(post) ? Number(name.slice(pre.length, name.length - post.length)) : NaN;
+    return Number.isInteger(n) && n > 0 ? n : 0;
+  };
+  const taken = new Set(shapes.flatMap((s) => (s.name && (!seen || seen.has(s)) ? [s.name] : [])));
+  let highest = Math.max(0, ...shapes.map((s) => numbered(s.name)));
+  shapes.forEach((s, i) => {
+    if (s.name && (!seen || seen.has(s))) {
+      return;
+    }
+    if (s.name) {
+      const base = s.name;
+      for (let k = 2; taken.has(s.name); k++) {
+        s.name = `${base} (${k})`;
+      }
+    } else {
+      s.name = label(taken.has(label(i + 1)) ? ++highest : i + 1);
+      highest = Math.max(highest, numbered(s.name));
+    }
+    taken.add(s.name);
+  });
+  if (seen) {
+    shapes.forEach((s) => seen.add(s));
+  }
+}
 
 /** A copy of a shape that shares nothing with it but its vertices (its arrow and relief its own). */
 function copyOf(s: Shape, ring: number[], holes?: number[][]): Shape {
@@ -45,7 +107,9 @@ export function addShape(ed: ReliefEditor, points: Pt[], raise = 1): boolean {
   for (const [x, y] of ring) {
     ed.data.verts.push({ x, y, h: quarter(ed.heightAt(x, y) ?? 0) });
   }
-  ed.data.shapes.push({ ring: ring.map((_, k) => start + k), kind: "flat", rel: true, h: raise, soft: ed.settings.lastSoft || undefined });
+  // In the group of the shape picked, if it's in one (at its top: see tidyGroups).
+  const group = pickedGroup(ed);
+  ed.data.shapes.push({ ring: ring.map((_, k) => start + k), kind: "flat", rel: true, h: raise, soft: ed.settings.lastSoft || undefined, ...(group ? { group } : {}) });
   ed.sel = { kind: "shape", i: ed.data.shapes.length - 1 };
   return true;
 }
@@ -67,21 +131,23 @@ export function polygonOf(ed: ReliefEditor, s: Shape): Pt[][][] {
   return [[closed(ring), ...holes.map(closed)]];
 }
 
-/** Snapped to what's near (none with `free`): a vertex of an outline, or a point on one of its sides. */
+/** Snapped to what's near (none with `free`; with `only`, those vertices and their shapes' sides alone): a vertex of an outline, or a point on one of its sides. */
 export type Snap = { vertex: number; x: number; y: number } | { edge: [number, number]; x: number; y: number };
 
-export function snap(ed: ReliefEditor, p: { x: number; y: number }, free: boolean): Snap | null {
+export function snap(ed: ReliefEditor, p: { x: number; y: number }, free: boolean, only?: Set<number>): Snap | null {
   if (free) {
     return null;
   }
   const reach = ed.host.snapReach();
   const verts = ed.data.verts;
-  const used = new Set([...ed.data.shapes.flatMap(vertsOf), ...(ed.drawing ?? [])]);
+  const drawn = new Set(ed.drawing ?? []);
+  const used = only ?? new Set([...ed.data.shapes.flatMap(vertsOf), ...drawn]);
   let best: Snap | null = null;
   let d = reach;
   verts.forEach((v, i) => {
     const e = Math.hypot(v.x - p.x, v.y - p.y);
-    if (e < d && used.has(i)) {
+    // Over another's vertex, the outline's own (its first, to close it).
+    if ((e < d || (e === d && drawn.has(i))) && used.has(i)) {
       d = e;
       best = { vertex: i, x: v.x, y: v.y };
     }
@@ -90,6 +156,9 @@ export function snap(ed: ReliefEditor, p: { x: number; y: number }, free: boolea
     return best;
   }
   for (const loop of ed.data.shapes.flatMap(loopsOf)) {
+    if (only && !only.has(loop[0])) {
+      continue;
+    }
     for (let k = 0; k < loop.length; k++) {
       const a = verts[loop[k]];
       const b = verts[loop[(k + 1) % loop.length]];
@@ -110,16 +179,25 @@ export function snap(ed: ReliefEditor, p: { x: number; y: number }, free: boolea
   return best;
 }
 
-/** A vertex at a snapped point: the existing one, or a new one (splitting the side it's on, in every shape). */
-export function vertexAt(ed: ReliefEditor, p: { x: number; y: number }, at: Snap | null): number {
+/**
+ * A vertex at a snapped point. For an outline being drawn (`drawn`), a new
+ * one there (its own: on another shape's vertex, a copy of it), its sides
+ * left as they are; else the vertex snapped to, or a new one splitting the
+ * side it's on.
+ */
+export function vertexAt(ed: ReliefEditor, p: { x: number; y: number }, at: Snap | null, drawn = false): number {
   if (at && "vertex" in at) {
-    return at.vertex;
+    if (!drawn || ed.drawing?.includes(at.vertex)) {
+      return at.vertex;
+    }
+    ed.data.verts.push({ ...ed.data.verts[at.vertex] });
+    return ed.data.verts.length - 1;
   }
   const x = at?.x ?? p.x;
   const y = at?.y ?? p.y;
   const i = ed.data.verts.length;
   ed.data.verts.push({ x, y, h: quarter(ed.heightAt(x, y) ?? 0) });
-  if (at && "edge" in at) {
+  if (at && "edge" in at && !drawn) {
     const [a, b] = at.edge;
     for (const loop of ed.data.shapes.flatMap(loopsOf)) {
       for (let k = 0; k < loop.length; k++) {
@@ -143,7 +221,8 @@ export function finishPolygon(ed: ReliefEditor) {
     prune(ed);
     return;
   }
-  ed.data.shapes.push({ ring: drawing, kind: "flat", rel: true, h: 1, soft: ed.settings.lastSoft || undefined });
+  const group = pickedGroup(ed);
+  ed.data.shapes.push({ ring: drawing, kind: "flat", rel: true, h: 1, soft: ed.settings.lastSoft || undefined, ...(group ? { group } : {}) });
   ed.sel = { kind: "shape", i: ed.data.shapes.length - 1 };
 }
 
@@ -537,6 +616,8 @@ export function cut(ed: ReliefEditor, a: Pt, b: Pt, only: number | null = null):
     }
   }
   prune(ed);
+  // Each half its own vertices on the cut: moved, it doesn't take the other with it.
+  unshare(data);
   ed.relief.derive();
   keepHeights(ed, halves);
   // The biggest of the halves picked, to go on with.

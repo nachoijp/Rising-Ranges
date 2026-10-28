@@ -6,7 +6,7 @@ import { Relief } from "../relief";
 import { backupsOf, keepBackup } from "../backups";
 import { pack } from "../sceneItems";
 import { onSaved, saveRelief } from "../store";
-import type { Affine, ReliefData } from "../types";
+import type { Affine, ReliefData, Shape } from "../types";
 import { withZones } from "../zones";
 import { DEFAULT_SETTINGS, ReliefEditor, type Mods, type Settings, type ToolId } from "./editor";
 import { icon } from "./icons";
@@ -23,14 +23,17 @@ import {
   toolButton,
   toolsMenu,
   renderProps,
+  renameGroup,
   renderShapes,
   renderTools,
   runCombine,
   shortcutsHtml,
   type MenuItem,
+  type ShapesList,
   type T,
 } from "./panel";
-import { duplicate, setType, swap } from "./shapes";
+import { groupPicked, nameGroups, ungroup } from "./groups";
+import { duplicate, nameShapes, setType, swap } from "./shapes";
 import { installSplit } from "./split";
 import { MapView } from "./view2d";
 import { time } from "../../timing";
@@ -325,6 +328,13 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     closeMenus();
   });
   fitter.observe(pieces);
+  // The shapes' list grows up to just under the tools' column (both at the left).
+  const toolsEnd = new ResizeObserver(() => {
+    const tools = $("tools");
+    $("shapes").parentElement?.style.setProperty("--re-tools-end", `${tools.offsetHeight > 0 ? tools.offsetTop + tools.offsetHeight : 0}px`);
+  });
+  toolsEnd.observe($("tools"));
+  toolsEnd.observe(pieces);
   // The line between the map and the 3D, dragged.
   const split = root.parentElement ? installSplit(root.parentElement, t) : { stop() {}, retext() {} };
 
@@ -410,7 +420,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       $("toolBtn").innerHTML = toolButton(editor, t);
       time("editor.panel.fit", fitOptions);
       time("editor.panel.props", () => renderProps($("props"), editor, t, o.unit, panelFolds));
-      time("editor.panel.shapes", () => renderShapes($("shapes"), editor, t, shapesFold, shapeMenu, focusName));
+      time("editor.panel.shapes", () => renderShapes($("shapes"), editor, t, listUi()));
       history();
       tellPicked();
       if (!$("pop").hidden) {
@@ -426,11 +436,23 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     }
     listFrame = requestAnimationFrame(() => {
       listFrame = 0;
-      renderShapes($("shapes"), editor, t, shapesFold, shapeMenu, focusName);
+      renderShapes($("shapes"), editor, t, listUi());
       history();
     });
   };
   const busy = () => !!(editor.xf || editor.drag || editor.brushing || editor.arrowEnd);
+  /** The shapes named for good (see nameShapes): those of this relief (opened, or undone to) already seen. */
+  let named: { relief: Relief; seen: WeakSet<Shape> } | null = null;
+  const name = () => {
+    const fresh = named?.relief !== editor.relief;
+    const seen = fresh ? new WeakSet<Shape>() : named!.seen;
+    named = { relief: editor.relief, seen };
+    nameShapes(editor.data.shapes, (n) => t("relief.shape.name", { n }), fresh ? null : seen);
+    nameGroups(editor.data, (n) => t("relief.group.name", { n }));
+    if (fresh) {
+      editor.data.shapes.forEach((s) => seen.add(s));
+    }
+  };
   /** What the pointer pressed has changed, till it's let go: nothing, only heights (a brush), more. */
   let gesture: "none" | "heights" | "more" = "none";
   // eslint-disable-next-line prefer-const
@@ -439,6 +461,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     data,
     {
       changed: () => {
+        name();
         map.redraw();
         list();
         save();
@@ -473,6 +496,8 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     }
     chip.hidden = !text;
   };
+  // Its shapes named for good from the start (saved with the first change).
+  name();
   // Picking (Elegir) to start with.
   editor.setTool("edit");
   // Let go: the Vistazo draws all of it again (only what follows the heights, after a brush; nothing, if
@@ -501,14 +526,46 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     const r = root.getBoundingClientRect();
     return [clientX - r.left, clientY - r.top];
   };
+  /** The groups folded in the shapes' list (this time the editor's open). */
+  const groupsFolded = new Set<string>();
+  const listUi = (): ShapesList => ({ folded: shapesFold, groupsFolded, onMenu: shapeMenu, onGroupMenu: groupMenu, focusName });
+  const redoAll = () => {
+    editor.changed();
+    editor.host.showProps();
+  };
+  /** A group's menu (its shapes picked): rename it, undo it. */
+  function groupMenu(id: string, clientX: number, clientY: number) {
+    const items: MenuItem[] = [
+      {
+        icon: "rename",
+        label: t("relief.menu.rename"),
+        run: () =>
+          setTimeout(() => {
+            const row = [...$("shapes").querySelectorAll<HTMLElement>(".item[data-g]")].find((r) => r.dataset.g === id);
+            if (row) {
+              renameGroup(row, editor, id);
+            }
+          }, 0),
+      },
+      {
+        icon: "ungroup",
+        label: t("relief.menu.ungroup"),
+        key: "Ctrl+Shift+G",
+        run: () => {
+          ungroup(editor, id);
+          redoAll();
+        },
+      },
+    ];
+    const [x, y] = rootPoint(clientX, clientY);
+    openMenu(root, x + 2, y + 2, items);
+  }
   /** A shape's menu (what's picked, with it). */
   function shapeMenu(i: number, clientX: number, clientY: number) {
     const shapes = editor.data.shapes;
     const many = editor.sel?.kind === "shape" && (editor.sel.more?.length ?? 0) > 0;
-    const redo = () => {
-      editor.changed();
-      editor.host.showProps();
-    };
+    const redo = redoAll;
+    const group = shapes[i]?.group;
     const items: MenuItem[] = [
       {
         icon: "duplicate",
@@ -520,6 +577,30 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
         },
       },
       { icon: "rename", label: t("relief.menu.rename"), key: "F2", run: () => setTimeout(focusName, 0) },
+      "-",
+      {
+        icon: "group",
+        label: t("relief.menu.group"),
+        key: "Ctrl+G",
+        run: () => {
+          if (groupPicked(editor)) {
+            redo();
+          }
+        },
+      },
+      ...(group
+        ? [
+            {
+              icon: "ungroup" as const,
+              label: t("relief.menu.ungroup"),
+              key: "Ctrl+Shift+G",
+              run: () => {
+                ungroup(editor, group);
+                redo();
+              },
+            },
+          ]
+        : []),
       "-",
       {
         icon: "layer-up",
@@ -896,6 +977,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       untip();
       split.stop();
       fitter.disconnect();
+      toolsEnd.disconnect();
       o.onPick?.([]);
       document.removeEventListener("pointerdown", outside, true);
       clearTimeout(toastTimer);

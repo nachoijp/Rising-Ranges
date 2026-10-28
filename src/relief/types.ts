@@ -5,7 +5,7 @@
 
 export type Pt = [number, number];
 
-/** A vertex of the shapes' outlines (shared between them); its height counts on inclined shapes. */
+/** A vertex of a shape's outline (its own, no other shape's); its height counts on inclined shapes. */
 export type Vert = { x: number; y: number; h: number };
 
 /** A height point inside an inclined shape. */
@@ -18,7 +18,10 @@ export type Ramp = { a: Pt; b: Pt; from: number; to: number; steps: number };
 export type StandEdge = "auto" | "bottom" | "top" | "left" | "right";
 
 /** How a shape's walls look in 3D (the Vistazo's own looks). */
-export type WallLook = "flat" | "stretch" | "fold" | "stone" | "rubble" | "earth" | "wood";
+/** What a slab has under it in 3D (see Shape.under). */
+export type UnderLook = "mirror" | "keep";
+
+export type WallLook = "blend" | "flat" | "stretch" | "fold" | "stone" | "rubble" | "earth" | "wood";
 
 /**
  * A picture for a shape's walls from four points of the map: `base` its foot
@@ -51,6 +54,13 @@ export type Shape = {
   /** A soft edge: its height fades into what's round it over this width (cells). */
   soft?: number;
   slab?: number;
+  /**
+   * What a slab has under it in 3D, in place of its drawing on the map: the
+   * colours round it blended (none set); the map mirrored across its long
+   * sides ("mirror": a river under a bridge); the map as it is ("keep": it
+   * isn't drawn on the map).
+   */
+  under?: UnderLook;
   stand?: StandEdge;
   /** A standing shape's picture on its sides too. */
   wrap?: boolean;
@@ -66,7 +76,16 @@ export type Shape = {
   hidden?: boolean;
   /** The editor's own: drawn, but not to be picked, moved or cut on its map. */
   locked?: boolean;
+  /** The editor's own: the group it's in (see Group). */
+  group?: string;
 };
+
+/**
+ * A group of shapes, the editor's own (a folder in its list): its shapes
+ * (those whose `group` it is) and the groups in it (whose `parent` it is),
+ * always together in the shapes' order.
+ */
+export type Group = { id: string; name: string; parent?: string };
 
 /** A whole terrain: the map's size in cells, its shapes, and the painted ground (gw × gh points, G apart). */
 export type ReliefData = {
@@ -76,4 +95,6 @@ export type ReliefData = {
   shapes: Shape[];
   points: HeightPoint[];
   ground: Float32Array;
+  /** The editor's groups of shapes, if it has any. */
+  groups?: Group[];
 };

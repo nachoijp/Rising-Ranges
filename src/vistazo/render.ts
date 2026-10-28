@@ -13,7 +13,8 @@ import { isShared, patternTexture } from "./view/patterns";
 import { floorOf, mediaElement, propsKey, propToken, raised, skinAcross, skinPoint, visibleOnScreen, within } from "./view/helpers";
 import { computeWalls, type Region } from "./view/walls";
 import { BaseBatch, moveBase, type BaseSeat } from "./view/bases";
-import { UNDER_FRAGMENT, UNDER_VERTEX } from "./view/shaders";
+import { UNDER_FRAGMENT, UNDER_VERTEX, WALL_GRAIN } from "./view/shaders";
+import { NOISE_2D } from "./glsl";
 import { waterMaterial, waterReach, waterShape, type WaterReach } from "./view/water";
 import { time } from "../timing";
 
@@ -131,6 +132,8 @@ export class VistazoView {
   private walls: Wall[] = [];
   private tokenViews: TokenView[] = [];
   private colors: ((x: number, y: number) => [number, number, number]) | null = null;
+  /** The map's colour at a scene point, blurred (a few pixels to a cell) and read between them: blended walls' (see buildWalls). */
+  private softColors: ((x: number, y: number) => [number, number, number]) | null = null;
   private colorsFor = "";
   /** The map drawn once on a canvas (see loadColors); null until it's ready, or if the images can't be read. */
   private texture: Texture | null = null;
@@ -144,6 +147,8 @@ export class VistazoView {
   private pieceMaterials: THREE.MeshBasicMaterial[] = [];
   /** Outlines already cut small (see fineGeometry), by outline: their flat triangles, and the last build that used them. */
   private fineCache = new Map<string, { position: Float32Array; index: Uint32Array; used: number }>();
+  /** Bridges' fills worked out (see bridgeFill) from this map, by outline, and the last build that used them. */
+  private fillCache = new Map<string, BridgeFill & { used: number }>();
   private builds = 0;
   /** The next scene's build is a brush's let go (see settleNext). */
   private settling = false;
@@ -1228,6 +1233,7 @@ export class VistazoView {
     }
     this.colorsFor = key;
     this.colors = null;
+    this.softColors = null;
     this.texture = null;
     this.dropMapTextures();
     if (scene.maps.length === 0) {
@@ -1287,9 +1293,11 @@ export class VistazoView {
           const at = (j * sw + i) * 4;
           return data[at + 3] === 0 ? STONE : [data[at], data[at + 1], data[at + 2]];
         };
+        this.softColors = softSampler(small.canvas, x0, y0, w, h, scene.dpi);
         const most = Math.min(TEXTURE_MAX, this.renderer?.capabilities.maxTextureSize ?? TEXTURE_MAX);
         const big = draw(images, Math.min(1, most / Math.max(w, h)));
         this.texture = { canvas: big.canvas, x0, y0, w, h };
+        this.fillCache.clear();
         this.useTexture();
         this.build();
       })
@@ -1533,6 +1541,7 @@ export class VistazoView {
         continue;
       }
       const fromMap = (style === "stretch" || style === "fold" || style === "skin") && this.texture !== null;
+      const blend = style === "blend";
       const pattern = style === "stone" || style === "rubble" || style === "earth" || style === "wood" ? patternTexture(style) : null;
       const positions: number[] = [];
       const colors: number[] = [];
@@ -1569,7 +1578,33 @@ export class VistazoView {
         };
         const mapUv = (x: number, y: number) => this.uvAt(x, y);
         const height = zt - zb;
-        if (style === "skin" && wall.skin) {
+        if (blend) {
+          // Blended from the map: its colours along it (every half cell), the higher side's (a little
+          // into it) at the top, running into the lower side's at the foot; its grain in its material.
+          const soft = this.softColors;
+          const reach = 0.3 * (VIEW_CELL / u);
+          const tone = (x: number, y: number, shade: number) => (soft ? soft(x, y) : rgb).map((v) => (v / 255) * s * shade);
+          const point = (f: number) => {
+            const [x, y] = [wall.ax + (wall.bx - wall.ax) * f, wall.ay + (wall.by - wall.ay) * f];
+            return {
+              x: x * u,
+              y: y * u,
+              zt: zt0 + (zt1 - zt0) * f,
+              zb: zb0 + (zb1 - zb0) * f,
+              top: tone(x - wall.nx * reach, y - wall.ny * reach, 0.92),
+              bottom: tone(x + wall.nx * reach, y + wall.ny * reach, 0.62),
+            };
+          };
+          const n = Math.max(1, Math.ceil(length / (VIEW_CELL * 0.5)));
+          let a = point(0);
+          for (let j = 1; j <= n; j++) {
+            const b = point(j / n);
+            positions.push(a.x, a.y, a.zt, b.x, b.y, b.zt, b.x, b.y, b.zb, a.x, a.y, a.zt, b.x, b.y, b.zb, a.x, a.y, a.zb);
+            colors.push(...a.top, ...b.top, ...b.bottom, ...a.top, ...b.bottom, ...a.bottom);
+            uvs.push(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            a = b;
+          }
+        } else if (style === "skin" && wall.skin) {
           // The rectangle's picture: across it by where round the zone each end is, up it by height.
           const across = (x: number, y: number) => skinAcross(wall.skin!, x / u, y / u);
           const [sa, sb] = [across(ax, ay), across(bx, by)];
@@ -1648,6 +1683,9 @@ export class VistazoView {
         side: THREE.DoubleSide,
         map: fromMap ? this.plainTexture : pattern,
       });
+      if (blend) {
+        grained(material);
+      }
       material.userData.color = new THREE.Color(1, 1, 1);
       material.userData.mapTextured = fromMap ? "plain" : false;
       this.pieceMaterials.push(material);
@@ -1737,9 +1775,11 @@ export class VistazoView {
     }
     // The cut outlines not used by the last two builds: let go.
     this.builds++;
-    for (const [key, kept] of this.fineCache) {
-      if (kept.used < this.builds - 2) {
-        this.fineCache.delete(key);
+    for (const cache of [this.fineCache, this.fillCache]) {
+      for (const [key, kept] of cache) {
+        if (kept.used < this.builds - 2) {
+          cache.delete(key);
+        }
       }
     }
     this.clear(this.terrainGroup);
@@ -1809,9 +1849,12 @@ export class VistazoView {
 
   /**
    * What the map paints under a bridge is the bridge itself (seen from
-   * above): on the ground and walls below it, inside its box, the map from
-   * just past its long sides instead, mirrored across them, as if the map
-   * went on under it. Drawn on the terrain's surfaces there (see copiesIn).
+   * above): on the ground and walls below it, within its outline (see
+   * bridgeFill), something else instead. The map's colours round it, run in
+   * from its sides and blended; or, mirroring, the map from just past its
+   * long sides, mirrored across them, as if the map went on under it. Drawn
+   * on the terrain's surfaces there (see copiesIn). Not under one that keeps
+   * the map (not drawn on it), nor if the map can't be read.
    */
   private buildUnderBridges() {
     // Each bridge's surfaces are its own (merged from the copies: see copiesIn).
@@ -1822,7 +1865,26 @@ export class VistazoView {
       return;
     }
     for (const bridge of scene.bridges) {
+      if (bridge.under === "keep") {
+        continue;
+      }
       const { center, along, across, halfAlong, halfAcross } = bridge.frame;
+      const key = JSON.stringify(bridge.shape);
+      let kept = this.fillCache.get(key);
+      if (!kept) {
+        const made = bridgeFill(bridge.shape, texture, scene.dpi * FILL_GROW);
+        if (!made) {
+          continue;
+        }
+        kept = { ...made, used: 0 };
+        this.fillCache.set(key, kept);
+      }
+      kept.used = this.builds;
+      const fill = new THREE.DataTexture(kept.pixels, kept.cols, kept.rows, THREE.RGBAFormat);
+      fill.magFilter = THREE.LinearFilter;
+      fill.minFilter = THREE.LinearFilter;
+      fill.needsUpdate = true;
+      const area = new THREE.Vector4(...kept.box);
       const material = new THREE.ShaderMaterial({
         vertexShader: UNDER_VERTEX,
         fragmentShader: UNDER_FRAGMENT,
@@ -1833,18 +1895,22 @@ export class VistazoView {
         polygonOffsetFactor: -1,
         polygonOffsetUnits: -1,
         uniforms: {
-          uMap: { value: this.mapTexture },
           uU: { value: this.u },
+          uCell: { value: VIEW_CELL },
+          uMirror: { value: bridge.under === "mirror" ? 1 : 0 },
+          uMap: { value: this.mapTexture },
           uTex: { value: new THREE.Vector4(texture.x0, texture.y0, texture.w, texture.h) },
           uFrame: { value: new THREE.Vector4(center.x, center.y, along.x, along.y) },
           uAcross: { value: new THREE.Vector4(across.x, across.y, halfAlong, halfAcross) },
           uBelow: { value: bridge.bottom * this.k },
+          uFill: { value: fill },
+          uBox: { value: area },
         },
       });
+      material.addEventListener("dispose", () => fill.dispose());
       // Only the terrain under its box, as one mesh (one draw, not one for every piece of the map).
       const u = this.u;
-      const corners = [-1, 1].flatMap((a) => [-1, 1].map((b) => ({ x: center.x + along.x * halfAlong * a + across.x * halfAcross * b, y: center.y + along.y * halfAlong * a + across.y * halfAcross * b })));
-      const box = { x0: Math.min(...corners.map((c) => c.x)) * u, y0: Math.min(...corners.map((c) => c.y)) * u, x1: Math.max(...corners.map((c) => c.x)) * u, y1: Math.max(...corners.map((c) => c.y)) * u };
+      const box = { x0: area.x * u, y0: area.y * u, x1: (area.x + area.z) * u, y1: (area.y + area.w) * u };
       const surfaces = this.copiesIn(box);
       if (!surfaces) {
         material.dispose();
@@ -1914,6 +1980,8 @@ export class VistazoView {
     const kind = style === "rubble" || style === "earth" || style === "wood" ? style : "stone";
     // With a picture from a rectangle of the map: the map, there, on its underside and sides.
     const skin = bridge.skin && this.mapTexture ? bridge.skin : undefined;
+    // Blended: its sides the map's colours round it (blurred), its underside its tint; grain on both.
+    const blend = style === "blend" && !skin;
     let cx = 0;
     let cy = 0;
     let n = 0;
@@ -1951,24 +2019,33 @@ export class VistazoView {
     under.setAttribute("uv", new THREE.BufferAttribute(underUv, 2));
     const belly = new THREE.Mesh(
       under,
-      new THREE.MeshBasicMaterial({ map: skin ? this.mapTexture : patternTexture(kind), color: skin ? new THREE.Color(0.6, 0.6, 0.6) : tint(0.6), side: THREE.DoubleSide })
+      new THREE.MeshBasicMaterial({ map: skin ? this.mapTexture : blend ? null : patternTexture(kind), color: skin ? new THREE.Color(0.6, 0.6, 0.6) : tint(0.6), side: THREE.DoubleSide })
     );
+    if (blend) {
+      grained(belly.material as THREE.MeshBasicMaterial);
+    }
     belly.position.z = bridge.bottom * k;
     this.terrainGroup.add(belly);
 
-    // Its sides, from its underside up to its top, the pattern running along them.
+    // Its sides, round it and round its holes, from its underside up to its top, the pattern running along them.
     const positions: number[] = [];
     const uvs: number[] = [];
+    const sideColors: number[] = [];
     const z0 = bridge.bottom * k;
     const z1 = bridge.top * k;
-    for (const polygon of bridge.shape) {
-      const ring = polygon[0];
+    const soft = this.softColors;
+    const tone = ([x, y]: number[], shade: number) => (soft ? soft(x, y) : rgb).map((v) => (v / 255) * shade);
+    for (const ring of bridge.shape.flat()) {
       let along = 0;
       for (let i = 0; i < ring.length - 1; i++) {
         const [ax, ay] = [ring[i][0] * u, ring[i][1] * u];
         const [bx, by] = [ring[i + 1][0] * u, ring[i + 1][1] * u];
         const length = Math.hypot(bx - ax, by - ay);
         positions.push(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z0, bx, by, z1, ax, ay, z1);
+        if (blend) {
+          const [a0, b0, b1, a1] = [tone(ring[i], 0.6), tone(ring[i + 1], 0.6), tone(ring[i + 1], 0.85), tone(ring[i], 0.85)];
+          sideColors.push(...a0, ...b0, ...b1, ...a0, ...b1, ...a1);
+        }
         if (skin) {
           const [sa, sb] = [skinAcross(skin, ax / u, ay / u), skinAcross(skin, bx / u, by / u)];
           const at = (s: number, v: number) => {
@@ -1987,8 +2064,16 @@ export class VistazoView {
     const sides = new THREE.BufferGeometry();
     sides.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
     sides.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uvs), 2));
+    if (blend) {
+      sides.setAttribute("color", new THREE.BufferAttribute(new Float32Array(sideColors), 3));
+    }
     this.terrainGroup.add(
-      new THREE.Mesh(sides, new THREE.MeshBasicMaterial({ map: skin ? this.plainTexture : patternTexture(kind), color: skin ? new THREE.Color(0.85, 0.85, 0.85) : tint(0.85), side: THREE.DoubleSide }))
+      new THREE.Mesh(
+        sides,
+        blend
+          ? grained(new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }))
+          : new THREE.MeshBasicMaterial({ map: skin ? this.plainTexture : patternTexture(kind), color: skin ? new THREE.Color(0.85, 0.85, 0.85) : tint(0.85), side: THREE.DoubleSide })
+      )
     );
   }
 
@@ -3030,3 +3115,221 @@ export const FREE_POINT = "rising-ranges/free-point";
 
 /** What a template's handle's id starts with: then the template's id and ":origin" or ":tip". */
 export const TEMPLATE_HANDLE = "rising-ranges/template:";
+
+/** The longest side of a bridge's fill (see bridgeFill), texels. */
+const FILL_SIZE = 192;
+/** How far past a bridge's outline its fill reaches (cells): over its drawn edge, which the outline seldom follows exactly. */
+const FILL_GROW = 0.15;
+
+/** A bridge's fill (see bridgeFill): RGBA bytes, cols × rows, over a box (scene units: x, y, width, height). */
+type BridgeFill = { pixels: Uint8Array; cols: number; rows: number; box: [number, number, number, number] };
+
+/**
+ * What goes under a bridge in place of its drawing: over its box (`grow`
+ * and a few texels wider; scene units), the map's colours; within `grow` of
+ * its outline (and a texel and a half more, where its drawn edge is), those
+ * round it run in and blended: averaged up a pyramid of halved grids till
+ * every texel has some, then spread back down, each level filling what the
+ * finer one lacked (pull-push). Its alpha: how much of the texel is within
+ * `grow` of it (holes out), so it fades into the map over a texel. Null if
+ * the map can't be read (the drawing is then left as it is).
+ */
+function bridgeFill(shape: MultiPolygon, map: Texture, grow: number): BridgeFill | null {
+  const points = shape.flat(2);
+  const [sx0, sx1] = [Math.min(...points.map((p) => p[0])) - grow, Math.max(...points.map((p) => p[0])) + grow];
+  const [sy0, sy1] = [Math.min(...points.map((p) => p[1])) - grow, Math.max(...points.map((p) => p[1])) + grow];
+  const step = Math.max(1e-6, sx1 - sx0, sy1 - sy0) / (FILL_SIZE - 8);
+  const [x0, y0] = [sx0 - step * 4, sy0 - step * 4];
+  const [cols, rows] = [Math.ceil((sx1 - sx0) / step) + 8, Math.ceil((sy1 - sy0) / step) + 8];
+  // Its sides (round it and its holes) as ax, ay, and the way to b, four numbers each.
+  const list: number[] = [];
+  for (const ring of shape.flat()) {
+    for (let i = 0; i + 1 < ring.length; i++) {
+      const [ex, ey] = [ring[i + 1][0] - ring[i][0], ring[i + 1][1] - ring[i][1]];
+      if (ex * ex + ey * ey > 1e-18) {
+        list.push(ring[i][0], ring[i][1], ex, ey);
+      }
+    }
+  }
+  const sides = new Float64Array(list);
+  // Each texel's middle inside or not (holes out): a row at a time, by where the sides cross it.
+  const within = new Uint8Array(cols * rows);
+  for (let r = 0; r < rows; r++) {
+    const y = y0 + (r + 0.5) * step;
+    const crossings: number[] = [];
+    for (let k = 0; k < sides.length; k += 4) {
+      const [ay, ey] = [sides[k + 1], sides[k + 3]];
+      if (ay > y !== ay + ey > y) {
+        crossings.push(sides[k] + ((y - ay) / ey) * sides[k + 2]);
+      }
+    }
+    crossings.sort((a, b) => a - b);
+    for (let c = 0, n = 0; c < cols; c++) {
+      const x = x0 + (c + 0.5) * step;
+      while (n < crossings.length && crossings[n] < x) {
+        n++;
+      }
+      within[r * cols + c] = n % 2;
+    }
+  }
+  // Only those near the outline need how near: the rest are well in or well out.
+  const band = grow + step * 2.5;
+  const near = new Uint8Array(cols * rows);
+  for (let k = 0; k < sides.length; k += 4) {
+    const [ax, ay, bx, by] = [sides[k], sides[k + 1], sides[k] + sides[k + 2], sides[k + 1] + sides[k + 3]];
+    const [c0, c1] = [Math.max(0, Math.floor((Math.min(ax, bx) - band - x0) / step)), Math.min(cols - 1, Math.ceil((Math.max(ax, bx) + band - x0) / step))];
+    const [r0, r1] = [Math.max(0, Math.floor((Math.min(ay, by) - band - y0) / step)), Math.min(rows - 1, Math.ceil((Math.max(ay, by) + band - y0) / step))];
+    for (let r = r0; r <= r1; r++) {
+      near.fill(1, r * cols + c0, r * cols + c1 + 1);
+    }
+  }
+  /** How far texel i (its middle at x, y) is from the outline: less than 0 inside. */
+  const reach = (i: number, x: number, y: number) => {
+    if (!near[i]) {
+      return within[i] ? -Infinity : Infinity;
+    }
+    let best = Infinity;
+    for (let k = 0; k < sides.length; k += 4) {
+      const [ax, ay, ex, ey] = [sides[k], sides[k + 1], sides[k + 2], sides[k + 3]];
+      const t = Math.max(0, Math.min(1, ((x - ax) * ex + (y - ay) * ey) / (ex * ex + ey * ey)));
+      best = Math.min(best, (ax + ex * t - x) ** 2 + (ay + ey * t - y) ** 2);
+    }
+    return within[i] ? -Math.sqrt(best) : Math.sqrt(best);
+  };
+  let bytes: Uint8ClampedArray;
+  try {
+    const canvas = document.createElement("canvas");
+    [canvas.width, canvas.height] = [cols, rows];
+    const ctx = canvas.getContext("2d")!;
+    const [kx, ky] = [map.canvas.width / map.w, map.canvas.height / map.h];
+    ctx.drawImage(map.canvas, (x0 - map.x0) * kx, (y0 - map.y0) * ky, cols * step * kx, rows * step * ky, 0, 0, cols, rows);
+    bytes = ctx.getImageData(0, 0, cols, rows).data;
+  } catch (error) {
+    console.error("Rising Ranges: 3D Glance couldn't read the map under a slab, leaving its drawing", error);
+    return null;
+  }
+  // Level 0: each texel's colour (weighted) and how much it counts: the map's, away from the outline; none near it.
+  const inside = new Float32Array(cols * rows);
+  let level = { cols, rows, rgbw: new Float32Array(cols * rows * 4) };
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const i = r * cols + c;
+      const d = reach(i, x0 + (c + 0.5) * step, y0 + (r + 0.5) * step) - grow;
+      inside[i] = Math.max(0, Math.min(1, 0.5 - d / step));
+      const w = d > step * 1.5 && bytes[i * 4 + 3] >= 128 ? 1 : 0;
+      level.rgbw.set([bytes[i * 4] * w, bytes[i * 4 + 1] * w, bytes[i * 4 + 2] * w, w], i * 4);
+    }
+  }
+  // Pull: halved grids, each texel the weighted average of the (up to) four under it, counting at most fully.
+  const levels = [level];
+  while (level.cols > 1 || level.rows > 1) {
+    const next = { cols: Math.ceil(level.cols / 2), rows: Math.ceil(level.rows / 2), rgbw: new Float32Array(Math.ceil(level.cols / 2) * Math.ceil(level.rows / 2) * 4) };
+    for (let r = 0; r < level.rows; r++) {
+      for (let c = 0; c < level.cols; c++) {
+        const [from, to] = [(r * level.cols + c) * 4, ((r >> 1) * next.cols + (c >> 1)) * 4];
+        for (let k = 0; k < 4; k++) {
+          next.rgbw[to + k] += level.rgbw[from + k];
+        }
+      }
+    }
+    for (let i = 0; i < next.rgbw.length; i += 4) {
+      const w = next.rgbw[i + 3];
+      if (w > 1) {
+        for (let k = 0; k < 4; k++) {
+          next.rgbw[i + k] /= w;
+        }
+      }
+    }
+    levels.push(next);
+    level = next;
+  }
+  // Push: what each level lacks taken from the coarser one, read between its texels (no blocks).
+  for (let l = levels.length - 2; l >= 0; l--) {
+    const [fine, coarse] = [levels[l], levels[l + 1]];
+    const read = (x: number, y: number, k: number) => {
+      const cx = Math.max(0, Math.min(coarse.cols - 1, x));
+      const cy = Math.max(0, Math.min(coarse.rows - 1, y));
+      const [ix, iy] = [Math.floor(cx), Math.floor(cy)];
+      const [jx, jy] = [Math.min(coarse.cols - 1, ix + 1), Math.min(coarse.rows - 1, iy + 1)];
+      const [fx, fy] = [cx - ix, cy - iy];
+      const v = (x: number, y: number) => {
+        const i = (y * coarse.cols + x) * 4;
+        // Colour as a share of what counted there (the coarsest have counted fully after their push).
+        return coarse.rgbw[i + 3] > 0 ? coarse.rgbw[i + k] / coarse.rgbw[i + 3] : 0;
+      };
+      return (v(ix, iy) * (1 - fx) + v(jx, iy) * fx) * (1 - fy) + (v(ix, jy) * (1 - fx) + v(jx, jy) * fx) * fy;
+    };
+    for (let r = 0; r < fine.rows; r++) {
+      for (let c = 0; c < fine.cols; c++) {
+        const i = (r * fine.cols + c) * 4;
+        const w = fine.rgbw[i + 3];
+        if (w >= 1) {
+          continue;
+        }
+        const [x, y] = [(c + 0.5) / 2 - 0.5, (r + 0.5) / 2 - 0.5];
+        for (let k = 0; k < 3; k++) {
+          fine.rgbw[i + k] += (1 - w) * read(x, y, k);
+        }
+        fine.rgbw[i + 3] = 1;
+      }
+    }
+  }
+  const pixels = new Uint8Array(cols * rows * 4);
+  for (let i = 0; i < cols * rows; i++) {
+    for (let k = 0; k < 3; k++) {
+      pixels[i * 4 + k] = Math.round(levels[0].rgbw[i * 4 + k]);
+    }
+    pixels[i * 4 + 3] = Math.round(inside[i] * 255);
+  }
+  return { pixels, cols, rows, box: [x0, y0, cols * step, rows * step] };
+}
+
+/** A material with a blended wall's grain (see WALL_GRAIN) over its colour, where it is in the view. */
+function grained<M extends THREE.MeshBasicMaterial>(material: M): M {
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying vec3 vGrainAt;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvGrainAt = (modelMatrix * vec4(position, 1.0)).xyz;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", `#include <common>\nvarying vec3 vGrainAt;\n${NOISE_2D}\n${WALL_GRAIN}`)
+      .replace("#include <color_fragment>", `#include <color_fragment>\ndiffuseColor.rgb *= wallGrain(vGrainAt, ${VIEW_CELL.toFixed(1)});`);
+  };
+  material.customProgramCacheKey = () => "rising-ranges/grained";
+  return material;
+}
+
+/**
+ * The map's colour at a scene point, blurred: `small` (the map over x0, y0,
+ * w × h) drawn again at four pixels a cell (`dpi`: a cell's size) and
+ * blurred, read between its pixels (where the map isn't, stone).
+ */
+function softSampler(small: HTMLCanvasElement, x0: number, y0: number, w: number, h: number, dpi: number): (x: number, y: number) => [number, number, number] {
+  const per = 4 / dpi;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(2, Math.ceil(w * per));
+  canvas.height = Math.max(2, Math.ceil(h * per));
+  const context = canvas.getContext("2d", { willReadFrequently: true })!;
+  context.filter = "blur(1.5px)";
+  context.drawImage(small, 0, 0, canvas.width, canvas.height);
+  const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  const [cw, ch] = [canvas.width, canvas.height];
+  return (x, y) => {
+    const fx = Math.max(0, Math.min(cw - 1, ((x - x0) / w) * cw - 0.5));
+    const fy = Math.max(0, Math.min(ch - 1, ((y - y0) / h) * ch - 0.5));
+    const [ix, iy] = [Math.floor(fx), Math.floor(fy)];
+    const [jx, jy] = [Math.min(cw - 1, ix + 1), Math.min(ch - 1, iy + 1)];
+    const [tx, ty] = [fx - ix, fy - iy];
+    const out = [0, 0, 0];
+    let weight = 0;
+    // Each corner by how near it is and how much of the map it holds (its alpha).
+    for (const [cx, cy, k] of [[ix, iy, (1 - tx) * (1 - ty)], [jx, iy, tx * (1 - ty)], [ix, jy, (1 - tx) * ty], [jx, jy, tx * ty]]) {
+      const at = (cy * cw + cx) * 4;
+      const a = (data[at + 3] / 255) * k;
+      out[0] += data[at] * a;
+      out[1] += data[at + 1] * a;
+      out[2] += data[at + 2] * a;
+      weight += a;
+    }
+    return weight > 1e-6 ? [out[0] / weight, out[1] / weight, out[2] / weight] : STONE;
+  };
+}

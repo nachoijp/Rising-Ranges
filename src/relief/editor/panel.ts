@@ -1,12 +1,13 @@
 import type { TranslationKey } from "../../i18n/translate";
-import type { Shape, StandEdge, WallLook } from "../types";
+import type { Group, ReliefData, Shape, StandEdge, UnderLook, WallLook } from "../types";
 import { corners } from "../stand";
 import { HEIGHT_LIMIT, quarter } from "../relief";
 import { BRUSHES, type BrushKind } from "./brush";
 import type { PickMode, ReliefEditor, RollerMode, ToolId } from "./editor";
 import { icon, type IconName } from "./icons";
+import { ancestors, groupsOf, membersOf, moveItem, pickGroup, toggleGroup, type ListDrop, type ListItem } from "./groups";
 import { PREFABS, type PrefabId } from "./prefabs";
-import { combine, defaultRamp, moveLayer, setKind, setRel, setType, togglePick, type Combine, type ShapeType } from "./shapes";
+import { combine, defaultRamp, setKind, setRel, setType, togglePick, type Combine, type ShapeType } from "./shapes";
 
 // The editor's pieces over the map, as Owlbear's own: the tools in a column,
 // the tool's options in the bar at the top, what's picked in a panel at the
@@ -35,7 +36,9 @@ export const TOOLS: (ToolDef | null)[] = [
     key: "v",
     keys: [
       ["relief.key.ctrlClick", "relief.key.ctrlClickDo"],
-      ["relief.key.dblSide", "relief.key.dblSideDo"],
+      ["relief.key.ctrlG", "relief.key.ctrlGDo"],
+      ["relief.key.ctrlShiftG", "relief.key.ctrlShiftGDo"],
+      ["relief.key.clickSide", "relief.key.clickSideDo"],
       ["relief.key.dblInclined", "relief.key.dblInclinedDo"],
       ["relief.key.altClick", "relief.key.altClickDo"],
       ["relief.key.arrowEnds", "relief.key.arrowEndsDo"],
@@ -291,6 +294,10 @@ function onSeg(el: HTMLElement, name: string, f: (v: string) => void) {
  */
 type SliderValue = { format: (v: number) => string; width: string };
 function sliderValue(input: HTMLInputElement): SliderValue {
+  const steps = stepsOf(input);
+  if (steps) {
+    return { format: fmt, width: `${Math.max(...steps.map((v) => fmt(v).length))}ch` };
+  }
   const min = Number(input.min);
   const max = Number(input.max);
   const step = Number(input.step) || 1;
@@ -317,6 +324,31 @@ function sliderValueOf(html: string): SliderValue {
   return value;
 }
 
+/** A slider's own stops (`data-steps`: values not evenly apart, its positions their indexes), if it has them. */
+const stepsOf = (input: HTMLInputElement) => (input.dataset.steps ? input.dataset.steps.split(",").map(Number) : null);
+
+/** Where a slider stands for a value (with stops, the nearest one's; the value read out, not its place). */
+function toSlider(input: HTMLInputElement, v: number): string {
+  const steps = stepsOf(input);
+  if (!steps) {
+    return String(v);
+  }
+  input.setAttribute("aria-valuetext", fmt(v));
+  const k = steps.reduce((best, s, i) => (Math.abs(s - v) < Math.abs(steps[best] - v) ? i : best), 0);
+  return String(k);
+}
+
+/** The value where a slider stands (with stops, read out as it). */
+function fromSlider(input: HTMLInputElement): number {
+  const steps = stepsOf(input);
+  if (!steps) {
+    return Number(input.value);
+  }
+  const v = steps[Math.round(Number(input.value))];
+  input.setAttribute("aria-valuetext", fmt(v));
+  return v;
+}
+
 /** A slider, set as it's moved; `done` after each move. */
 function bindRange(el: HTMLElement, key: string, get: () => number, set: (v: number) => void, done: () => void) {
   const input = el.querySelector<HTMLInputElement>(`[data-k="${key}"]`);
@@ -324,16 +356,16 @@ function bindRange(el: HTMLElement, key: string, get: () => number, set: (v: num
     return;
   }
   const show = el.querySelector<HTMLElement>(`[data-v="${key}"]`);
-  input.value = String(get());
+  input.value = toSlider(input, get());
   const shown = sliderValue(input);
   if (show) {
     show.style.minWidth = shown.width;
     show.textContent = shown.format(get());
   }
   input.oninput = () => {
-    set(Number(input.value));
+    set(fromSlider(input));
     if (show) {
-      show.textContent = shown.format(Number(input.value));
+      show.textContent = shown.format(fromSlider(input));
     }
     done();
   };
@@ -448,9 +480,12 @@ function bindStepper(el: HTMLElement, ed: ReliefEditor, key: string, get: () => 
   }
 }
 
+/** A soft edge's widths (cells), finer where it's narrow: its slider's stops. */
+export const SOFT_STEPS = [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8];
+
 /** A slider from a wall (0) to a soft edge, an icon at each end. */
 const edgeSlider = (t: T, key: string) =>
-  `<span class="slider"><span class="end" ${tip(t("relief.edge.wall"), t("relief.edge.wallHint"))}>${icon("edge-wall")}</span><input type="range" min="0" max="8" step="0.5" data-k="${key}" aria-label="${esc(t("relief.shape.edge"))}" /><span class="end" ${tip(t("relief.edge.soft"), t("relief.edge.softHint"))}>${icon("edge-soft")}</span></span>`;
+  `<span class="slider"><span class="end" ${tip(t("relief.edge.wall"), t("relief.edge.wallHint"))}>${icon("edge-wall")}</span><input type="range" min="0" max="${SOFT_STEPS.length - 1}" step="1" data-steps="${SOFT_STEPS}" data-k="${key}" aria-label="${esc(t("relief.shape.edge"))}" /><span class="end" ${tip(t("relief.edge.soft"), t("relief.edge.softHint"))}>${icon("edge-soft")}</span></span>`;
 
 // ---------- Tools ----------
 
@@ -626,6 +661,17 @@ function keysHint(ed: ReliefEditor, t: T): string {
   if (ed.brushing) {
     return pairs(ed.settings.brushMode === "flatten" ? [["relief.key.altFlatten", "relief.key.altFlattenDo"]] : [["relief.key.ctrlPaint", "relief.key.ctrlPaintDo"]]);
   }
+  // Picking vertices, the pointer still: what a click adds there (a vertex on a side, a height point inside an inclined shape).
+  if (ed.tool === "edit" && ed.settings.pickMode !== "shapes" && !ed.drag && !ed.box) {
+    if (ed.ghost) {
+      return pairs([["relief.key.clickSide", "relief.key.clickSideDo"]]);
+    }
+    const s = ed.data.shapes[ed.hover];
+    const focus = ed.focusShapes();
+    if (s && (!focus || focus.has(ed.hover))) {
+      return s.kind === "slope" ? pairs([["relief.key.dblInclined", "relief.key.dblInclinedDo"], ["relief.key.altClick", "relief.key.altClickDo"]]) : focus ? t("relief.key.pointsNeedInclined") : "";
+    }
+  }
   return "";
 }
 
@@ -725,7 +771,7 @@ function bindUnders(el: HTMLElement, unders: Record<string, Under>, saved: () =>
     const input = box.querySelector<HTMLInputElement>("input")!;
     const u = unders[open];
     if (document.activeElement !== input) {
-      input.value = String(u.get());
+      input.value = toSlider(input, u.get());
       box.querySelector<HTMLElement>(".sv")!.textContent = sliderValueOf(u.html).format(u.get());
     }
     button.classList.add("on");
@@ -882,7 +928,7 @@ export function renderOptions(el: HTMLElement, ed: ReliefEditor, t: T) {
   // The shape tools: the edge new shapes get; the roller what it does and its width too.
   const edge = t("relief.shape.edge");
   unders.lastSoft = {
-    html: `<span class="slider"><span class="end" ${tip(t("relief.edge.wall"), t("relief.edge.wallHint"))}>${icon("edge-wall")}</span><input type="range" min="0" max="8" step="0.5" data-k="lastSoft" aria-label="${esc(edge)}" /><span class="end" ${tip(t("relief.edge.soft"), t("relief.edge.softHint"))}>${icon("edge-soft")}</span><span class="sv" data-v="lastSoft"></span></span>`,
+    html: `<span class="slider"><span class="end" ${tip(t("relief.edge.wall"), t("relief.edge.wallHint"))}>${icon("edge-wall")}</span><input type="range" min="0" max="${SOFT_STEPS.length - 1}" step="1" data-steps="${SOFT_STEPS}" data-k="lastSoft" aria-label="${esc(edge)}" /><span class="end" ${tip(t("relief.edge.soft"), t("relief.edge.softHint"))}>${icon("edge-soft")}</span><span class="sv" data-v="lastSoft"></span></span>`,
     get: () => s.lastSoft,
     set: (v) => (s.lastSoft = v),
   };
@@ -1007,7 +1053,8 @@ export function runCombine(ed: ReliefEditor, id: Combine) {
 }
 
 const STAND_EDGES: StandEdge[] = ["auto", "bottom", "top", "left", "right"];
-const WALL_LOOKS: ("" | WallLook)[] = ["", "flat", "stretch", "fold", "stone", "rubble", "earth", "wood"];
+const WALL_LOOKS: ("" | WallLook)[] = ["", "blend", "flat", "stretch", "fold", "stone", "rubble", "earth", "wood"];
+const UNDER_LOOKS: ("" | UnderLook)[] = ["", "mirror", "keep"];
 
 /** A shape's type: terrain, slab or standing. */
 export const typeOf = (s: Shape): ShapeType => (s.slab && s.slab > 0 ? "slab" : s.stand ? "stand" : "terrain");
@@ -1043,6 +1090,7 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
   const look = [
     s.stand ? "" : `<span class="l" ${tip(t("relief.shape.walls"), t("relief.shape.wallsHint"))}>${esc(t("relief.shape.walls"))}</span><select class="field" data-k="wall" ${s.skin ? "disabled" : ""} aria-label="${esc(t("relief.shape.walls"))}">${WALL_LOOKS.map((v) => `<option value="${v}" ${(s.wall ?? "") === v ? "selected" : ""}>${esc(t(`relief.wall.${v || "default"}` as TranslationKey))}</option>`).join("")}</select>`,
     s.stand ? "" : `<span class="l" ${tip(t("relief.shape.picture"), t("relief.shape.pictureHint"))}>${esc(t("relief.shape.picture"))}</span><span class="line">${picture}</span>`,
+    s.slab ? `<span class="l" ${tip(t("relief.shape.under"), t("relief.shape.underHint"))}>${esc(t("relief.shape.under"))}</span><select class="field" data-k="under" aria-label="${esc(t("relief.shape.under"))}">${UNDER_LOOKS.map((v) => `<option value="${v}" ${(s.under ?? "") === v ? "selected" : ""}>${esc(t(`relief.under.${v || "cover"}` as TranslationKey))}</option>`).join("")}</select>` : "",
     s.slab || s.stand ? "" : `<span class="l" ${tip(t("relief.shape.water"), t("relief.shape.waterHint"))}>${esc(t("relief.shape.water"))}</span><span class="line">${stepper(numField("water", t("relief.shape.water"), 0, 20), "water", 0.25, t)}</span>`,
     s.slab || s.stand ? "" : `<span class="l" ${tip(t("relief.shape.edge"), t("relief.shape.edgeHint"))}>${esc(t("relief.shape.edge"))}</span>${edgeSlider(t, "soft")}`,
   ].join("");
@@ -1120,14 +1168,14 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
   }
   const soft = el.querySelector<HTMLInputElement>('[data-k="soft"]');
   if (soft) {
-    soft.value = String(s.soft ?? 0);
+    soft.value = toSlider(soft, s.soft ?? 0);
     const sliding = undoOnce(ed);
     soft.onpointerdown = sliding.arm;
     soft.onkeydown = sliding.arm;
     soft.oninput = () => {
       sliding.take();
       const before = s.soft ?? 0;
-      const v = Number(soft.value);
+      const v = fromSlider(soft);
       s.soft = v > 0 ? v : undefined;
       ed.settings.lastSoft = s.soft ?? 0;
       ed.host.saveSettings();
@@ -1140,6 +1188,14 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
     wallLook.onchange = () => {
       ed.pushUndo();
       s.wall = (wallLook.value || undefined) as WallLook | undefined;
+      redo();
+    };
+  }
+  const under = el.querySelector<HTMLSelectElement>('[data-k="under"]');
+  if (under) {
+    under.onchange = () => {
+      ed.pushUndo();
+      s.under = (under.value || undefined) as UnderLook | undefined;
       redo();
     };
   }
@@ -1215,32 +1271,103 @@ const TYPE_ICONS: Record<ShapeType, IconName> = { terrain: "terrain", slab: "sla
 const describe = (t: T, s: Shape) =>
   s.kind === "flat" ? (s.rel ? signed(s.h) : fmt(s.h)) : s.kind === "ramp" && s.ramp ? `${fmt(s.ramp.from)}→${fmt(s.ramp.to)}` : s.kind === "ramp" ? t("relief.label.rampNoArrow") : t("relief.label.inclined");
 
+/** What the shapes' list needs from its page: its own folding, its groups' (ids folded), and the menus. */
+export type ShapesList = {
+  folded: { value: boolean };
+  groupsFolded: Set<string>;
+  onMenu: (i: number, x: number, y: number) => void;
+  onGroupMenu: (id: string, x: number, y: number) => void;
+  focusName: () => void;
+};
+
+/** A row of the list: a shape, or a group (its shapes and groups in rows under it, unless folded); how deep it is. */
+type Row = { shape: number; depth: number } | { group: Group; depth: number };
+
+/** The list's rows, the top first: each group where its shapes are (they're together: see tidyGroups). */
+function rowsOf(data: ReliefData, folded: Set<string>): Row[] {
+  const groups = groupsOf(data);
+  const top = new Map<string, number>();
+  data.shapes.forEach((s, i) => {
+    for (const id of ancestors(data, s.group)) {
+      top.set(id, Math.max(top.get(id) ?? -1, i));
+    }
+  });
+  const rows: Row[] = [];
+  const spell = (container: string | undefined, depth: number) => {
+    const items = [
+      ...data.shapes.flatMap((s, i) => ((s.group ?? undefined) === container ? [{ at: i, shape: i }] : [])),
+      ...groups.filter((g) => g.parent === container && top.has(g.id)).map((g) => ({ at: top.get(g.id)!, group: g })),
+    ].sort((a, b) => b.at - a.at);
+    for (const item of items) {
+      if ("shape" in item) {
+        rows.push({ shape: item.shape, depth });
+      } else {
+        rows.push({ group: item.group, depth });
+        if (!folded.has(item.group.id)) {
+          spell(item.group.id, depth + 1);
+        }
+      }
+    }
+  };
+  spell(undefined, 0);
+  return rows;
+}
+
 /**
- * Every shape, the top one first, the ground under them; its title under
- * the list (it opens upwards). A click picks one (Ctrl+click: one more), a
- * double click names it, a right click its menu; dragging moves it up or down.
+ * Every shape, the top one first, in its groups (folders that fold), the
+ * ground under them; its title under the list (it opens upwards). A click
+ * picks a shape (Ctrl+click: one more), or a group's shapes; a double click
+ * names it; a right click its menu; dragging moves it up or down, into a
+ * group or out of one. A group's eye and lock: all its shapes'.
  */
-export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, folded: { value: boolean }, onMenu: (i: number, x: number, y: number) => void, focusName: () => void) {
-  const shapes = ed.data.shapes;
+export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, ui: ShapesList) {
+  const data = ed.data;
+  const shapes = data.shapes;
   const picked = ed.sel?.kind === "shape" ? ed.sel.i : -1;
   const more = ed.sel?.kind === "shape" ? (ed.sel.more ?? []) : [];
-  const rows = shapes
-    .map((s, i) => ({ s, i }))
-    .reverse()
-    .map(({ s, i }) => {
+  const chosen = new Set(picked >= 0 ? [picked, ...more] : []);
+  const toggles = (key: string, value: string, hidden: boolean, locked: boolean) =>
+    `<button type="button" class="tg${hidden ? " set" : ""}" data-${key}hide="${value}" aria-pressed="${hidden}" ${tip(t(hidden ? "relief.row.show" : "relief.row.hide"), t("relief.row.editorOnly"))}>${icon(hidden ? "hidden" : "visible")}</button>` +
+    `<button type="button" class="tg${locked ? " set" : ""}" data-${key}lock="${value}" aria-pressed="${locked}" ${tip(t(locked ? "relief.row.unlock" : "relief.row.lock"), t("relief.row.editorOnly"))}>${icon(locked ? "locked" : "unlocked")}</button>`;
+  const rows = rowsOf(data, ui.groupsFolded)
+    .map((row) => {
+      const depth = `style="--depth: ${row.depth}"`;
+      if ("group" in row) {
+        const g = row.group;
+        const members = membersOf(data, g.id).map((i) => shapes[i]);
+        const free = membersOf(data, g.id).filter((i) => !shapes[i].hidden && !shapes[i].locked);
+        const on = free.length > 0 && free.every((i) => chosen.has(i));
+        const hidden = members.every((s) => s.hidden);
+        const locked = members.every((s) => s.locked);
+        const open = !ui.groupsFolded.has(g.id);
+        return `<div class="item grp${on ? " on" : ""}${hidden ? " off" : ""}" draggable="true" data-g="${esc(g.id)}" ${depth} tabindex="0" role="button" aria-expanded="${open}" aria-pressed="${on}" ${tip(g.name, t("relief.groupRow"))}>
+          <span class="gchev${open ? "" : " closed"}" data-fold="${esc(g.id)}" ${tip(t(open ? "relief.fold" : "relief.unfold"))}>${icon("expand")}</span>${icon("folder")}<span class="n">${esc(g.name)}</span><span class="h">${members.length}</span>${toggles("g", esc(g.id), hidden, locked)}</div>`;
+      }
+      const i = row.shape;
+      const s = shapes[i];
       const state = i === picked ? "on" : more.includes(i) ? "more" : "";
-      const eye = `<button type="button" class="tg${s.hidden ? " set" : ""}" data-hide="${i}" aria-pressed="${!!s.hidden}" ${tip(t(s.hidden ? "relief.row.show" : "relief.row.hide"), t("relief.row.editorOnly"))}>${icon(s.hidden ? "hidden" : "visible")}</button>`;
-      const lock = `<button type="button" class="tg${s.locked ? " set" : ""}" data-lock="${i}" aria-pressed="${!!s.locked}" ${tip(t(s.locked ? "relief.row.unlock" : "relief.row.lock"), t("relief.row.editorOnly"))}>${icon(s.locked ? "locked" : "unlocked")}</button>`;
-      return `<div class="item ${state}${s.hidden ? " off" : ""}" draggable="true" data-i="${i}" tabindex="0" role="button" aria-pressed="${i === picked || more.includes(i)}" ${tip(nameOf(t, s, i), t("relief.layerRow"))}>
-        ${icon(TYPE_ICONS[typeOf(s)])}<span class="n">${esc(nameOf(t, s, i))}</span><span class="h">${esc(describe(t, s))}</span>${eye}${lock}</div>`;
+      return `<div class="item ${state}${s.hidden ? " off" : ""}" draggable="true" data-i="${i}" ${depth} tabindex="0" role="button" aria-pressed="${chosen.has(i)}" ${tip(nameOf(t, s, i), t("relief.layerRow"))}>
+        ${icon(TYPE_ICONS[typeOf(s)])}<span class="n">${esc(nameOf(t, s, i))}</span><span class="h">${esc(describe(t, s))}</span>${toggles("", String(i), !!s.hidden, !!s.locked)}</div>`;
     })
     .join("");
-  el.classList.toggle("closed", folded.value);
-  el.innerHTML = `<button type="button" class="lhead" aria-expanded="${!folded.value}"><span class="chev">${icon("expand")}</span><span class="lt">${esc(t("relief.shapes"))}</span><span class="count">${shapes.length}</span></button>
-    <div class="lrows" ${folded.value ? "hidden" : ""}>${rows}<div class="item ground" data-ground tabindex="0" role="button" ${tip(t("relief.ground"), t("relief.groundHint"))}>${icon("terrain")}<span class="n">${esc(t("relief.ground"))}</span><span class="h">${esc(t("relief.groundBrush"))}</span></div></div>`;
+  el.classList.toggle("closed", ui.folded.value);
+  // Drawn again, it stays scrolled where it was; a shape newly picked (on the map) brought into sight.
+  const scrolled = el.querySelector(".lrows")?.scrollTop ?? 0;
+  const newlyPicked = String(picked) !== el.dataset.picked;
+  el.dataset.picked = String(picked);
+  el.innerHTML = `<button type="button" class="lhead" aria-expanded="${!ui.folded.value}"><span class="chev">${icon("expand")}</span><span class="lt">${esc(t("relief.shapes"))}</span><span class="count">${shapes.length}</span></button>
+    <div class="lrows" ${ui.folded.value ? "hidden" : ""}>${rows}<div class="item ground" data-ground tabindex="0" role="button" ${tip(t("relief.ground"), t("relief.groundHint"))}>${icon("terrain")}<span class="n">${esc(t("relief.ground"))}</span><span class="h">${esc(t("relief.groundBrush"))}</span></div></div>`;
+  const scroller = el.querySelector<HTMLElement>(".lrows")!;
+  scroller.scrollTop = scrolled;
+  const pickedRow = newlyPicked && picked >= 0 ? scroller.querySelector<HTMLElement>(`.item[data-i="${picked}"]`) : null;
+  if (pickedRow) {
+    const [row, box] = [pickedRow.getBoundingClientRect(), scroller.getBoundingClientRect()];
+    scroller.scrollTop += row.top < box.top ? row.top - box.top : row.bottom > box.bottom ? row.bottom - box.bottom : 0;
+  }
+  const again = () => renderShapes(el, ed, t, ui);
   el.querySelector<HTMLButtonElement>(".lhead")!.onclick = () => {
-    folded.value = !folded.value;
-    renderShapes(el, ed, t, folded, onMenu, focusName);
+    ui.folded.value = !ui.folded.value;
+    again();
   };
   const pick = (i: number, add: boolean) => {
     if (add) {
@@ -1255,79 +1382,138 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, folded: { 
     ed.host.showProps();
     ed.host.redraw();
   };
+  const pickAll = (id: string, add: boolean) => {
+    pickGroup(ed, id, add);
+    ed.notice = null;
+    if (ed.isBrush() || ed.tool === "cut") {
+      ed.setTool("edit");
+    }
+    ed.host.showProps();
+    ed.host.redraw();
+  };
   // Hidden, locked: the editor's own, a step to undo.
   const toggle = (i: number, what: "hidden" | "locked") => {
     const s = shapes[i];
     ed.pushUndo();
     s[what] = s[what] ? undefined : true;
-    if (s[what] && ed.sel?.kind === "shape" && (ed.sel.i === i || ed.sel.more?.includes(i))) {
+    if (s[what] && chosen.has(i)) {
       ed.sel = null;
     }
     ed.changed();
     ed.host.showProps();
   };
-  for (const button of el.querySelectorAll<HTMLButtonElement>("[data-hide]")) {
-    button.onclick = (event) => {
-      event.stopPropagation();
-      toggle(Number(button.dataset.hide), "hidden");
-    };
-  }
-  for (const button of el.querySelectorAll<HTMLButtonElement>("[data-lock]")) {
-    button.onclick = (event) => {
-      event.stopPropagation();
-      toggle(Number(button.dataset.lock), "locked");
-    };
-  }
-  let dragged = -1;
-  for (const row of el.querySelectorAll<HTMLElement>(".item[data-i]")) {
-    const i = Number(row.dataset.i);
-    row.onclick = (event) => pick(i, event.ctrlKey || event.metaKey);
-    row.onkeydown = (event) => {
-      if ((event.key === "Enter" || event.key === " ") && event.target === row) {
+  const bind = (attr: string, f: (value: string) => void) => {
+    for (const button of el.querySelectorAll<HTMLElement>(`[data-${attr}]`)) {
+      button.onclick = (event) => {
+        event.stopPropagation();
+        f(button.getAttribute(`data-${attr}`)!);
+      };
+    }
+  };
+  bind("hide", (v) => toggle(Number(v), "hidden"));
+  bind("lock", (v) => toggle(Number(v), "locked"));
+  const groupToggle = (id: string, what: "hidden" | "locked") => {
+    toggleGroup(ed, id, what);
+    ed.changed();
+    ed.host.showProps();
+  };
+  bind("ghide", (id) => groupToggle(id, "hidden"));
+  bind("glock", (id) => groupToggle(id, "locked"));
+  bind("fold", (id) => {
+    if (!ui.groupsFolded.delete(id)) {
+      ui.groupsFolded.add(id);
+    }
+    again();
+  });
+  // Dragging: a shape or a group; let go over a row's upper half, above it; its lower half, below it
+  // (an open group's: into it, at its top).
+  let dragged: ListItem | null = null;
+  const above = (row: HTMLElement, event: DragEvent) => {
+    const r = row.getBoundingClientRect();
+    return event.clientY < r.top + r.height / 2;
+  };
+  const unmark = (row: HTMLElement) => row.classList.remove("drop-above", "drop-below");
+  const dropOn = (row: HTMLElement, event: DragEvent): ListDrop => {
+    const up = above(row, event);
+    if (row.dataset.g) {
+      return { side: up ? "above" : ui.groupsFolded.has(row.dataset.g) ? "below" : "into", group: row.dataset.g };
+    }
+    return { side: up ? "above" : "below", shape: Number(row.dataset.i) };
+  };
+  for (const row of el.querySelectorAll<HTMLElement>(".item[data-i], .item[data-g]")) {
+    const item: ListItem = row.dataset.g ? { group: row.dataset.g } : { shape: Number(row.dataset.i) };
+    const same = (other: ListItem | null) => !!other && ("group" in item ? "group" in other && other.group === item.group : "shape" in other && other.shape === item.shape);
+    if ("group" in item) {
+      const id = item.group;
+      row.onclick = (event) => pickAll(id, event.ctrlKey || event.metaKey);
+      row.onkeydown = (event) => {
+        if ((event.key === "Enter" || event.key === " ") && event.target === row) {
+          event.preventDefault();
+          pickAll(id, event.ctrlKey || event.metaKey);
+        }
+      };
+      row.ondblclick = (event) => {
+        event.stopPropagation();
+        renameGroup(row, ed, id);
+      };
+      row.oncontextmenu = (event) => {
         event.preventDefault();
-        pick(i, event.ctrlKey || event.metaKey);
-      }
-    };
-    row.ondblclick = () => {
-      ed.sel = { kind: "shape", i };
-      ed.host.showProps();
-      focusName();
-    };
-    row.oncontextmenu = (event) => {
-      event.preventDefault();
-      if (!(picked === i || more.includes(i))) {
-        pick(i, false);
-      }
-      onMenu(i, event.clientX, event.clientY);
-    };
-    row.onmouseenter = () => {
-      ed.hover = i;
-      ed.host.redraw();
-    };
-    row.onmouseleave = () => {
-      ed.hover = -1;
-      ed.host.redraw();
-    };
+        pickAll(id, false);
+        ui.onGroupMenu(id, event.clientX, event.clientY);
+      };
+    } else {
+      const i = item.shape;
+      row.onclick = (event) => pick(i, event.ctrlKey || event.metaKey);
+      row.onkeydown = (event) => {
+        if ((event.key === "Enter" || event.key === " ") && event.target === row) {
+          event.preventDefault();
+          pick(i, event.ctrlKey || event.metaKey);
+        }
+      };
+      row.ondblclick = () => {
+        ed.sel = { kind: "shape", i };
+        ed.host.showProps();
+        ui.focusName();
+      };
+      row.oncontextmenu = (event) => {
+        event.preventDefault();
+        if (!chosen.has(i)) {
+          pick(i, false);
+        }
+        ui.onMenu(i, event.clientX, event.clientY);
+      };
+      row.onmouseenter = () => {
+        ed.hover = i;
+        ed.host.redraw();
+      };
+      row.onmouseleave = () => {
+        ed.hover = -1;
+        ed.host.redraw();
+      };
+    }
     row.ondragstart = (event) => {
-      dragged = i;
+      dragged = item;
       event.dataTransfer!.effectAllowed = "move";
       row.classList.add("dragging");
     };
     row.ondragend = () => row.classList.remove("dragging");
     row.ondragover = (event) => {
-      if (dragged >= 0) {
+      if (dragged && !same(dragged)) {
         event.preventDefault();
-        row.classList.add("drop");
+        const up = above(row, event);
+        row.classList.toggle("drop-above", up);
+        row.classList.toggle("drop-below", !up);
       }
     };
-    row.ondragleave = () => row.classList.remove("drop");
+    row.ondragleave = () => unmark(row);
     row.ondrop = (event) => {
       event.preventDefault();
-      row.classList.remove("drop");
-      moveLayer(ed, dragged, i);
-      dragged = -1;
-      ed.changed();
-      ed.host.showProps();
+      unmark(row);
+      if (dragged && moveItem(ed, dragged, dropOn(row, event))) {
+        ed.changed();
+        ed.host.showProps();
+      }
+      dragged = null;
     };
   }
   const ground = el.querySelector<HTMLElement>("[data-ground]");
@@ -1340,6 +1526,47 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, folded: { 
       }
     };
   }
+}
+
+/** A group's name edited in its row: Enter (or leaving it) keeps it, Esc doesn't; empty, it's named again. */
+export function renameGroup(row: HTMLElement, ed: ReliefEditor, id: string) {
+  const g = groupsOf(ed.data).find((x) => x.id === id);
+  const label = row.querySelector<HTMLElement>(".n");
+  if (!g || !label) {
+    return;
+  }
+  const input = document.createElement("input");
+  input.className = "n rename";
+  input.maxLength = NAME_MAX;
+  input.value = g.name;
+  input.setAttribute("aria-label", g.name);
+  label.replaceWith(input);
+  row.draggable = false;
+  let done = false;
+  const finish = (keep: boolean) => {
+    if (done) {
+      return;
+    }
+    done = true;
+    const name = input.value.trim();
+    if (keep && name !== g.name) {
+      ed.pushUndo();
+      g.name = name;
+      ed.changed();
+    }
+    ed.host.showProps();
+  };
+  input.onkeydown = (event) => {
+    event.stopPropagation();
+    if (event.key === "Enter" || event.key === "Escape") {
+      event.preventDefault();
+      finish(event.key === "Enter");
+    }
+  };
+  input.onclick = (event) => event.stopPropagation();
+  input.onblur = () => finish(true);
+  input.focus();
+  input.select();
 }
 
 // ---------- Combining's own icons ----------

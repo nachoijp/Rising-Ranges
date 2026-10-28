@@ -2,6 +2,7 @@ import type { TranslationKey } from "../../i18n/translate";
 import type { Pt, Shape } from "../types";
 import type { ReliefEditor } from "./editor";
 import type { IconName } from "./icons";
+import { pickedGroup } from "./groups";
 import { newVerts } from "./shapes";
 
 // Shapes ready to put down (the Formas listas tool): a click puts one there,
@@ -56,9 +57,11 @@ export function prefabOutlines(id: PrefabId, at: { x: number; y: number }): Pt[]
 /** A prefab put down at `at`: its shapes, the last ones of the relief, picked. */
 export function placePrefab(ed: ReliefEditor, id: PrefabId, at: { x: number; y: number }) {
   const first = ed.data.shapes.length;
+  // In the group of the shape picked, if it's in one.
+  const group = pickedGroup(ed);
   for (const part of partsOf(id)) {
     const ring = part.ring.map(([x, y]): Pt => [x + at.x, y + at.y]);
-    const shape: Shape = { ...part.shape, ring: newVerts(ed, ring) };
+    const shape: Shape = { ...part.shape, ring: newVerts(ed, ring), ...(group ? { group } : {}) };
     if (shape.ramp) {
       shape.ramp = { ...shape.ramp, a: [shape.ramp.a[0] + at.x, shape.ramp.a[1] + at.y], b: [shape.ramp.b[0] + at.x, shape.ramp.b[1] + at.y] };
     }

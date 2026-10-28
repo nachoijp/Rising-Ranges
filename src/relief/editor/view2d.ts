@@ -497,19 +497,12 @@ export class MapView {
     const onSlope = new Set(data.shapes.filter((s) => s.kind === "slope").flatMap(vertsOf));
     const sel = ed.sel;
     const pickedVerts = new Set(sel?.kind === "verts" ? sel.list : sel?.kind === "vertex" ? [sel.i] : []);
-    // Only those of the shapes picked (or whose vertices are), of the one Elegir's pointer is over
-    // while it picks vertices, and of the outline being drawn: the rest only their outlines.
-    const shown = new Set<number>(sel?.kind === "shape" ? [sel.i, ...(sel.more ?? [])] : []);
-    data.shapes.forEach((s, si) => {
-      if (vertsOf(s).some((v) => pickedVerts.has(v))) {
-        shown.add(si);
-      }
-    });
-    if (sel?.kind === "point" && data.points[sel.i]) {
-      const q = data.points[sel.i];
-      data.shapes.forEach((s, si) => s.kind === "slope" && inShape(q.x, q.y, ...r.coordsOf(s)) && shown.add(si));
-    }
-    if (ed.tool === "edit" && ed.settings.pickMode !== "shapes" && ed.hover >= 0) {
+    // Only those of the shapes picked (or whose vertices or height point are), else of the one Elegir's
+    // pointer is over while it picks vertices, and of the outline being drawn: the rest only their
+    // outlines. A locked shape's never (see focusShapes).
+    const focus = ed.focusShapes();
+    const shown = new Set<number>(focus ?? []);
+    if (!focus && ed.tool === "edit" && ed.settings.pickMode !== "shapes" && ed.hover >= 0 && data.shapes[ed.hover] && !data.shapes[ed.hover].locked) {
       shown.add(ed.hover);
     }
     const visible = [...shown].map((si) => data.shapes[si]).filter((s) => s && !s.hidden);
@@ -552,6 +545,27 @@ export class MapView {
       ctx.stroke();
       label(ctx, x + 12, y - 10, fmt(q.h), selected);
     });
+    // Where a click on a side adds a vertex: a hollow diamond, a plus in it.
+    if (ed.ghost && ed.tool === "edit" && ed.settings.pickMode !== "shapes") {
+      const [x, y] = this.toScreen(ed.ghost.x, ed.ghost.y);
+      ctx.fillStyle = C.white;
+      ctx.strokeStyle = C.pick;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(x, y - 7);
+      ctx.lineTo(x + 7, y);
+      ctx.lineTo(x, y + 7);
+      ctx.lineTo(x - 7, y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x - 3.5, y);
+      ctx.lineTo(x + 3.5, y);
+      ctx.moveTo(x, y - 3.5);
+      ctx.lineTo(x, y + 3.5);
+      ctx.stroke();
+    }
   }
 
   /** What's under way and what goes with what's picked: an outline drawn, a box, the others picked, a ramp's ends, water, pictures, standing edges, the brushes. */

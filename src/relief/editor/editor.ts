@@ -20,11 +20,13 @@ import {
   skinFrom,
   snap,
   togglePick,
+  unshare,
   vertexAt,
   vertsOf,
   type Snap,
 } from "./shapes";
 import { placePrefab, type PrefabId } from "./prefabs";
+import { groupPicked, tidyGroups, ungroup } from "./groups";
 
 // The relief editor without its page: the tool in hand, what's picked, and
 // what the pointer and the keys do to the relief (in cells). The page (see
@@ -144,6 +146,8 @@ export class ReliefEditor {
   cursor: { x: number; y: number; snap?: Snap | null } | null = null;
   /** The shape the pointer's over (-1: none). */
   hover = -1;
+  /** Picking vertices, the pointer on a side (not on a vertex nor a point): where a click adds one. */
+  ghost: { x: number; y: number } | null = null;
   /** Why the last combining changed nothing. */
   notice: "nothingShared" | "nothingLeft" | null = null;
 
@@ -151,6 +155,7 @@ export class ReliefEditor {
   private redoStack: string[] = [];
 
   constructor(data: ReliefData, host: EditorHost, settings: Partial<Settings> = {}) {
+    unshare(data);
     this.relief = new Relief(data);
     this.host = host;
     this.settings = { ...DEFAULT_SETTINGS, ...settings };
@@ -162,6 +167,8 @@ export class ReliefEditor {
 
   /** The relief worked out again, and the page told. */
   changed() {
+    // Each group's shapes together (a shape made in one, a copy, one gone...).
+    tidyGroups(this);
     time("editor.derive", () => this.relief.derive());
     this.host.changed();
   }
@@ -208,6 +215,62 @@ export class ReliefEditor {
 
   heightAt(x: number, y: number): number | undefined {
     return this.relief.heightAt(x, y);
+  }
+
+  /**
+   * The shapes whose vertices (and height points) are shown and taken: those
+   * picked, or whose vertices or height point are; none hidden or locked.
+   * Null with none of them picked: any shape's.
+   */
+  focusShapes(): Set<number> | null {
+    const sel = this.sel;
+    const data = this.data;
+    const focus = new Set<number>();
+    if (sel?.kind === "shape") {
+      [sel.i, ...(sel.more ?? [])].forEach((si) => focus.add(si));
+    } else if (sel?.kind === "verts" || sel?.kind === "vertex") {
+      const picked = new Set(sel.kind === "verts" ? sel.list : [sel.i]);
+      data.shapes.forEach((s, si) => vertsOf(s).some((v) => picked.has(v)) && focus.add(si));
+    } else if (sel?.kind === "point" && data.points[sel.i]) {
+      const q = data.points[sel.i];
+      data.shapes.forEach((s, si) => s.kind === "slope" && inShape(q.x, q.y, ...this.relief.coordsOf(s)) && focus.add(si));
+    }
+    for (const si of focus) {
+      if (!data.shapes[si] || !free(data.shapes[si])) {
+        focus.delete(si);
+      }
+    }
+    return focus.size > 0 ? focus : null;
+  }
+
+  /**
+   * Picking vertices, a plain click on a side of a shape that can be taken
+   * (not on one of its vertices, nor on a height point): the side snapped to.
+   */
+  private sideAt(p: { x: number; y: number }, mods: Mods): (Snap & { edge: [number, number] }) | null {
+    if (this.tool !== "edit" || this.settings.pickMode === "shapes" || this.drawing || mods.alt || mods.shift || mods.ctrl) {
+      return null;
+    }
+    const reach = this.host.snapReach();
+    const used = this.takeable();
+    if (this.data.verts.some((v, i) => used.has(i) && Math.hypot(v.x - p.x, v.y - p.y) < reach) || this.pointNear(p, reach) >= 0) {
+      return null;
+    }
+    const at = snap(this, p, false, used);
+    return at && "edge" in at ? at : null;
+  }
+
+  /** The vertices that can be taken: the shapes' in focus (see focusShapes), or every shape's that isn't hidden or locked. */
+  private takeable(): Set<number> {
+    const focus = this.focusShapes();
+    return new Set(this.data.shapes.filter((s, si) => (focus ? focus.has(si) : free(s))).flatMap(vertsOf));
+  }
+
+  /** The height point near a point that can be taken (inside an inclined shape in focus, if any is); -1: none. */
+  private pointNear(p: { x: number; y: number }, reach: number): number {
+    const focus = this.focusShapes();
+    const slopes = focus ? [...focus].map((si) => this.data.shapes[si]).filter((s) => s.kind === "slope").map((s) => this.relief.coordsOf(s)) : null;
+    return this.data.points.findIndex((q) => Math.hypot(q.x - p.x, q.y - p.y) < reach && (!slopes || slopes.some(([ring, holes]) => inShape(q.x, q.y, ring, holes))));
   }
 
   /** The topmost shape at a point that can be picked there (not hidden, nor locked, in the editor); -1: none. */
@@ -271,6 +334,7 @@ export class ReliefEditor {
   /** Another relief in place of this one (imported, or cleared): a step to undo. */
   replace(data: ReliefData) {
     this.pushUndo();
+    unshare(data);
     this.relief = new Relief(data);
     this.sel = null;
     this.drawing = null;
@@ -285,6 +349,7 @@ export class ReliefEditor {
     this.tool = tool;
     this.skinPick = null;
     this.cursor = null;
+    this.ghost = null;
     if (this.drawing) {
       this.drawing = null;
       keepPick(this, () => prune(this));
@@ -395,7 +460,7 @@ export class ReliefEditor {
       if (at && "vertex" in at && this.drawing.includes(at.vertex)) {
         return;
       }
-      this.drawing.push(vertexAt(this, at ? p : this.gridded(p), at));
+      this.drawing.push(vertexAt(this, at ? p : this.gridded(p), at, true));
       this.changed();
       return;
     }
@@ -410,9 +475,9 @@ export class ReliefEditor {
     // Picking shapes only: no vertex nor point, and on nothing, nothing picked.
     const shapesOnly = this.settings.pickMode === "shapes";
     const reach = this.host.snapReach();
-    const used = new Set(this.data.shapes.filter(free).flatMap(vertsOf));
+    const used = this.takeable();
     const vi = shapesOnly ? -1 : this.data.verts.findIndex((v, i) => used.has(i) && Math.hypot(v.x - p.x, v.y - p.y) < reach);
-    const pi = shapesOnly ? -1 : this.data.points.findIndex((q) => Math.hypot(q.x - p.x, q.y - p.y) < reach);
+    const pi = shapesOnly ? -1 : this.pointNear(p, reach);
     const sel = this.sel;
     if (vi >= 0 || pi >= 0) {
       this.pushUndo();
@@ -457,9 +522,9 @@ export class ReliefEditor {
     }
     const reach = this.host.snapReach();
     const data = this.data;
-    const used = new Set(data.shapes.filter(free).flatMap(vertsOf));
+    const used = this.takeable();
     const vi = data.verts.findIndex((v, i) => used.has(i) && Math.hypot(v.x - p.x, v.y - p.y) < reach);
-    const pi = data.points.findIndex((q) => Math.hypot(q.x - p.x, q.y - p.y) < reach);
+    const pi = this.pointNear(p, reach);
     if (mods.alt && vi < 0 && pi >= 0) {
       this.pushUndo();
       data.points.splice(pi, 1);
@@ -474,17 +539,25 @@ export class ReliefEditor {
       this.changed();
       return true;
     }
+    // On a side: a vertex there, picked and dragged.
+    const side = this.sideAt(p, mods);
+    if (side) {
+      this.pushUndo();
+      this.xf = null;
+      const picked = { kind: "vertex", i: vertexAt(this, p, side) } as const;
+      this.sel = picked;
+      this.drag = picked;
+      this.dragStart = [side.x, side.y];
+      this.ghost = null;
+      this.changed();
+      this.host.showProps();
+      return true;
+    }
     if (mods.clicks === 2 && vi < 0 && pi < 0) {
-      const at = snap(this, p, false);
-      if (at && "edge" in at) {
-        this.pushUndo();
-        vertexAt(this, p, at);
-        this.changed();
-        return true;
-      }
-      // Inside an inclined shape: a point with its own height, where its surface is now.
+      // Inside an inclined shape (the one in focus, if any is): a point with its own height, where its surface is now.
       const si = this.shapeAt(p.x, p.y);
-      if (si >= 0 && data.shapes[si].kind === "slope") {
+      const focus = this.focusShapes();
+      if (si >= 0 && data.shapes[si].kind === "slope" && (!focus || focus.has(si))) {
         this.xf = null;
         this.pushUndo();
         data.points.push({ x: p.x, y: p.y, h: quarter(this.heightAt(p.x, p.y) ?? 0) });
@@ -585,7 +658,11 @@ export class ReliefEditor {
     }
     if (!held) {
       this.hover = this.tool === "edit" || this.isShapeTool() ? this.shapeAt(p.x, p.y) : -1;
-      this.host.setCursor(this.cursorFor(p));
+      const side = this.sideAt(p, mods);
+      this.ghost = side ? { x: side.x, y: side.y } : null;
+      this.host.setCursor(this.ghost ? "copy" : this.cursorFor(p));
+    } else {
+      this.ghost = null;
     }
     if (held && this.shape) {
       this.shape.end = p;
@@ -686,7 +763,7 @@ export class ReliefEditor {
         return;
       }
       const verts = this.data.verts;
-      const used = new Set(this.data.shapes.filter(free).flatMap(vertsOf));
+      const used = this.takeable();
       const inside = verts.map((_, i) => i).filter((i) => used.has(i) && verts[i].x >= x0 && verts[i].x <= x1 && verts[i].y >= y0 && verts[i].y <= y1);
       const before = add && this.sel?.kind === "verts" ? this.sel.list : [];
       const list = [...new Set([...before, ...inside])];
@@ -830,6 +907,18 @@ export class ReliefEditor {
       duplicate(this);
       this.changed();
       this.host.showProps();
+      return true;
+    }
+    // Ctrl+G: the shapes picked made a group; with Shift, the picked one's group undone.
+    if (e.ctrl && e.code === "KeyG" && this.sel?.kind === "shape") {
+      const group = this.data.shapes[this.sel.i]?.group;
+      if (e.shift ? group : groupPicked(this)) {
+        if (e.shift && group) {
+          ungroup(this, group);
+        }
+        this.changed();
+        this.host.showProps();
+      }
       return true;
     }
     const nudge = ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] } as Record<string, Pt>)[e.key];
@@ -978,9 +1067,9 @@ export class ReliefEditor {
     if (grab?.kind === "scale") {
       return grab.handle!.cursor;
     }
-    if (this.tool === "edit") {
+    if (this.tool === "edit" && this.settings.pickMode !== "shapes") {
       const reach = this.host.snapReach();
-      const used = new Set(this.data.shapes.filter(free).flatMap(vertsOf));
+      const used = this.takeable();
       if (this.data.verts.some((v, i) => used.has(i) && Math.hypot(v.x - p.x, v.y - p.y) < reach)) {
         return "pointer";
       }

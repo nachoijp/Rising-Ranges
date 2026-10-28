@@ -226,6 +226,7 @@ export function reliefTerrain(
       skin: shape.skin ? skinOf(shape.skin, toScene) : undefined,
       frame: frameOf(layer.ring.map(toScene).map(([x, y]) => ({ x, y }))),
       si: layer.si,
+      under: shape.under,
     };
   });
   return { pieces, bridges, area, heightAt };

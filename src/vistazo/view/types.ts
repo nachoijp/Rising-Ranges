@@ -102,7 +102,7 @@ export const QUALITY: Record<Quality, { pixels: number; amount: number; frameMs:
   low: { pixels: 1, amount: 0.35, frameMs: 66, motion: false },
 };
 
-export type WallStyle = "flat" | "stretch" | "fold" | "stone" | "rubble" | "earth" | "wood";
+export type WallStyle = "blend" | "flat" | "stretch" | "fold" | "stone" | "rubble" | "earth" | "wood";
 
 /** `focus`: the scene point the camera turns around (null: the map's middle), and its height in grid units. */
 export type Camera = { tilt: number; yaw: number; zoom: number; panX: number; panY: number; focus: { x: number; y: number; z: number } | null };
