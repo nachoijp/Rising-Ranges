@@ -96,6 +96,9 @@
         <div class="guided-badge" data-t="vistazo.guided"></div>
         <div class="panel-toggle grip" id="grip" role="button" data-title="vistazo.drag"><i data-icon="grip"></i></div>
         <div class="tools" id="tools">
+        <button class="panel-toggle" id="cinematic" type="button" data-title="vistazo.cinematic">
+          <i data-icon="camera"></i>
+        </button>
         <button class="panel-toggle" id="panelToggle" type="button" data-title="vistazo.panel" aria-pressed="true">
           <i data-icon="panel"></i>
         </button>
@@ -219,19 +222,6 @@
         <fieldset data-section="relief">
           <legend data-t="vistazo.relief"></legend>
           <label class="row" for="hscale"><span data-t="vistazo.heightScale"></span><output id="hscaleOut"></output><input id="hscale" type="range" min="0.5" max="3" step="0.25" /></label>
-          <label class="row" for="wallStyle"
-            ><span data-t="vistazo.wallStyle"></span>
-            <select id="wallStyle">
-              <option value="blend" data-t="vistazo.wallBlend"></option>
-              <option value="flat" data-t="vistazo.wallFlat"></option>
-              <option value="stretch" data-t="vistazo.wallStretch"></option>
-              <option value="fold" data-t="vistazo.wallFold"></option>
-              <option value="stone" data-t="vistazo.wallBrick"></option>
-              <option value="rubble" data-t="vistazo.wallRubble"></option>
-              <option value="earth" data-t="vistazo.wallEarth"></option>
-              <option value="wood" data-t="vistazo.wallWood"></option>
-            </select>
-          </label>
           <label class="check" for="edges"><input id="edges" type="checkbox" /><span data-t="vistazo.edges"></span></label>
           <label class="check" for="grid"><input id="grid" type="checkbox" /><span data-t="vistazo.grid"></span></label>
           <fieldset data-section="reliefLook">
@@ -242,6 +232,7 @@
             <label class="check" for="tint"><input id="tint" type="checkbox" /><span data-t="vistazo.tint"></span></label>
             <label class="check" for="xray"><input id="xray" type="checkbox" /><span data-t="vistazo.xray"></span></label>
             <label class="check" for="waterMotion"><input id="waterMotion" type="checkbox" /><span data-t="vistazo.waterMotion"></span></label>
+            <label class="check" for="videoMaps"><input id="videoMaps" type="checkbox" /><span data-t="vistazo.videoMaps"></span></label>
             <label class="check" for="levels"><input id="levels" type="checkbox" /><span data-t="vistazo.levels"></span></label>
             </div>
           </fieldset>

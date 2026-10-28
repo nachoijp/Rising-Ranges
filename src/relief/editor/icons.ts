@@ -37,7 +37,7 @@ export type IconName =
   | "terrain" | "slab" | "stand" | "flat" | "ramp" | "inclined" | "relative" | "fixed"
   | "duplicate" | "rename" | "layer-up" | "layer-down" | "convert" | "combine" | "texture"
   | "plus" | "minus" | "pick-shapes" | "pick-points" | "edge-wall" | "edge-soft" | "eyedropper"
-  | "visible" | "hidden" | "locked" | "unlocked" | "size" | "strength" | "magnet" | "folder" | "group" | "ungroup"
+  | "visible" | "hidden" | "locked" | "unlocked" | "size" | "strength" | "magnet" | "folder" | "group" | "ungroup" | "camera"
   | "stamp" | "column" | "pit" | "stairs" | "platform" | "wall" | "mound" | "erase"
   | "grip" | "panel" | "minimize" | "fullscreen" | "fullscreen-exit" | "restore" | "info" | "resize";
 

@@ -98,7 +98,7 @@ const POSE = { tilt: 55, yaw: -25 };
 const OPTIONS_KEY = "rising-ranges/vistazo-options";
 
 function readOptions(): Options {
-  const defaults: Options = { heightScale: 1, shade: 0.6, perspective: 45, tint: false, tokens: true, xray: false, edges: true, anchor: "center", levels: true, grid: false, distances: true, tokenLabels: "full", distanceLabels: "full", labelSize: 1, relief: 0.5, weather: true, clouds: "mist", waterMotion: true, quality: "high", props: "flat", showProps: true, propDistances: false, propShadows: true, propLines: true, propLabels: false, wallStyle: "blend", rings: true, ringFill: false, playerView: false };
+  const defaults: Options = { heightScale: 1, shade: 0.6, perspective: 45, tint: false, tokens: true, xray: false, edges: true, anchor: "center", levels: true, grid: false, distances: true, tokenLabels: "full", distanceLabels: "full", labelSize: 1, relief: 0.5, weather: true, clouds: "mist", waterMotion: true, videoMaps: true, quality: "high", props: "flat", showProps: true, propDistances: false, propShadows: true, propLines: true, propLabels: false, rings: true, ringFill: false, playerView: false };
   // A system asking for less motion: the first time (nothing saved yet), low quality and still water.
   // Changed here, it's as chosen from then on.
   try {
@@ -877,6 +877,138 @@ async function start() {
     frame = requestAnimationFrame(step);
   }
 
+  /**
+   * The camera button: a camera move picked from a list (SHOTS), the panel and buttons out of sight (to
+   * show the terrain; with Sync view on, the players see it too). After a moment it runs once, from the
+   * camera as it is (the orbit: round the whole terrain), then all comes back. Those that end where they
+   * began loop seamlessly when recorded. Esc or a click on the scene stops it there.
+   */
+  type Pose = { tilt: number; yaw: number; zoom: number };
+  const ease = (p: number) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+  const turn = (p: number) => Math.sin(2 * Math.PI * p);
+  const swell = (p: number) => (1 - Math.cos(2 * Math.PI * p)) / 2;
+  const SHOTS: { id: TranslationKey; ms: number; loop: boolean; at: (p: number, from: Pose) => Pose }[] = [
+    { id: "vistazo.shotOrbit", ms: 20000, loop: true, at: (p, from) => ({ tilt: 55, yaw: from.yaw + 360 * p, zoom: 1 }) },
+    { id: "vistazo.shotSweep", ms: 7000, loop: false, at: (p, from) => ({ tilt: 68 - 20 * ease(p), yaw: from.yaw - 35 + 70 * ease(p), zoom: from.zoom * (0.92 + 0.2 * ease(p)) }) },
+    { id: "vistazo.shotPush", ms: 10000, loop: true, at: (p, from) => ({ tilt: from.tilt + 6 * swell(p), yaw: from.yaw + 12 * turn(p), zoom: from.zoom * (1 + 0.9 * swell(p)) }) },
+    { id: "vistazo.shotCrane", ms: 8000, loop: false, at: (p, from) => ({ tilt: 2 + 58 * ease(p), yaw: from.yaw - 40 + 40 * ease(p), zoom: 0.85 + 0.55 * ease(p) }) },
+    { id: "vistazo.shotPendulum", ms: 12000, loop: true, at: (p, from) => ({ tilt: from.tilt + 6 * turn(2 * p), yaw: from.yaw + 35 * turn(p), zoom: from.zoom }) },
+  ];
+  let shotFrame = 0;
+  let shotEnd: ReturnType<typeof setTimeout> | undefined;
+  let shooting = false;
+  /** The panel was open when the move began: it's folded away meanwhile (as its own button does), then back. */
+  let unfold = false;
+  const sweeping = () => shooting;
+  function stopSweep() {
+    shooting = false;
+    cancelAnimationFrame(shotFrame);
+    clearTimeout(shotEnd);
+    document.documentElement.classList.remove("cinematic");
+    if (unfold) {
+      unfold = false;
+      $("app").classList.remove("compact");
+    }
+  }
+  const pose = (p: Pose) => {
+    camera.tilt = clampTilt(p.tilt);
+    camera.yaw = wrapYaw(p.yaw);
+    camera.zoom = Math.max(0.35, Math.min(8, p.zoom));
+    view.apply();
+  };
+  function cinematic(shot: (typeof SHOTS)[number]) {
+    stopSweep();
+    cancelAnimationFrame(frame);
+    const from: Pose = { tilt: camera.tilt, yaw: camera.yaw, zoom: camera.zoom };
+    // The orbit goes round the whole terrain: from its middle.
+    if (shot.id === "vistazo.shotOrbit") {
+      Object.assign(camera, { panX: 0, panY: 0, focus: null });
+    }
+    shooting = true;
+    document.documentElement.classList.add("cinematic");
+    // (Only the layout: its buttons stay where they are, out of sight meanwhile.)
+    unfold = !$("app").classList.contains("compact");
+    if (unfold) {
+      $("app").classList.add("compact");
+    }
+    pose(shot.at(0, from));
+    const t0 = performance.now() + 800;
+    const step = (now: number) => {
+      if (!shooting) {
+        return;
+      }
+      const p = Math.max(0, (now - t0) / shot.ms);
+      pose(shot.at(Math.min(1, p), from));
+      if (p < 1) {
+        shotFrame = requestAnimationFrame(step);
+      } else {
+        shotEnd = setTimeout(stopSweep, 800);
+      }
+    };
+    shotFrame = requestAnimationFrame(step);
+  }
+  // The list under the button.
+  let shotMenu: HTMLElement | null = null;
+  const closeShots = () => {
+    shotMenu?.remove();
+    shotMenu = null;
+    $("cinematic").setAttribute("aria-expanded", "false");
+  };
+  $("cinematic").setAttribute("aria-haspopup", "menu");
+  $("cinematic").onclick = (event) => {
+    event.stopPropagation();
+    if (shotMenu) {
+      closeShots();
+      return;
+    }
+    const menu = document.createElement("div");
+    menu.className = "dd-menu";
+    menu.setAttribute("role", "menu");
+    for (const shot of SHOTS) {
+      const item = document.createElement("div");
+      item.className = "dd-item";
+      item.setAttribute("role", "menuitem");
+      item.tabIndex = -1;
+      item.textContent = t(shot.id) + (shot.loop ? "  \u21bb" : "");
+      if (shot.loop) {
+        item.title = t("vistazo.shotLoops");
+      }
+      item.onclick = () => {
+        closeShots();
+        cinematic(shot);
+      };
+      item.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          item.click();
+        }
+      };
+      menu.append(item);
+    }
+    document.body.append(menu);
+    const r = $("cinematic").getBoundingClientRect();
+    menu.style.top = `${r.bottom + 6}px`;
+    menu.style.left = `${Math.max(6, Math.min(window.innerWidth - menu.offsetWidth - 6, r.right - menu.offsetWidth))}px`;
+    shotMenu = menu;
+    $("cinematic").setAttribute("aria-expanded", "true");
+    (menu.firstElementChild as HTMLElement | null)?.focus();
+  };
+  document.addEventListener("pointerdown", (event) => shotMenu && !shotMenu.contains(event.target as Node) && event.target !== $("cinematic") && closeShots(), true);
+  $("stage").addEventListener("pointerdown", () => sweeping() && stopSweep(), true);
+  // Esc stops it (first, wherever the focus is: not closing the window, nor anything else).
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key === "Escape" && (sweeping() || shotMenu)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        closeShots();
+        stopSweep();
+      }
+    },
+    true
+  );
+
   let lastPose = { ...POSE };
   $("toggle").onclick = () => {
     if (camera.tilt < 1) {
@@ -1496,6 +1628,7 @@ async function start() {
     check("xray").checked = options.xray;
     check("edges").checked = options.edges;
     check("waterMotion").checked = options.waterMotion;
+    check("videoMaps").checked = options.videoMaps;
     for (const button of $("quality").querySelectorAll("button")) {
       button.setAttribute("aria-pressed", String(button.value === options.quality));
     }
@@ -1516,7 +1649,6 @@ async function start() {
     check("propLabels").checked = options.propLabels;
     $<HTMLSelectElement>("tokenLabels").value = options.tokenLabels;
     $<HTMLSelectElement>("props").value = options.props;
-    $<HTMLSelectElement>("wallStyle").value = options.wallStyle;
     $<HTMLSelectElement>("distanceLabels").value = options.distanceLabels;
     $<HTMLInputElement>("labelSize").value = String(options.labelSize);
     $("labelSizeOut").textContent = `${Math.round(options.labelSize * 100)}%`;
@@ -1532,6 +1664,7 @@ async function start() {
   check("xray").onchange = () => set({ xray: check("xray").checked });
   check("edges").onchange = () => set({ edges: check("edges").checked });
   check("waterMotion").onchange = () => set({ waterMotion: check("waterMotion").checked });
+  check("videoMaps").onchange = () => set({ videoMaps: check("videoMaps").checked });
   for (const button of $("quality").querySelectorAll("button")) {
     button.onclick = () => set({ quality: button.value === "low" ? "low" : button.value === "medium" ? "medium" : "high" });
   }
@@ -1549,8 +1682,6 @@ async function start() {
   check("propDistances").onchange = () => set({ propDistances: check("propDistances").checked });
   check("propLines").onchange = () => set({ propLines: check("propLines").checked });
   check("propLabels").onchange = () => set({ propLabels: check("propLabels").checked });
-  const wallStyle = $<HTMLSelectElement>("wallStyle");
-  wallStyle.onchange = () => set({ wallStyle: wallStyle.value as Options["wallStyle"] });
   const props = $<HTMLSelectElement>("props");
   props.onchange = () => set({ props: props.value as Options["props"] });
   const tokenLabels = $<HTMLSelectElement>("tokenLabels");

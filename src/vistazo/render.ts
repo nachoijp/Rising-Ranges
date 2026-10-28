@@ -2,8 +2,8 @@ import * as THREE from "three";
 import { TessellateModifier } from "three/examples/jsm/modifiers/TessellateModifier.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { MultiPolygon } from "polygon-clipping";
-import { bridgeHighest, bridgeTop, inShape, pieceHeight, type Bridge, type Piece, type Prop, type Token, type VistazoScene } from "./scene";
-import { cellCorners, cellStepsFrom, cellsOutline, isHexShape, ringSteps } from "../engine/hex";
+import { bridgeHighest, bridgeTop, inShape, pieceHeight, type Bridge, type MapImage, type Piece, type Prop, type Token, type VistazoScene } from "./scene";
+import { cellsOutline, isHexShape, ringSteps } from "../engine/hex";
 import type { Fog } from "./fog";
 import { visibleBox } from "./visibleBox";
 import { buildWeather, cloudShadowMaterial, setWeatherTime } from "./weather";
@@ -52,7 +52,6 @@ const BASES_PER_CELL = 48;
 const BASES_MAX = 4096;
 
 /** Which grid a scene's cells are drawn on the map for (see useTexture): to tell when Owlbear's changes. */
-const gridDrawn = (scene: VistazoScene) => JSON.stringify([scene.dpi, scene.squareGrid, scene.hexGrid]);
 
 export class VistazoView {
   private readonly canvas: HTMLCanvasElement;
@@ -74,7 +73,18 @@ export class VistazoView {
   /** The ground tinted by Banda: a copy of each flat piece, its texture the Bandas' colours (see buildReach). */
   private readonly fillGroup = new THREE.Group();
   private reach: Reach | null = null;
-  private reachTexture: THREE.DataTexture | null = null;
+  /** The Banda tint, worked out on the ground at each pixel (see FILL_GLSL): shared by every copy it's on. */
+  private readonly fillUniforms = {
+    uFillU: { value: 1 },
+    uFillShape: { value: 0 },
+    uFillOrigin: { value: new THREE.Vector2() },
+    uFillDpi: { value: 1 },
+    uFillCells: { value: Array.from({ length: FILL_CELLS }, () => new THREE.Vector2()) },
+    uFillCellCount: { value: 1 },
+    uFillEdges: { value: new Array<number>(FILL_BANDS).fill(0) },
+    uFillColors: { value: Array.from({ length: FILL_BANDS }, () => new THREE.Color()) },
+    uFillBands: { value: 0 },
+  };
   private reachFrame = 0;
   private applyFrame = 0;
   private canvasSize = { w: 0, h: 0 };
@@ -122,8 +132,6 @@ export class VistazoView {
   private readonly tokenOverlay: HTMLElement;
   private scene: VistazoScene | null = null;
   private terrainKey = "";
-  /** The grid the map texture has its cells drawn for (see gridDrawn): drawn again when Owlbear's changes. */
-  private texturedGrid = "";
   private selected = new Set<string>();
   private distanceOrigin: string | null = null;
   private distanceLines: DistanceLine[] = [];
@@ -143,6 +151,21 @@ export class VistazoView {
    * walls, standing pictures and slabs' sides take from the map, where the ground's cells don't belong.
    */
   private plainTexture: THREE.Texture | null = null;
+  /** The maps' pictures (a video map's element), as the ground's texture is drawn from them (see playMaps). */
+  private mapMedia: { images: CanvasImageSource[]; maps: VistazoScene["maps"] } | null = null;
+  /** The grid drawn over the ground (see gridded): shared by its materials, so a change needs no rebuild. */
+  private readonly gridUniforms = {
+    uGridKind: { value: 0 },
+    uGridDpi: { value: 1 },
+    uGridCenter: { value: new THREE.Vector2() },
+    uGridU: { value: 1 },
+  };
+  /** Bumped when the video maps start or stop (their frame callbacks see they're stale). */
+  private mapsPlaying = 0;
+  /** A lone video map played as the ground's texture itself (see useTexture): none of it drawn again. */
+  private directVideo: HTMLVideoElement | null = null;
+  /** Then, its first frame still: for what reads the map by its own reckoning (water, mirrored fills). */
+  private stillTexture: THREE.Texture | null = null;
   /** The materials of the pieces, to dim or see through without rebuilding. */
   private pieceMaterials: THREE.MeshBasicMaterial[] = [];
   /** Outlines already cut small (see fineGeometry), by outline: their flat triangles, and the last build that used them. */
@@ -487,6 +510,7 @@ export class VistazoView {
     this.settling = false;
     this.scene = scene;
     this.u = VIEW_CELL / scene.dpi;
+    this.syncGrid();
     const heights = scene.pieces.map((piece) => piece.height);
     this.minH = Math.min(0, ...heights);
     this.maxH = Math.max(0, ...heights);
@@ -498,10 +522,8 @@ export class VistazoView {
       if (!time("3d.moveTokens", () => this.moveTokens(scene))) {
         time("3d.tokens", () => this.buildTokens());
       }
-      // The grid changed in Owlbear (square to hex, the hex cells moved): its cells drawn again on the map.
-      if (this.texture && gridDrawn(scene) !== this.texturedGrid) {
-        this.useTexture();
-      }
+      // The grid changed in Owlbear (square to hex, the hex cells moved): the ground's lines follow.
+      this.syncGrid();
       this.updateWeather();
       this.requestApply();
       return;
@@ -564,49 +586,24 @@ export class VistazoView {
     const u = this.u;
     const k = this.k;
     const bands = r.bands.filter((band) => Number.isFinite(band.reach)).map((band) => ({ ...band, across: band.reach + r.excess }));
-    // How far across a scene point is, in grid units, as the map's rings take it (their Forma, not
-    // the calculation mode): a circle, a square, or the hex steps of the whole cell it's in.
     const shape = r.shape;
-    const acrossOf = (x: number, y: number) => {
-      const dx = (x - r.x) / dpi;
-      const dy = (y - r.y) / dpi;
-      if (isHexShape(shape)) {
-        return cellStepsFrom(dx, dy, shape, r.cells);
-      }
-      return shape === "square" ? Math.max(Math.abs(dx), Math.abs(dy)) : Math.hypot(dx, dy);
-    };
-    // A Banda's edge, as compared with acrossOf: on hex cells, the whole steps it reaches (ringSteps).
+    // A Banda's edge, as the tint compares it (see FILL_GLSL): on hex cells, the whole steps it reaches (ringSteps).
     const edgeOf = (across: number) => (isHexShape(shape) ? ringSteps(across * dpi, dpi) + 1e-6 : across);
     if (this.options.ringFill) {
-      const { x0, y0, step, w, h, cells } = this.grid;
-      const data = new Uint8Array(w * h * 4);
-      const colors = bands.map((band) => new THREE.Color(band.color));
-      for (let j = 0; j < h; j++) {
-        for (let i = 0; i < w; i++) {
-          const n = j * w + i;
-          if (Number.isNaN(cells[n])) {
-            continue;
-          }
-          const across = acrossOf(x0 + i * step, y0 + j * step);
-          const index = bands.findIndex((band) => across <= edgeOf(band.across));
-          if (index >= 0) {
-            data.set([Math.round(colors[index].r * 255), Math.round(colors[index].g * 255), Math.round(colors[index].b * 255), 70], n * 4);
-          }
-        }
-      }
-      if (!this.reachTexture || this.reachTexture.image.width !== w || this.reachTexture.image.height !== h) {
-        this.reachTexture?.dispose();
-        this.reachTexture = new THREE.DataTexture(data, w, h, THREE.RGBAFormat);
-        this.reachTexture.magFilter = THREE.LinearFilter;
-        this.reachTexture.minFilter = THREE.LinearFilter;
-        for (const child of this.fillGroup.children) {
-          ((child as THREE.Mesh).material as THREE.MeshBasicMaterial).map = this.reachTexture;
-          ((child as THREE.Mesh).material as THREE.MeshBasicMaterial).needsUpdate = true;
-        }
-      } else {
-        (this.reachTexture.image.data as Uint8Array).set(data);
-      }
-      this.reachTexture.needsUpdate = true;
+      // Its Bandas and how they're measured, for the ground's copies to work out at each pixel.
+      const f = this.fillUniforms;
+      f.uFillShape.value = isHexShape(shape) ? (shape === "hexHorizontal" ? 2 : 3) : shape === "square" ? 1 : 0;
+      f.uFillOrigin.value.set(r.x, r.y);
+      f.uFillDpi.value = dpi;
+      const cells = (r.cells?.length ? r.cells : [{ x: 0, y: 0 }]).slice(0, FILL_CELLS);
+      cells.forEach((cell, k) => f.uFillCells.value[k].set(cell.x, cell.y));
+      f.uFillCellCount.value = cells.length;
+      const list = bands.slice(0, FILL_BANDS);
+      list.forEach((band, k) => {
+        f.uFillEdges.value[k] = edgeOf(band.across);
+        f.uFillColors.value[k].set(band.color);
+      });
+      f.uFillBands.value = list.length;
     }
     if (!this.options.rings) {
       return;
@@ -654,23 +651,16 @@ export class VistazoView {
     }
   }
 
-  /** A copy of a flat piece, for the Banda tint (see buildReach): the same shape, its texture the heights grid's. */
-  private fillCopy(geometry: THREE.BufferGeometry, z: number, group = this.fillGroup, texture = this.reachTexture, order = 3) {
+  /** A copy of a flat piece, for the Banda tint (see buildReach): the same shape, the tint worked out on it (see FILL_GLSL). */
+  private fillCopy(geometry: THREE.BufferGeometry, z: number, group = this.fillGroup, order = 3) {
     if (this.lite) {
       return;
     }
-    const { x0, y0, step, w, h } = this.grid;
-    const position = geometry.getAttribute("position") as THREE.BufferAttribute;
-    const uv = new Float32Array(position.count * 2);
-    for (let i = 0; i < position.count; i++) {
-      // The grid's points are its texture's pixel centers.
-      uv[i * 2] = ((position.getX(i) / this.u - x0) / step + 0.5) / w;
-      uv[i * 2 + 1] = ((position.getY(i) / this.u - y0) / step + 0.5) / h;
-    }
     const copy = geometry.clone();
-    copy.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
-    const material = new THREE.MeshBasicMaterial({
-      map: texture,
+    const material = new THREE.ShaderMaterial({
+      vertexShader: FILL_VERTEX,
+      fragmentShader: FILL_GLSL,
+      uniforms: this.fillUniforms,
       transparent: true,
       depthWrite: false,
       side: THREE.DoubleSide,
@@ -1025,20 +1015,27 @@ export class VistazoView {
 
   setOptions(options: Partial<Options>) {
     const changed = (keys: (keyof Options)[]) => keys.some((key) => key in options && options[key] !== this.options[key]);
-    const rebuild = changed(["heightScale", "shade", "levels", "relief", "tint", "wallStyle", "rings", "ringFill"]);
+    const rebuild = changed(["heightScale", "shade", "levels", "relief", "tint", "rings", "ringFill"]);
     const regrid = changed(["grid"]);
     const relabel = changed(["tokenLabels", "props", "showProps", "propShadows", "propLines", "propLabels"]);
     const reweather = changed(["weather", "clouds", "waterMotion", "quality"]);
     const resharpen = changed(["quality"]);
+    const replay = changed(["videoMaps", "quality"]);
     this.options = { ...this.options, ...options };
+    // Played or still: the ground's texture drawn again, at its size for that.
+    if (replay && this.scene?.maps.some((map) => map.video)) {
+      this.colorsFor = "";
+      this.loadColors();
+    }
     if (resharpen) {
       this.sharpen();
     }
     this.stage.style.setProperty("--label-scale", String(this.options.labelSize));
     this.stage.classList.toggle("notok", !this.options.tokens);
     this.stage.classList.toggle("xray", this.options.xray);
-    if (regrid && this.texture) {
-      this.useTexture();
+    if (regrid) {
+      this.syncGrid();
+      this.requestRender();
     }
     if (rebuild) {
       this.build();
@@ -1234,6 +1231,8 @@ export class VistazoView {
     this.colorsFor = key;
     this.colors = null;
     this.softColors = null;
+    this.mapMedia = null;
+    this.mapsPlaying++;
     this.texture = null;
     this.dropMapTextures();
     if (scene.maps.length === 0) {
@@ -1294,88 +1293,55 @@ export class VistazoView {
           return data[at + 3] === 0 ? STONE : [data[at], data[at + 1], data[at + 2]];
         };
         this.softColors = softSampler(small.canvas, x0, y0, w, h, scene.dpi);
-        const most = Math.min(TEXTURE_MAX, this.renderer?.capabilities.maxTextureSize ?? TEXTURE_MAX);
+        // A video map played: a smaller texture, drawn again every frame.
+        const played = this.options.videoMaps && scene.maps.some((map) => map.video);
+        const cap = played ? (this.options.quality === "high" ? VIDEO_TEXTURE_MAX : VIDEO_TEXTURE_LIGHT) : TEXTURE_MAX;
+        const most = Math.min(cap, this.renderer?.capabilities.maxTextureSize ?? TEXTURE_MAX);
         const big = draw(images, Math.min(1, most / Math.max(w, h)));
         this.texture = { canvas: big.canvas, x0, y0, w, h };
+        this.mapMedia = { images, maps: scene.maps };
         this.fillCache.clear();
         this.useTexture();
         this.build();
+        this.playMaps();
       })
       .catch((error) => {
         console.error("Rising Ranges: Vistazo couldn't read the map images, drawing plain terrain", error);
       });
   }
 
-  /** The map texture, with the grid's cells drawn on it when they're asked for. */
+  /** The map texture (the grid's cells are drawn over it by the ground's material: see gridded). */
   private useTexture() {
     const texture = this.texture;
     const scene = this.scene;
     if (!texture || !scene) {
       return;
     }
-    this.texturedGrid = gridDrawn(scene);
-    let source: HTMLCanvasElement = texture.canvas;
-    if (this.options.grid && (scene.squareGrid || scene.hexGrid)) {
-      source = document.createElement("canvas");
-      source.width = texture.canvas.width;
-      source.height = texture.canvas.height;
-      const context = source.getContext("2d")!;
-      context.drawImage(texture.canvas, 0, 0);
-      const px = source.width / texture.w;
-      context.strokeStyle = "rgba(0,0,0,0.35)";
-      context.lineWidth = Math.max(1, px * scene.dpi * 0.02);
-      context.beginPath();
-      const hex = scene.hexGrid;
-      if (hex) {
-        // Every cell's outline, laid out from one cell's center as Owlbear's grid is: flat-topped
-        // cells in columns (horizontal), pointy-topped ones in rows (vertical), a cell (dpi) apart.
-        const dpi = scene.dpi;
-        const corners = cellCorners(0.5, hex.shape).map((c) => [c.x * dpi, c.y * dpi]);
-        const across = dpi * Math.cos(Math.PI / 6);
-        const flat = hex.shape === "hexHorizontal";
-        const [stepA, stepB] = flat ? [across, dpi] : [dpi, across];
-        const from = (v: number, origin: number, step: number) => origin + Math.floor((v - origin) / step - 1) * step;
-        for (let a = from(flat ? texture.x0 : texture.y0, flat ? hex.center.x : hex.center.y, flat ? stepA : stepB); a <= (flat ? texture.x0 + texture.w : texture.y0 + texture.h) + dpi; a += flat ? stepA : stepB) {
-          const line = Math.round((a - (flat ? hex.center.x : hex.center.y)) / (flat ? stepA : stepB));
-          // Every other column (row) sits half a cell along.
-          const shift = (((line % 2) + 2) % 2) * 0.5 * dpi;
-          for (let b = from(flat ? texture.y0 : texture.x0, (flat ? hex.center.y : hex.center.x) + shift, dpi); b <= (flat ? texture.y0 + texture.h : texture.x0 + texture.w) + dpi; b += dpi) {
-            const cx = flat ? a : b;
-            const cy = flat ? b : a;
-            corners.forEach(([x, y], i) => {
-              const px0 = (cx + x - texture.x0) * px;
-              const py0 = (cy + y - texture.y0) * px;
-              if (i === 0) {
-                context.moveTo(px0, py0);
-              } else {
-                context.lineTo(px0, py0);
-              }
-            });
-            context.closePath();
-          }
-        }
-      } else {
-        for (let x = Math.ceil(texture.x0 / scene.dpi) * scene.dpi; x <= texture.x0 + texture.w; x += scene.dpi) {
-          context.moveTo((x - texture.x0) * px, 0);
-          context.lineTo((x - texture.x0) * px, source.height);
-        }
-        for (let y = Math.ceil(texture.y0 / scene.dpi) * scene.dpi; y <= texture.y0 + texture.h; y += scene.dpi) {
-          context.moveTo(0, (y - texture.y0) * px);
-          context.lineTo(source.width, (y - texture.y0) * px);
-        }
-      }
-      context.stroke();
-    }
+    const source: HTMLCanvasElement = texture.canvas;
     this.dropMapTextures();
     const anisotropy = this.renderer?.capabilities.getMaxAnisotropy() ?? 1;
-    const map = new THREE.CanvasTexture(source);
-    map.anisotropy = anisotropy;
-    this.mapTexture = map;
-    if (source === texture.canvas) {
-      this.plainTexture = map;
+    const media = this.mapMedia;
+    const played = this.options.videoMaps && !!media?.images.some((img) => img instanceof HTMLVideoElement);
+    // A lone video map: the video itself, its frames sent straight to the graphics card, its place on
+    // the ground through the texture's own transform (see videoTexture).
+    const lone = played && media!.images.length === 1 ? (media!.images[0] as HTMLVideoElement) : null;
+    let map: THREE.Texture;
+    if (lone) {
+      map = videoTexture(lone, media!.maps[0], texture);
+      this.directVideo = lone;
+      this.stillTexture = new THREE.CanvasTexture(texture.canvas);
     } else {
-      this.plainTexture = new THREE.CanvasTexture(texture.canvas);
-      this.plainTexture.anisotropy = anisotropy;
+      map = new THREE.CanvasTexture(source);
+      map.anisotropy = anisotropy;
+    }
+    this.mapTexture = map;
+    this.plainTexture = map;
+    // Drawn again every frame: no smaller copies worked out each time (as costly as sending it).
+    if (played) {
+      for (const t of new Set([map, this.plainTexture])) {
+        t.generateMipmaps = false;
+        t.minFilter = THREE.LinearFilter;
+      }
     }
     for (const material of this.pieceMaterials) {
       if (material.userData.mapTextured) {
@@ -1391,6 +1357,9 @@ export class VistazoView {
     if (this.plainTexture && this.plainTexture !== this.mapTexture) {
       this.plainTexture.dispose();
     }
+    this.stillTexture?.dispose();
+    this.stillTexture = null;
+    this.directVideo = null;
     this.mapTexture?.dispose();
     this.mapTexture = null;
     this.plainTexture = null;
@@ -1412,7 +1381,7 @@ export class VistazoView {
         (Array.isArray(material) ? material : material ? [material] : []).forEach((m) => {
           // The map texture and the patterns are shared: only a prop's own is let go.
           const own = (m as THREE.MeshBasicMaterial).map;
-          if (own && own !== this.mapTexture && own !== this.plainTexture && !isShared(own)) {
+          if (own && own !== this.mapTexture && own !== this.plainTexture && own !== this.stillTexture && !isShared(own)) {
             own.dispose();
           }
           m.dispose();
@@ -1515,8 +1484,23 @@ export class VistazoView {
     });
     material.userData.color = color.clone();
     material.userData.mapTextured = textured;
+    if (textured) {
+      gridded(material, this.gridUniforms);
+    }
     this.pieceMaterials.push(material);
     return material;
+  }
+
+  /** The grid over the ground as the options and Owlbear's grid have it (none, square, hex flat-topped or pointy). */
+  private syncGrid() {
+    const scene = this.scene;
+    const g = this.gridUniforms;
+    const hex = scene?.hexGrid;
+    g.uGridKind.value = !scene || !this.options.grid ? 0 : hex ? (hex.shape === "hexHorizontal" ? 2 : 3) : scene.squareGrid ? 1 : 0;
+    g.uGridDpi.value = scene?.dpi ?? 1;
+    g.uGridCenter.value.set(hex?.center.x ?? 0, hex?.center.y ?? 0);
+    g.uGridU.value = this.u;
+    this.fillUniforms.uFillU.value = this.u;
   }
 
   /**
@@ -1533,7 +1517,7 @@ export class VistazoView {
     const band = VIEW_CELL * 0.75;
     // One mesh for each style, inside and at the map's edge (which can be hidden).
     // A wall with a picture from the map's rectangle goes in its own mesh ("skin"), textured with the map.
-    const styleOf = (wall: Wall): WallStyle | "skin" => (wall.skin && this.texture ? "skin" : (wall.style ?? this.options.wallStyle));
+    const styleOf = (wall: Wall): WallStyle | "skin" => (wall.skin && this.texture ? "skin" : (wall.style ?? WALL_STYLE));
     const styles = new Set(list.map(styleOf));
     for (const [edge, style] of [false, true].flatMap((e) => [...styles].map((st) => [e, st] as const))) {
       const walls = list.filter((wall) => wall.edge === edge && styleOf(wall) === style);
@@ -1794,8 +1778,6 @@ export class VistazoView {
     this.clear(this.edgeGroup);
     this.clear(this.fillGroup);
     this.clear(this.baseGroup);
-    this.reachTexture?.dispose();
-    this.reachTexture = null;
     this.clear(this.fogGroup);
     this.pieceMaterials = [];
     this.k = VIEW_CELL * this.options.heightScale;
@@ -1919,7 +1901,7 @@ export class VistazoView {
           uU: { value: this.u },
           uCell: { value: VIEW_CELL },
           uMirror: { value: bridge.under === "mirror" ? 1 : 0 },
-          uMap: { value: this.mapTexture },
+          uMap: { value: this.stillTexture ?? this.mapTexture },
           uTex: { value: new THREE.Vector4(texture.x0, texture.y0, texture.w, texture.h) },
           uFrame: { value: new THREE.Vector4(center.x, center.y, along.x, along.y) },
           uAcross: { value: new THREE.Vector4(across.x, across.y, halfAlong, halfAcross) },
@@ -2010,7 +1992,7 @@ export class VistazoView {
     this.fogCopy(top, deck.position.z);
     this.baseCopy(top, deck.position.z);
 
-    const style = bridge.walls ?? this.options.wallStyle;
+    const style = bridge.walls ?? WALL_STYLE;
     const kind = style === "rubble" || style === "earth" || style === "wood" ? style : "stone";
     // With a picture from a rectangle of the map: the map, there, on its underside and sides.
     const skin = bridge.skin && this.mapTexture ? bridge.skin : undefined;
@@ -2203,7 +2185,7 @@ export class VistazoView {
     const rgb = this.colors ? this.colors((x0 + x1) / 2, (y0 + y1) / 2) : STONE;
     // Its top: the walls' pattern (stone, earth or wood; stone when they take theirs from the map),
     // tinted with the map's colour there, laid out flat a tile every two cells.
-    const style = piece.walls ?? this.options.wallStyle;
+    const style = piece.walls ?? WALL_STYLE;
     const roof = style === "earth" || style === "wood" || style === "rubble" ? style : "stone";
     const tile = VIEW_CELL * 2;
     const roofUv = new Float32Array(position.count * 2);
@@ -2461,6 +2443,64 @@ export class VistazoView {
     video.requestVideoFrameCallback(onFrame);
   }
 
+  /**
+   * The video maps played on the ground (with the option on, not minimized):
+   * at each new frame of theirs, the ground's texture drawn again from all
+   * the maps (the grid over them) and sent to the graphics card. Otherwise
+   * still, at the frame they're on.
+   */
+  private playMaps() {
+    const media = this.mapMedia;
+    const texture = this.texture;
+    const run = ++this.mapsPlaying;
+    const videos = (media?.images ?? []).filter((img): img is HTMLVideoElement => img instanceof HTMLVideoElement);
+    if (!media || !texture || videos.length === 0) {
+      return;
+    }
+    if (!this.options.videoMaps || this.paused) {
+      videos.forEach((video) => video.pause());
+      return;
+    }
+    const context = texture.canvas.getContext("2d")!;
+    const px = texture.canvas.width / texture.w;
+    let last = 0;
+    const frame = () => {
+      if (run !== this.mapsPlaying || !this.mapTexture) {
+        return;
+      }
+      // At medium or low quality, 15 frames a second at most (the scene drawn again with each).
+      const now = performance.now();
+      if (this.options.quality !== "high" && now - last < 1000 / 15 - 2) {
+        videos[0].requestVideoFrameCallback(frame);
+        return;
+      }
+      last = now;
+      // Straight from the video: only the scene drawn again.
+      if (this.directVideo) {
+        this.mapTexture.needsUpdate = true;
+        this.requestRender();
+        videos[0].requestVideoFrameCallback(frame);
+        return;
+      }
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, texture.canvas.width, texture.canvas.height);
+      media.images.forEach((img, index) => {
+        const map = media.maps[index];
+        context.setTransform(new DOMMatrix().scale(px).translate(-texture.x0, -texture.y0).multiply(new DOMMatrix(map.transform)));
+        context.drawImage(img, 0, 0, map.width, map.height);
+      });
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      this.mapTexture.needsUpdate = true;
+      this.requestRender();
+      videos[0].requestVideoFrameCallback(frame);
+    };
+    for (const video of videos) {
+      video.loop = true;
+      void video.play().catch(() => {});
+    }
+    videos[0].requestVideoFrameCallback(frame);
+  }
+
   /** The picture drawn again, once a frame at most however many videos ask. */
   private requestRender() {
     if (!this.videoFrame) {
@@ -2475,6 +2515,7 @@ export class VistazoView {
   setPaused(paused: boolean) {
     this.paused = paused;
     this.pauseVideos();
+    this.playMaps();
     this.playWeather();
   }
 
@@ -2640,7 +2681,7 @@ export class VistazoView {
         this.waterCache.set(key, kept);
       }
       kept.used = this.builds;
-      const surface = new THREE.Mesh(this.shapeGeometry(kept.shape), waterMaterial(this.mapTexture, t, this.u, scene.dpi, kept.reach));
+      const surface = new THREE.Mesh(this.shapeGeometry(kept.shape), waterMaterial(this.stillTexture ?? this.mapTexture, t, this.u, scene.dpi, kept.reach));
       surface.position.z = level * this.k;
       surface.renderOrder = 4;
       this.waterGroup.add(surface);
@@ -3436,3 +3477,199 @@ function nearOutline(multi: MultiPolygon, x: number, y: number, reach: number): 
   }
   return false;
 }
+
+/** The longest side of the ground's texture while a video map is played on it (drawn again every frame), px. */
+const VIDEO_TEXTURE_MAX = 2048;
+/** The same at medium or low quality. */
+const VIDEO_TEXTURE_LIGHT = 1536;
+
+/**
+ * A lone video map as the ground's texture: the video itself, placed by the
+ * texture's transform where the map is in the texture's box (the ground's
+ * uv: 0 to 1 across the box, up from its bottom). Turned, scaled, flipped:
+ * the map's own transform undone, then over its size.
+ */
+function videoTexture(video: HTMLVideoElement, map: MapImage, box: Texture): THREE.VideoTexture {
+  const texture = new THREE.VideoTexture(video);
+  texture.generateMipmaps = false;
+  texture.minFilter = THREE.LinearFilter;
+  const l = new DOMMatrix(map.transform).inverse();
+  const [x0, y1, w, h] = [box.x0, box.y0 + box.h, box.w, box.h];
+  // Scene (x, y) = (x0 + u·w, y1 − v·h); the map's own point = l·(x, y); the video's uv = (lx / W, 1 − ly / H).
+  const [W, H] = [map.width, map.height];
+  texture.matrixAutoUpdate = false;
+  texture.matrix.set(
+    (l.a * w) / W, (-l.c * h) / W, (l.a * x0 + l.c * y1 + l.e) / W,
+    (-l.b * w) / H, (l.d * h) / H, 1 - (l.b * x0 + l.d * y1 + l.f) / H,
+    0, 0, 1
+  );
+  return texture;
+}
+
+/**
+ * The grid's cells drawn over a ground material, worked out at each pixel
+ * from where it is (scene px: the view units over uGridU): sharp at any
+ * zoom, a line about a fiftieth of a cell wide (a pixel at least), darker
+ * as the map's grid was; fading out where the cells get too small to tell
+ * apart. Square: lines every cell (dpi). Hex, as Owlbear lays them out from
+ * a cell's center, a cell (dpi) between neighbours: flat-topped (2) in
+ * columns, every other one half a cell down; pointy (3) in rows, every
+ * other one half a cell along. The same cells the hex rings follow.
+ */
+function gridded(material: THREE.MeshBasicMaterial, uniforms: Record<string, { value: unknown }>) {
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying vec2 vGridAt;\nuniform float uGridU;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvGridAt = (modelMatrix * vec4(position, 1.0)).xy / uGridU;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", `#include <common>\nvarying vec2 vGridAt;\n${GRID_GLSL}`)
+      .replace("#include <map_fragment>", "#include <map_fragment>\ndiffuseColor.rgb *= 1.0 - 0.35 * gridLine(vGridAt);");
+  };
+  material.customProgramCacheKey = () => "rising-ranges/gridded";
+}
+
+const GRID_GLSL = /* glsl */ `
+  uniform float uGridKind;
+  uniform float uGridDpi;
+  uniform vec2 uGridCenter;
+  // A flat-topped hex's distance from its middle, in the way its edges go (its apothem at the edge).
+  float hexFlat(vec2 q) {
+    q = abs(q);
+    return max(q.y, 0.8660254 * q.x + 0.5 * q.y);
+  }
+  // How far a point is inside its cell's edge (scene px): the nearest of two offset lattices' centers.
+  float hexEdge(vec2 p, bool flatTop) {
+    float d = uGridDpi;
+    float s = 0.8660254 * d;
+    vec2 q = p - uGridCenter;
+    if (!flatTop) q = q.yx;
+    vec2 period = vec2(2.0 * s, d);
+    vec2 a = q - period * floor(q / period + 0.5);
+    vec2 qb = q - vec2(s, 0.5 * d);
+    vec2 b = qb - period * floor(qb / period + 0.5);
+    return 0.5 * d - min(hexFlat(a), hexFlat(b));
+  }
+  float gridLine(vec2 p) {
+    if (uGridKind < 0.5) return 0.0;
+    float d = uGridDpi;
+    float dist;
+    if (uGridKind < 1.5) {
+      vec2 f = abs(fract(p / d + 0.5) - 0.5) * d;
+      dist = min(f.x, f.y);
+    } else {
+      dist = hexEdge(p, uGridKind < 2.5);
+    }
+    float px = length(fwidth(p));
+    // A pixel wide at least; thinner than that, as much fainter as it's thinner (as a picture of it
+    // made smaller would be), not wider.
+    float halfWidth = max(d * 0.01, px * 0.5);
+    float cover = min(1.0, d * 0.02 / (2.0 * halfWidth));
+    float line = (1.0 - smoothstep(halfWidth - px * 0.5, halfWidth + px * 0.5, dist)) * cover;
+    // Too far to tell the cells apart: gone, not a grey haze.
+    return line * (1.0 - smoothstep(d * 0.12, d * 0.35, px));
+  }
+`;
+
+/** How many Bandas, and how many cells an Origen takes, the ground's tint works out (see FILL_GLSL). */
+const FILL_BANDS = 12;
+const FILL_CELLS = 16;
+
+const FILL_VERTEX = /* glsl */ `
+  uniform float uFillU;
+  varying vec2 vAt;
+  void main() {
+    vec4 world = modelMatrix * vec4(position, 1.0);
+    vAt = world.xy / uFillU;
+    gl_Position = projectionMatrix * viewMatrix * world;
+  }
+`;
+
+/**
+ * The Banda tint at a ground point (scene px), as buildReach measured it on
+ * the CPU before: how far across it is (a circle, a square, or on hex cells
+ * the whole steps of the cell it's in from the Origen's cells, as
+ * cellStepsFrom), the first Banda whose edge it's within, and its color
+ * fading in across the Banda (5% at its inner edge, 25% at its ring; on hex
+ * cells by the point's own distance, not whole steps). Sharp at any zoom.
+ */
+const FILL_GLSL = /* glsl */ `
+  uniform float uFillShape;
+  uniform vec2 uFillOrigin;
+  uniform float uFillDpi;
+  uniform vec2 uFillCells[${FILL_CELLS}];
+  uniform int uFillCellCount;
+  uniform float uFillEdges[${FILL_BANDS}];
+  uniform vec3 uFillColors[${FILL_BANDS}];
+  uniform int uFillBands;
+  varying vec2 vAt;
+  const float C30 = 0.8660254;
+  // hexSteps: how many hex steps an offset (cells) is, continuously.
+  float hexStepsG(vec2 d, bool horizontal) {
+    float first = horizontal ? 0.0 : 0.5235988;
+    float most = 0.0;
+    for (int k = 0; k < 3; k++) {
+      float angle = first + float(k) * 1.0471976;
+      most = max(most, abs(d.x * cos(angle) + d.y * sin(angle)));
+    }
+    return most / C30;
+  }
+  // nearestCell: the center of the cell an offset (cells, from a cell's center) falls in.
+  vec2 nearestCellG(vec2 d, bool horizontal) {
+    float r = horizontal ? d.x / C30 : d.y / C30;
+    float q = horizontal ? d.y - 0.5 * r : d.x - 0.5 * r;
+    float s = -q - r;
+    float rq = floor(q + 0.5);
+    float rr = floor(r + 0.5);
+    float rs = floor(s + 0.5);
+    float dq = abs(rq - q);
+    float dr = abs(rr - r);
+    float ds = abs(rs - s);
+    if (dq > dr && dq > ds) {
+      rq = -rr - rs;
+    } else if (dr > ds) {
+      rr = -rq - rs;
+    }
+    return horizontal ? vec2(rr * C30, rq + rr * 0.5) : vec2(rq + rr * 0.5, rr * C30);
+  }
+  void main() {
+    vec2 d = (vAt - uFillOrigin) / uFillDpi;
+    float across;
+    float far = length(d);
+    if (uFillShape < 0.5) {
+      across = far;
+    } else if (uFillShape < 1.5) {
+      across = max(abs(d.x), abs(d.y));
+      far = across;
+    } else {
+      bool horizontal = uFillShape < 2.5;
+      vec2 base = uFillCells[0];
+      vec2 cell = base + nearestCellG(d - base, horizontal);
+      float best = 1e9;
+      for (int k = 0; k < ${FILL_CELLS}; k++) {
+        if (k >= uFillCellCount) break;
+        best = min(best, hexStepsG(cell - uFillCells[k], horizontal));
+      }
+      if (uFillCellCount > 1) best += 1.0;
+      across = floor(best + 0.5);
+    }
+    int index = -1;
+    float inner = 0.0;
+    float outer = 0.0;
+    for (int k = 0; k < ${FILL_BANDS}; k++) {
+      if (k >= uFillBands) break;
+      if (across <= uFillEdges[k]) {
+        index = k;
+        outer = uFillEdges[k];
+        break;
+      }
+      inner = uFillEdges[k];
+    }
+    if (index < 0) discard;
+    float t = clamp((far - inner) / max(outer - inner, 1e-6), 0.0, 1.0);
+    gl_FragColor = vec4(uFillColors[index], 0.05 + 0.2 * t * t);
+  }
+`;
+
+/** The walls' look where their shape has none of its own (see buildWalls). */
+const WALL_STYLE: WallStyle = "blend";

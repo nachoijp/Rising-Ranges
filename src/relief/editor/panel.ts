@@ -1055,7 +1055,7 @@ export function runCombine(ed: ReliefEditor, id: Combine) {
 }
 
 const STAND_EDGES: StandEdge[] = ["auto", "bottom", "top", "left", "right"];
-const WALL_LOOKS: ("" | WallLook)[] = ["", "blend", "flat", "stretch", "fold", "stone", "rubble", "earth", "wood"];
+const WALL_LOOKS: WallLook[] = ["blend", "flat", "stretch", "fold", "stone", "rubble", "earth", "wood"];
 const UNDER_LOOKS: ("" | UnderLook)[] = ["", "mirror", "keep"];
 
 /** A shape's type: terrain, slab or standing. */
@@ -1090,7 +1090,7 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
         ? `<button type="button" class="field" data-k="skin">${esc(t("relief.shape.retake"))}</button><button type="button" class="ib sm" data-k="noskin" ${tip(t("relief.shape.removePicture"))}>${icon("close")}</button>`
         : `<button type="button" class="field" data-k="skin">${esc(t("relief.shape.take"))}</button>`;
   const look = [
-    s.stand ? "" : `<span class="l" ${tip(t("relief.shape.walls"), t("relief.shape.wallsHint"))}>${esc(t("relief.shape.walls"))}</span><select class="field" data-k="wall" ${s.skin ? "disabled" : ""} aria-label="${esc(t("relief.shape.walls"))}">${WALL_LOOKS.map((v) => `<option value="${v}" ${(s.wall ?? "") === v ? "selected" : ""}>${esc(t(`relief.wall.${v || "default"}` as TranslationKey))}</option>`).join("")}</select>`,
+    s.stand ? "" : `<span class="l" ${tip(t("relief.shape.walls"), t("relief.shape.wallsHint"))}>${esc(t("relief.shape.walls"))}</span><select class="field" data-k="wall" ${s.skin ? "disabled" : ""} aria-label="${esc(t("relief.shape.walls"))}">${WALL_LOOKS.map((v) => `<option value="${v}" ${(s.wall ?? "blend") === v ? "selected" : ""}>${esc(t(`relief.wall.${v}` as TranslationKey))}</option>`).join("")}</select>`,
     s.stand ? "" : `<span class="l" ${tip(t("relief.shape.picture"), t("relief.shape.pictureHint"))}>${esc(t("relief.shape.picture"))}</span><span class="line">${picture}</span>`,
     s.slab ? `<span class="l" ${tip(t("relief.shape.under"), t("relief.shape.underHint"))}>${esc(t("relief.shape.under"))}</span><select class="field" data-k="under" aria-label="${esc(t("relief.shape.under"))}">${UNDER_LOOKS.map((v) => `<option value="${v}" ${(s.under ?? "") === v ? "selected" : ""}>${esc(t(`relief.under.${v || "cover"}` as TranslationKey))}</option>`).join("")}</select>` : "",
     `<span class="l"></span><label class="check" ${tip(t("relief.shape.keepLook"), t("relief.shape.keepLookHint"))}><input type="checkbox" data-k="keepLook" ${s.keepLook ? "checked" : ""} /> ${esc(t("relief.shape.keepLook"))}</label>`,
@@ -1190,7 +1190,8 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
   if (wallLook) {
     wallLook.onchange = () => {
       ed.pushUndo();
-      s.wall = (wallLook.value || undefined) as WallLook | undefined;
+      // Blend: none of its own (the walls' look by default).
+      s.wall = wallLook.value === "blend" ? undefined : (wallLook.value as WallLook);
       redo();
     };
   }

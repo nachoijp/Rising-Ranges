@@ -44,6 +44,8 @@ export type Options = {
   clouds: CloudStyle;
   /** Zones' water moving (ripples, glints); still otherwise. */
   waterMotion: boolean;
+  /** A video map played on the ground (its first frame, otherwise). */
+  videoMaps: boolean;
   /**
    * How much the view asks of the device: high as designed; medium a little
    * less sharp on dense screens and lighter weather; low sharp only to the
@@ -59,8 +61,6 @@ export type Options = {
   propShadows: boolean;
   propLines: boolean;
   propLabels: boolean;
-  /** What the walls' faces show (see buildWalls). */
-  wallStyle: WallStyle;
   /** Each Banda's limit around the selected token, drawn on the terrain. */
   rings: boolean;
   /** And the ground in each Banda tinted its colour. */

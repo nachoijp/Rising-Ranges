@@ -120,17 +120,43 @@ function keepJson(key: string, value: unknown) {
   }
 }
 
-/** A map image's picture on a canvas. */
-async function pictureOf(url: string): Promise<HTMLCanvasElement | null> {
+/** A video's first frame, once it has one (it isn't played on). */
+function firstFrame(url: string): Promise<HTMLVideoElement> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.crossOrigin = "anonymous";
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    video.onloadeddata = () => {
+      video.pause();
+      resolve(video);
+    };
+    video.onerror = () => reject(video.error ?? new Error("the video couldn't be read"));
+    video.src = url;
+  });
+}
+
+/** A map image's picture on a canvas (a video map's: its first frame, as the Vistazo draws it). */
+async function pictureOf(url: string, video: boolean): Promise<HTMLCanvasElement | null> {
   try {
-    const img = document.createElement("img");
-    img.crossOrigin = "anonymous";
-    img.src = url;
-    await img.decode();
+    let source: HTMLImageElement | HTMLVideoElement;
+    let [w, h] = [0, 0];
+    if (video) {
+      source = await firstFrame(url);
+      [w, h] = [source.videoWidth, source.videoHeight];
+    } else {
+      const img = document.createElement("img");
+      img.crossOrigin = "anonymous";
+      img.src = url;
+      await img.decode();
+      source = img;
+      [w, h] = [img.naturalWidth, img.naturalHeight];
+    }
     const canvas = document.createElement("canvas");
-    canvas.width = Math.min(PICTURE_WIDTH, img.naturalWidth);
-    canvas.height = Math.round((canvas.width * img.naturalHeight) / img.naturalWidth);
-    canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
+    canvas.width = Math.min(PICTURE_WIDTH, w);
+    canvas.height = Math.round((canvas.width * h) / w);
+    canvas.getContext("2d")!.drawImage(source, 0, 0, canvas.width, canvas.height);
     return canvas;
   } catch (error) {
     console.error("Rising Ranges: the map's picture couldn't be read for the relief editor", error);
@@ -512,7 +538,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       o.onRelief(image.id, editor.relief, false, null, null, was === "heights");
     }
   };
-  void pictureOf(image.image.url).then((picture) => {
+  void pictureOf(image.image.url, image.image.mime.startsWith("video")).then((picture) => {
     map.picture = picture;
     map.fit();
   });

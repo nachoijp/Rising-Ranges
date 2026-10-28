@@ -1157,3 +1157,12 @@ input[type="checkbox"]:focus-visible {
 :not(html):not(body)::-webkit-scrollbar-corner {
   background-color: transparent;
 }
+
+/* The camera sweep (see cinematic in main.ts): only the scene. */
+.cinematic .bar,
+.cinematic .hud,
+.cinematic #grip,
+.cinematic #tools,
+.cinematic .guided-badge {
+  display: none !important;
+}
