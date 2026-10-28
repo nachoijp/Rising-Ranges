@@ -211,17 +211,24 @@ export function reliefTerrain(
   if (groundScene.length > 0) {
     pieces.unshift({ height: 0, shape: groundScene, surface: plainGround && !clear && !surfaced ? undefined : surfaceOf(null) });
   }
-  // Slabs: bridges over the terrain (a slab's top as its middle has it).
+  // Slabs: bridges over the terrain (a slab's top as its middle has it; one that isn't flat, at each point too).
   const bridges: Bridge[] = (within ? [] : relief.slabLayers.filter((layer) => !skip?.has(layer.si))).map((layer) => {
     const shape = relief.data.shapes[layer.si];
     const [cx, cy] = centroid(layer.ring);
     const top = relief.surface(layer, cx, cy);
     const outline = sceneOf([[closed(layer.ring), ...layer.holes.map(closed)]]);
+    const flat = shape.kind === "flat" && layer.pieces.length === 1 && !(shape.detail && shape.detail.v.size > 0);
     return {
       id: `relief-${layer.si}`,
       shape: outline,
       top,
       bottom: top - layer.thick,
+      surface: flat
+        ? undefined
+        : (p: { x: number; y: number }) => {
+            const [x, y] = sceneToCell(anchor, dpi, p.x, p.y);
+            return relief.surface(layer, x, y);
+          },
       walls: shape.wall,
       skin: shape.skin ? skinOf(shape.skin, toScene) : undefined,
       frame: frameOf(layer.ring.map(toScene).map(([x, y]) => ({ x, y }))),

@@ -989,7 +989,9 @@ const deleteButton = (t: T) => `<button type="button" class="ib sm" data-k="del"
 /** A vertex, some vertices, or a height point picked: their height. */
 function pointProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) => string) {
   const sel = ed.sel!;
-  const title = sel.kind === "verts" ? t("relief.vertices", { n: sel.list.length }) : sel.kind === "vertex" ? t("relief.vertex") : t("relief.point");
+  const [nv, np] = sel.kind === "verts" ? [sel.list.length, sel.points?.length ?? 0] : [0, 0];
+  const title =
+    sel.kind !== "verts" ? t(sel.kind === "vertex" ? "relief.vertex" : "relief.point") : np === 0 ? t("relief.vertices", { n: nv }) : nv === 0 ? t("relief.points", { n: np }) : t("relief.pickedMany", { n: nv + np });
   const targets = ed.targets();
   const same = targets.every((x) => x.h === targets[0].h);
   el.innerHTML = `

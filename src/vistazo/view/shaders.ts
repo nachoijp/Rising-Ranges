@@ -29,6 +29,7 @@ export const UNDER_FRAGMENT = /* glsl */ `
   uniform float uCell;
   uniform float uBelow;
   uniform sampler2D uFill;
+  uniform sampler2D uUnderside;
   uniform vec4 uBox;
   uniform float uMirror;
   uniform sampler2D uMap;
@@ -46,6 +47,8 @@ export const UNDER_FRAGMENT = /* glsl */ `
     if (m.x < 0.0 || m.x > 1.0 || m.y < 0.0 || m.y > 1.0) discard;
     vec4 fill = texture2D(uFill, m);
     if (fill.a < 0.01) discard;
+    // Only under its underside there (an inclined slab's lower end is below its higher end's).
+    if (vAt.z > texture2D(uUnderside, m).r + 0.01) discard;
     if (uMirror > 0.5) {
       // The map mirrored across each long side (just past it, going out as it goes in), the two blended
       // across its width: each side's own next to it, fading into the other's, so no seam in the middle.

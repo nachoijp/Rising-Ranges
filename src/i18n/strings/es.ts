@@ -637,6 +637,8 @@ const es = {
   "relief.brush.paintsHint": "Lo de arriba: el suelo, o la forma que lo tapa (su relieve va con ella si la movés). Solo el suelo: también debajo de las formas; las formas no cambian, pero al suavizar el suelo sube o baja hacia ellas.",
   "relief.vertex": "Vértice",
   "relief.vertices": "{n} vértices",
+  "relief.points": "{n} puntos de altura",
+  "relief.pickedMany": "{n} elegidos",
   "relief.point": "Punto de altura",
   "relief.varied": "varias",
   "relief.pointText": "Le da su altura a la forma inclinada en la que está. Arrastralo para moverlo; Alt+clic lo quita.",

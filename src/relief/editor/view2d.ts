@@ -530,7 +530,7 @@ export class MapView {
     // Height points: those inside an inclined shape shown.
     const slopes = visible.filter((s) => s.kind === "slope").map((s) => r.coordsOf(s));
     data.points.forEach((q, i) => {
-      const selected = sel?.kind === "point" && sel.i === i;
+      const selected = (sel?.kind === "point" && sel.i === i) || (sel?.kind === "verts" && !!sel.points?.includes(i));
       if (!selected && !slopes.some(([ring, holes]) => inShape(q.x, q.y, ring, holes))) {
         return;
       }

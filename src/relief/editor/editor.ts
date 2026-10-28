@@ -38,7 +38,8 @@ export type ToolId = "rect" | "ellipse" | "lasso" | "paintShape" | "polygon" | "
 export type Selection =
   | { kind: "shape"; i: number; more?: number[] }
   | { kind: "vertex"; i: number }
-  | { kind: "verts"; list: number[] }
+  /** Several picked: vertices, and height points (`points`). */
+  | { kind: "verts"; list: number[]; points?: number[] }
   | { kind: "point"; i: number };
 
 /** A pointer event's keys, and how many clicks it is (2: a double click). */
@@ -122,7 +123,7 @@ export class ReliefEditor {
   drawing: number[] | null = null;
   shape: { start: { x: number; y: number }; end: { x: number; y: number }; path: Pt[]; origin?: { x: number; y: number } } | null = null;
   box: { start: { x: number; y: number }; end: { x: number; y: number }; add: boolean } | null = null;
-  drag: { kind: "vertex" | "point"; i: number } | { group: number[]; from: { x: number; y: number }; start: Pt[] } | null = null;
+  drag: { kind: "vertex" | "point"; i: number } | { group: number[]; points: number[]; from: { x: number; y: number }; start: Pt[]; pstart: Pt[] } | null = null;
   /** Where what's dragged (a vertex, a height point, the first of a group) started, for how far it's gone (see dragMoved). */
   private dragStart: Pt | null = null;
   xf: Transform | null = null;
@@ -231,9 +232,12 @@ export class ReliefEditor {
     } else if (sel?.kind === "verts" || sel?.kind === "vertex") {
       const picked = new Set(sel.kind === "verts" ? sel.list : [sel.i]);
       data.shapes.forEach((s, si) => vertsOf(s).some((v) => picked.has(v)) && focus.add(si));
-    } else if (sel?.kind === "point" && data.points[sel.i]) {
-      const q = data.points[sel.i];
-      data.shapes.forEach((s, si) => s.kind === "slope" && inShape(q.x, q.y, ...this.relief.coordsOf(s)) && focus.add(si));
+    }
+    for (const pi of sel?.kind === "point" ? [sel.i] : sel?.kind === "verts" ? (sel.points ?? []) : []) {
+      const q = data.points[pi];
+      if (q) {
+        data.shapes.forEach((s, si) => s.kind === "slope" && inShape(q.x, q.y, ...this.relief.coordsOf(s)) && focus.add(si));
+      }
     }
     for (const si of focus) {
       if (!data.shapes[si] || !free(data.shapes[si])) {
@@ -271,6 +275,46 @@ export class ReliefEditor {
     const focus = this.focusShapes();
     const slopes = focus ? [...focus].map((si) => this.data.shapes[si]).filter((s) => s.kind === "slope").map((s) => this.relief.coordsOf(s)) : null;
     return this.data.points.findIndex((q) => Math.hypot(q.x - p.x, q.y - p.y) < reach && (!slopes || slopes.some(([ring, holes]) => inShape(q.x, q.y, ring, holes))));
+  }
+
+  /** The height points that can be taken: inside an inclined shape in focus (see focusShapes), or all with none. */
+  private takeablePoints(): number[] {
+    const focus = this.focusShapes();
+    const slopes = focus ? [...focus].map((si) => this.data.shapes[si]).filter((s) => s.kind === "slope").map((s) => this.relief.coordsOf(s)) : null;
+    return this.data.points.flatMap((q, i) => (!slopes || slopes.some(([ring, holes]) => inShape(q.x, q.y, ring, holes)) ? [i] : []));
+  }
+
+  /** What's picked as vertices and height points (one, several, or none). */
+  private pickedPoints(): { list: number[]; points: number[] } {
+    const sel = this.sel;
+    return sel?.kind === "verts" ? { list: sel.list, points: sel.points ?? [] } : sel?.kind === "vertex" ? { list: [sel.i], points: [] } : sel?.kind === "point" ? { list: [], points: [sel.i] } : { list: [], points: [] };
+  }
+
+  /** Several picked (none: nothing). */
+  private pickMany(list: number[], points: number[]) {
+    this.sel = list.length + points.length === 0 ? null : { kind: "verts", list, ...(points.length > 0 ? { points } : {}) };
+  }
+
+  /**
+   * Shift+click while picking vertices: the vertex or height point there
+   * (one that can be taken) added to what's picked, or taken out of it.
+   * Whether there was one.
+   */
+  togglePointAt(p: { x: number; y: number }, mods: Mods): boolean {
+    if (this.tool !== "edit" || this.settings.pickMode === "shapes" || !mods.shift || this.drawing) {
+      return false;
+    }
+    const reach = this.host.snapReach();
+    const used = this.takeable();
+    const vi = this.data.verts.findIndex((v, i) => used.has(i) && Math.hypot(v.x - p.x, v.y - p.y) < reach);
+    const pi = vi >= 0 ? -1 : this.pointNear(p, reach);
+    if (vi < 0 && pi < 0) {
+      return false;
+    }
+    const { list, points } = this.pickedPoints();
+    const flip = (all: number[], i: number) => (all.includes(i) ? all.filter((x) => x !== i) : [...all, i]);
+    this.pickMany(vi >= 0 ? flip(list, vi) : list, pi >= 0 ? flip(points, pi) : points);
+    return true;
   }
 
   /** The topmost shape at a point that can be picked there (not hidden, nor locked, in the editor); -1: none. */
@@ -479,12 +523,21 @@ export class ReliefEditor {
     const vi = shapesOnly ? -1 : this.data.verts.findIndex((v, i) => used.has(i) && Math.hypot(v.x - p.x, v.y - p.y) < reach);
     const pi = shapesOnly ? -1 : this.pointNear(p, reach);
     const sel = this.sel;
-    if (vi >= 0 || pi >= 0) {
+    if ((vi >= 0 || pi >= 0) && this.togglePointAt(p, mods)) {
+      // Shift: added to what's picked, or taken out (nothing dragged).
+    } else if (vi >= 0 || pi >= 0) {
       this.pushUndo();
-      // A vertex in the group picked drags the group.
-      if (vi >= 0 && sel?.kind === "verts" && sel.list.includes(vi)) {
-        this.drag = { group: sel.list, from: p, start: sel.list.map((i): Pt => [this.data.verts[i].x, this.data.verts[i].y]) };
-        this.dragStart = this.drag.start[0];
+      // A vertex or a point in the group picked drags the group.
+      if (sel?.kind === "verts" && (vi >= 0 ? sel.list.includes(vi) : (sel.points ?? []).includes(pi))) {
+        const points = sel.points ?? [];
+        this.drag = {
+          group: sel.list,
+          points,
+          from: p,
+          start: sel.list.map((i): Pt => [this.data.verts[i].x, this.data.verts[i].y]),
+          pstart: points.map((i): Pt => [this.data.points[i].x, this.data.points[i].y]),
+        };
+        this.dragStart = this.drag.start[0] ?? this.drag.pstart[0];
       } else {
         const picked = vi >= 0 ? ({ kind: "vertex", i: vi } as const) : ({ kind: "point", i: pi } as const);
         this.sel = picked;
@@ -681,6 +734,10 @@ export class ReliefEditor {
           verts[i].x = drag.start[k][0] + dx;
           verts[i].y = drag.start[k][1] + dy;
         });
+        drag.points.forEach((i, k) => {
+          this.data.points[i].x = drag.pstart[k][0] + dx;
+          this.data.points[i].y = drag.pstart[k][1] + dy;
+        });
       } else {
         const target = this.drag.kind === "vertex" ? verts[this.drag.i] : this.data.points[this.drag.i];
         const q = this.gridded(p);
@@ -764,10 +821,11 @@ export class ReliefEditor {
       }
       const verts = this.data.verts;
       const used = this.takeable();
-      const inside = verts.map((_, i) => i).filter((i) => used.has(i) && verts[i].x >= x0 && verts[i].x <= x1 && verts[i].y >= y0 && verts[i].y <= y1);
-      const before = add && this.sel?.kind === "verts" ? this.sel.list : [];
-      const list = [...new Set([...before, ...inside])];
-      this.sel = list.length > 0 ? { kind: "verts", list } : null;
+      const within = (q: { x: number; y: number }) => q.x >= x0 && q.x <= x1 && q.y >= y0 && q.y <= y1;
+      const inside = verts.map((_, i) => i).filter((i) => used.has(i) && within(verts[i]));
+      const insidePoints = this.takeablePoints().filter((i) => within(this.data.points[i]));
+      const before = add ? this.pickedPoints() : { list: [], points: [] };
+      this.pickMany([...new Set([...before.list, ...inside])], [...new Set([...before.points, ...insidePoints])]);
       this.host.showProps();
       this.host.redraw();
     }
@@ -922,7 +980,7 @@ export class ReliefEditor {
       return true;
     }
     const nudge = ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] } as Record<string, Pt>)[e.key];
-    if (nudge && this.selectedVerts().length > 0) {
+    if (nudge && (this.selectedVerts().length > 0 || (this.sel?.kind === "verts" && this.sel.points?.length))) {
       this.pushUndo();
       const step = e.shift ? 1 : 0.25;
       this.moveSelection((x, y) => [x + nudge[0] * step, y + nudge[1] * step]);
@@ -941,11 +999,18 @@ export class ReliefEditor {
     return false;
   }
 
-  /** What's picked a step higher (or lower): a ramp's two ends, an inclined shape's corners, a vertex, a point. */
+  /**
+   * What's picked a step higher (or lower): a ramp's two ends, an inclined
+   * shape's corners and height points, vertices, a point. What makes a slope
+   * (all but a flat shape or a ramp) by a quarter: finer, as a slope wants.
+   */
   raise(step: number) {
     const sel = this.sel;
     if (!sel) {
       return;
+    }
+    if (sel.kind !== "shape" || this.data.shapes[sel.i]?.kind === "slope") {
+      step = Math.sign(step) * 0.25;
     }
     this.pushUndo();
     const ramp = sel.kind === "shape" ? this.data.shapes[sel.i].ramp : undefined;
@@ -973,6 +1038,10 @@ export class ReliefEditor {
     } else if (sel.kind === "point") {
       this.data.points.splice(sel.i, 1);
     } else {
+      if (sel.kind === "verts" && sel.points?.length) {
+        const out = new Set(sel.points);
+        this.data.points = this.data.points.filter((_, i) => !out.has(i));
+      }
       const gone = new Set(sel.kind === "verts" ? sel.list : [sel.i]);
       for (const s of this.data.shapes) {
         s.ring = s.ring.filter((i) => !gone.has(i));
@@ -998,11 +1067,16 @@ export class ReliefEditor {
     }
     const data = this.data;
     if (sel.kind === "verts") {
-      return sel.list.map((i) => data.verts[i]);
+      return [...sel.list.map((i) => data.verts[i]), ...(sel.points ?? []).map((i) => data.points[i])];
     }
     if (sel.kind === "shape") {
       const s = data.shapes[sel.i];
-      return s.kind === "slope" ? vertsOf(s).map((i) => data.verts[i]) : [s];
+      if (s.kind !== "slope") {
+        return [s];
+      }
+      // An inclined one: its corners, and the height points inside it.
+      const [ring, holes] = this.relief.coordsOf(s);
+      return [...vertsOf(s).map((i) => data.verts[i]), ...data.points.filter((q) => inShape(q.x, q.y, ring, holes))];
     }
     return [sel.kind === "point" ? data.points[sel.i] : data.verts[sel.i]];
   }
@@ -1130,7 +1204,7 @@ export class ReliefEditor {
     if (!drag || !this.dragStart) {
       return null;
     }
-    const now = "group" in drag ? this.data.verts[drag.group[0]] : drag.kind === "vertex" ? this.data.verts[drag.i] : this.data.points[drag.i];
+    const now = "group" in drag ? (drag.group.length > 0 ? this.data.verts[drag.group[0]] : this.data.points[drag.points[0]]) : drag.kind === "vertex" ? this.data.verts[drag.i] : this.data.points[drag.i];
     return now ? Math.hypot(now.x - this.dragStart[0], now.y - this.dragStart[1]) : null;
   }
 
@@ -1188,6 +1262,9 @@ export class ReliefEditor {
   moveSelection(f: (x: number, y: number) => Pt) {
     for (const i of this.selectedVerts()) {
       [this.data.verts[i].x, this.data.verts[i].y] = f(this.data.verts[i].x, this.data.verts[i].y);
+    }
+    for (const i of this.sel?.kind === "verts" ? (this.sel.points ?? []) : []) {
+      [this.data.points[i].x, this.data.points[i].y] = f(this.data.points[i].x, this.data.points[i].y);
     }
     const s = this.sel?.kind === "shape" ? this.data.shapes[this.sel.i] : null;
     if (s?.ramp) {

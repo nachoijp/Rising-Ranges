@@ -117,6 +117,31 @@ export function locate(pts: HPt[], tris: number[][], x: number, y: number): numb
   return undefined;
 }
 
+/**
+ * The height at (x, y) from the triangle it's least outside of (a point a
+ * hair past the outline: on its side there, not at a corner far off),
+ * clamped onto it; undefined with no triangles.
+ */
+export function nearestOnTris(pts: HPt[], tris: number[][], x: number, y: number): number | undefined {
+  let best: [number, number, number] | null = null;
+  let at: number[] = [];
+  let score = -Infinity;
+  for (const t of tris) {
+    const w = barycentric(pts[t[0]], pts[t[1]], pts[t[2]], x, y);
+    if (w && Math.min(...w) > score) {
+      score = Math.min(...w);
+      best = w;
+      at = t;
+    }
+  }
+  if (!best) {
+    return undefined;
+  }
+  const w = best.map((v) => Math.max(0, v));
+  const sum = w[0] + w[1] + w[2] || 1;
+  return (w[0] * pts[at[0]][2] + w[1] * pts[at[1]][2] + w[2] * pts[at[2]][2]) / sum;
+}
+
 export function nearestH(pts: HPt[], x: number, y: number): number {
   let best = 0;
   let d = Infinity;
@@ -137,6 +162,44 @@ function inCircle(a: number[], b: number[], c: number[], d: number[]): boolean {
   const [bx, by] = [b[0] - d[0], b[1] - d[1]];
   const [cx, cy] = [c[0] - d[0], c[1] - d[1]];
   return (ax * ax + ay * ay) * (bx * cy - cx * by) - (bx * bx + by * by) * (ax * cy - cx * ay) + (cx * cx + cy * cy) * (ax * by - bx * ay) > 1e-12;
+}
+
+/**
+ * A triangulation (counter-clockwise triangles) made Delaunay: the inside
+ * edge of two triangles flipped while the far corner of one is inside the
+ * other's circle (well inside: a tie, as a rectangle's two diagonals, keeps
+ * the one it has) and the four make a convex quad. The outline's edges have
+ * one triangle each, so they stay. No long thin triangles across a shape:
+ * each joins the corners nearest it (an inclined shape's surface then
+ * follows the heights beside it, not those far off).
+ */
+export function delaunay(pts: number[][], tris: number[][]) {
+  const inside = (a: number[], b: number[], c: number[], d: number[]) => {
+    const [ax, ay, bx, by, cx, cy] = [a[0] - d[0], a[1] - d[1], b[0] - d[0], b[1] - d[1], c[0] - d[0], c[1] - d[1]];
+    const [la, lb, lc] = [ax * ax + ay * ay, bx * bx + by * by, cx * cx + cy * cy];
+    const terms = [la * (bx * cy - cx * by), -lb * (ax * cy - cx * ay), lc * (ax * by - bx * ay)];
+    const size = Math.abs(terms[0]) + Math.abs(terms[1]) + Math.abs(terms[2]);
+    return terms[0] + terms[1] + terms[2] > 1e-9 * size;
+  };
+  for (let pass = 0, flipped = true; flipped && pass < 100; pass++) {
+    flipped = false;
+    for (let m = 0; m < tris.length; m++) {
+      for (let e = 0; e < 3; e++) {
+        const [u, v, c] = [tris[m][e], tris[m][(e + 1) % 3], tris[m][(e + 2) % 3]];
+        const n = tris.findIndex((tr, k) => k !== m && hasEdge(tr, v, u));
+        if (n < 0) {
+          continue;
+        }
+        const w = tris[n].find((k) => k !== u && k !== v)!;
+        if (inside(pts[u], pts[v], pts[c], pts[w]) && cross(pts[c], pts[w], pts[u]) * cross(pts[c], pts[w], pts[v]) < 0) {
+          tris[m] = [u, w, c];
+          tris[n] = [w, v, c];
+          flipped = true;
+          break;
+        }
+      }
+    }
+  }
 }
 
 /**

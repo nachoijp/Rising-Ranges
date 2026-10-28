@@ -167,7 +167,18 @@ type Terrain = {
 };
 
 /** A bridge or balcony drawn: its outline (scene px), top and underside (grid units), its wall style. */
-export type Bridge = { id: string; shape: MultiPolygon; top: number; bottom: number; walls?: TerrainWallStyle; skin?: TerrainSkin; frame: BridgeFrame; si?: number; under?: UnderLook };
+/**
+ * A slab over the terrain: its top and underside (grid units) as its middle
+ * has them; one that isn't flat (a ramp, inclined, stairs, painted) its top
+ * at each scene point too (`surface`), its underside as far under it.
+ */
+export type Bridge = { id: string; shape: MultiPolygon; top: number; bottom: number; surface?: (point: { x: number; y: number }) => number; walls?: TerrainWallStyle; skin?: TerrainSkin; frame: BridgeFrame; si?: number; under?: UnderLook };
+
+/** A bridge's top at a scene point (its own height there, if it isn't flat). */
+export const bridgeTop = (bridge: Bridge, x: number, y: number) => (bridge.surface ? bridge.surface({ x, y }) : bridge.top);
+
+/** A bridge's highest top (at its corners, if it isn't flat). */
+export const bridgeHighest = (bridge: Bridge) => (bridge.surface ? Math.max(bridge.top, ...bridge.shape.flat(2).map(([x, y]) => bridgeTop(bridge, x, y))) : bridge.top);
 
 /**
  * The player view's sight: what of the map the fog leaves clear (worked out
@@ -303,9 +314,9 @@ export function buildScene(
     };
     // Raised exactly to a bridge's top over it: standing on the bridge.
     const total = token.terrain + token.own;
-    const bridge = token.own > 0 ? terrain.bridges.find((b) => Math.abs(b.top - total) < 1e-6 && inShape(x, y, b.shape)) : undefined;
+    const bridge = token.own > 0 ? terrain.bridges.find((b) => Math.abs(bridgeTop(b, x, y) - total) < 1e-3 && inShape(x, y, b.shape)) : undefined;
     if (bridge) {
-      token.bridge = bridge.top;
+      token.bridge = bridgeTop(bridge, x, y);
     }
     heights.set(item.id, total);
     return token;

@@ -1,5 +1,5 @@
 import clip from "../terrain/clip";
-import { bbox, ccw, centroid, closed, inBox, inShape, insertPoints, locate, nearestH, open, triangulate, type Box, type HPt } from "./geom";
+import { bbox, ccw, centroid, closed, delaunay, inBox, inShape, insertPoints, locate, nearestH, nearestOnTris, open, triangulate, type Box, type HPt } from "./geom";
 import type { Affine, Detail, Pt, ReliefData, Shape, StandEdge } from "./types";
 
 // The relief worked out: heights at any point of the map, from the painted
@@ -392,12 +392,15 @@ export class Relief {
       // A self-crossing outline: no surface.
     }
     ccw(pts, tris);
+    // Its triangles joining the corners nearest each other, not across it (see delaunay).
+    delaunay(pts, tris);
     insertPoints(
       pts,
       tris,
       this.data.points.filter((p) => inShape(p.x, p.y, ring, holes)).map((p): HPt => [p.x, p.y, p.h])
     );
-    return [{ si, ring, holes, box, fn: (x, y) => locate(pts, tris, x, y) ?? nearestH(pts, x, y) }];
+    // A hair outside (a point on its outline, rounded): its side's height there, not a far corner's.
+    return [{ si, ring, holes, box, fn: (x, y) => locate(pts, tris, x, y) ?? nearestOnTris(pts, tris, x, y) ?? nearestH(pts, x, y) }];
   }
 
   /** Where a shape's outline (with its holes) is, on a grid of RASTER. Kept while the outline stays. */

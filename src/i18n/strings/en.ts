@@ -641,6 +641,8 @@ const en: Record<TranslationKey, string> = {
   "relief.brush.ground": "Only the ground",
   "relief.brush.paintsHint": "What's on top: the ground, or the shape over it (its relief goes with it if you move it). Only the ground: under the shapes too; the shapes don't change, but smoothing takes the ground up or down to them.",
   "relief.vertex": "Corner",
+  "relief.points": "{n} height points",
+  "relief.pickedMany": "{n} picked",
   "relief.vertices": "{n} corners",
   "relief.point": "Height point",
   "relief.varied": "varied",

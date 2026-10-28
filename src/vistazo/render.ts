@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { TessellateModifier } from "three/examples/jsm/modifiers/TessellateModifier.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { MultiPolygon } from "polygon-clipping";
-import { inShape, pieceHeight, type Bridge, type Piece, type Prop, type Token, type VistazoScene } from "./scene";
+import { bridgeHighest, bridgeTop, inShape, pieceHeight, type Bridge, type Piece, type Prop, type Token, type VistazoScene } from "./scene";
 import { cellCorners, cellStepsFrom, cellsOutline, isHexShape, ringSteps } from "../engine/hex";
 import type { Fog } from "./fog";
 import { visibleBox } from "./visibleBox";
@@ -1885,6 +1885,19 @@ export class VistazoView {
       fill.minFilter = THREE.LinearFilter;
       fill.needsUpdate = true;
       const area = new THREE.Vector4(...kept.box);
+      // Its underside's height (view units) over the same box: one, if it's flat; else at each texel
+      // (nothing above it there is under it).
+      const thick = bridge.top - bridge.bottom;
+      const [cols, rows] = bridge.surface ? [kept.cols, kept.rows] : [1, 1];
+      const heights = new Float32Array(cols * rows * 4);
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const [x, y] = [area.x + ((c + 0.5) / cols) * area.z, area.y + ((r + 0.5) / rows) * area.w];
+          heights[(r * cols + c) * 4] = (bridgeTop(bridge, x, y) - thick) * this.k;
+        }
+      }
+      const underside = new THREE.DataTexture(heights, cols, rows, THREE.RGBAFormat, THREE.FloatType);
+      underside.needsUpdate = true;
       const material = new THREE.ShaderMaterial({
         vertexShader: UNDER_VERTEX,
         fragmentShader: UNDER_FRAGMENT,
@@ -1902,12 +1915,16 @@ export class VistazoView {
           uTex: { value: new THREE.Vector4(texture.x0, texture.y0, texture.w, texture.h) },
           uFrame: { value: new THREE.Vector4(center.x, center.y, along.x, along.y) },
           uAcross: { value: new THREE.Vector4(across.x, across.y, halfAlong, halfAcross) },
-          uBelow: { value: bridge.bottom * this.k },
+          uBelow: { value: (bridgeHighest(bridge) - (bridge.top - bridge.bottom)) * this.k },
           uFill: { value: fill },
+          uUnderside: { value: underside },
           uBox: { value: area },
         },
       });
-      material.addEventListener("dispose", () => fill.dispose());
+      material.addEventListener("dispose", () => {
+        fill.dispose();
+        underside.dispose();
+      });
       // Only the terrain under its box, as one mesh (one draw, not one for every piece of the map).
       const u = this.u;
       const box = { x0: area.x * u, y0: area.y * u, x1: (area.x + area.z) * u, y1: (area.y + area.w) * u };
@@ -1966,15 +1983,24 @@ export class VistazoView {
   private buildBridge(bridge: Bridge) {
     const u = this.u;
     const k = this.k;
-    const top = this.shapeGeometry(bridge.shape);
+    const thick = (bridge.top - bridge.bottom) * k;
+    // Not flat: cut small (as a surfaced piece), each corner at its own height.
+    const sloped = !!bridge.surface;
+    const top = sloped ? this.fineGeometry({ height: bridge.top, shape: bridge.shape }) : this.shapeGeometry(bridge.shape);
     const position = top.getAttribute("position") as THREE.BufferAttribute;
     top.setAttribute("uv", new THREE.BufferAttribute(this.uvs(position.array, position.count), 2));
+    if (sloped) {
+      for (let i = 0; i < position.count; i++) {
+        position.setZ(i, bridgeTop(bridge, position.getX(i) / u, position.getY(i) / u) * k);
+      }
+      position.needsUpdate = true;
+    }
     const deck = new THREE.Mesh(top, this.pieceMaterial(bridge.top, true));
-    deck.position.z = bridge.top * k;
+    deck.position.z = sloped ? 0 : bridge.top * k;
     this.terrainGroup.add(deck);
-    this.fillCopy(top, bridge.top * k);
-    this.fogCopy(top, bridge.top * k);
-    this.baseCopy(top, bridge.top * k);
+    this.fillCopy(top, deck.position.z);
+    this.fogCopy(top, deck.position.z);
+    this.baseCopy(top, deck.position.z);
 
     const style = bridge.walls ?? this.options.wallStyle;
     const kind = style === "rubble" || style === "earth" || style === "wood" ? style : "stone";
@@ -2000,8 +2026,8 @@ export class VistazoView {
     const tint = (shade: number) => new THREE.Color(...(rgb.map((v) => (v / 255) * shade) as [number, number, number]));
     const tile = VIEW_CELL * 2;
 
-    // Its underside, a little darker (in its own shadow).
-    const under = this.shapeGeometry(bridge.shape);
+    // Its underside, a little darker (in its own shadow): as far under its top everywhere.
+    const under = sloped ? top.clone() : this.shapeGeometry(bridge.shape);
     const underPosition = under.getAttribute("position") as THREE.BufferAttribute;
     const underUv = new Float32Array(underPosition.count * 2);
     for (let i = 0; i < underPosition.count; i++) {
@@ -2028,70 +2054,81 @@ export class VistazoView {
     if (blend) {
       grained(belly.material as THREE.MeshBasicMaterial);
     }
-    belly.position.z = bridge.bottom * k;
+    belly.position.z = sloped ? -thick : bridge.bottom * k;
     this.terrainGroup.add(belly);
 
     // Its sides, round it and round its holes, from its underside up to its top, the pattern running along them.
     const positions: number[] = [];
     const uvs: number[] = [];
     const sideColors: number[] = [];
-    const z0 = bridge.bottom * k;
-    const z1 = bridge.top * k;
     const soft = this.softColors;
     const tone = ([x, y]: number[], shade: number) => (soft ? soft(x, y) : rgb).map((v) => (v / 255) * shade);
     // The fold's strip, as a wall's.
     const band = VIEW_CELL * 0.75;
+    // Its sides' stretches: a side each, cut every half cell if it isn't flat (to follow its top).
+    const stretches: [number, number, number, number][] = [];
     for (const ring of bridge.shape.flat()) {
-      let along = 0;
       for (let i = 0; i < ring.length - 1; i++) {
-        const [ax, ay] = [ring[i][0] * u, ring[i][1] * u];
-        const [bx, by] = [ring[i + 1][0] * u, ring[i + 1][1] * u];
-        const length = Math.hypot(bx - ax, by - ay);
-        if (mapped && length > 1e-9) {
-          // Into the slab from this side (round a hole, away from it).
-          let [ix, iy] = [-(by - ay) / length, (bx - ax) / length];
-          if (!inShape((ax + bx) / 2 / u + (ix * 0.05) / u, (ay + by) / 2 / u + (iy * 0.05) / u, bridge.shape)) {
-            [ix, iy] = [-ix, -iy];
-          }
-          const inside = (d: number) => [...this.uvAt(ax + ix * d, ay + iy * d), ...this.uvAt(bx + ix * d, by + iy * d)];
-          const quad = (zt: number, zb: number, top: number[], bottom: number[]) => {
-            positions.push(ax, ay, zb, bx, by, zb, bx, by, zt, ax, ay, zb, bx, by, zt, ax, ay, zt);
-            uvs.push(bottom[0], bottom[1], bottom[2], bottom[3], top[2], top[3], bottom[0], bottom[1], top[2], top[3], top[0], top[1]);
-          };
-          if (style === "stretch") {
-            // The map's pixels at its edge (a hair inside), stretched down.
-            quad(z1, z0, inside(1.5), inside(1.5));
-          } else {
-            // Strips of the map just inside the edge, folded down, every other one mirrored.
-            const height = z1 - z0;
-            for (let t = 0, j = 0; t < height - 1e-9; t += band, j++) {
-              const t1 = Math.min(height, t + band);
-              const d0 = j % 2 === 0 ? 0 : band;
-              const d1 = j % 2 === 0 ? t1 - t : band - (t1 - t);
-              quad(z1 - t, z1 - t1, inside(d0 + 0.5), inside(d1 + 0.5));
-            }
-          }
-          continue;
+        const [a, b] = [ring[i], ring[i + 1]];
+        const n = sloped ? Math.max(1, Math.ceil((Math.hypot(b[0] - a[0], b[1] - a[1]) * u) / (VIEW_CELL * 0.5))) : 1;
+        for (let j = 0; j < n; j++) {
+          stretches.push([a[0] + ((b[0] - a[0]) * j) / n, a[1] + ((b[1] - a[1]) * j) / n, a[0] + ((b[0] - a[0]) * (j + 1)) / n, a[1] + ((b[1] - a[1]) * (j + 1)) / n]);
         }
-        positions.push(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z0, bx, by, z1, ax, ay, z1);
-        if (blend) {
-          const [a0, b0, b1, a1] = [tone(ring[i], 0.6), tone(ring[i + 1], 0.6), tone(ring[i + 1], 0.85), tone(ring[i], 0.85)];
-          sideColors.push(...a0, ...b0, ...b1, ...a0, ...b1, ...a1);
+      }
+    }
+    let along = 0;
+    for (const [sax, say, sbx, sby] of stretches) {
+      const [ax, ay] = [sax * u, say * u];
+      const [bx, by] = [sbx * u, sby * u];
+      const length = Math.hypot(bx - ax, by - ay);
+      // Its top and underside at each end (the same at both, flat).
+      const [za1, zb1] = [bridgeTop(bridge, sax, say) * k, bridgeTop(bridge, sbx, sby) * k];
+      const [za0, zb0] = [za1 - thick, zb1 - thick];
+      if (mapped && length > 1e-9) {
+        // Into the slab from this side (round a hole, away from it).
+        let [ix, iy] = [-(by - ay) / length, (bx - ax) / length];
+        if (!inShape((ax + bx) / 2 / u + (ix * 0.05) / u, (ay + by) / 2 / u + (iy * 0.05) / u, bridge.shape)) {
+          [ix, iy] = [-ix, -iy];
         }
-        if (skin) {
-          const [sa, sb] = [skinAcross(skin, ax / u, ay / u), skinAcross(skin, bx / u, by / u)];
-          const at = (s: number, v: number) => {
-            const [x, y] = skinPoint(skin, s, v);
-            return this.uvAt(x * u, y * u);
-          };
-          const [a0, b0, b1, a1] = [at(sa, 0), at(sb, 0), at(sb, 1), at(sa, 1)];
-          uvs.push(...a0, ...b0, ...b1, ...a0, ...b1, ...a1);
+        const inside = (d: number) => [...this.uvAt(ax + ix * d, ay + iy * d), ...this.uvAt(bx + ix * d, by + iy * d)];
+        // A strip from depth dt to db under the top (at each end its own top).
+        const quad = (dt: number, db: number, top: number[], bottom: number[]) => {
+          positions.push(ax, ay, za1 - db, bx, by, zb1 - db, bx, by, zb1 - dt, ax, ay, za1 - db, bx, by, zb1 - dt, ax, ay, za1 - dt);
+          uvs.push(bottom[0], bottom[1], bottom[2], bottom[3], top[2], top[3], bottom[0], bottom[1], top[2], top[3], top[0], top[1]);
+        };
+        if (style === "stretch") {
+          // The map's pixels at its edge (a hair inside), stretched down.
+          quad(0, thick, inside(1.5), inside(1.5));
         } else {
-          const [ua, ub] = [along / tile, (along + length) / tile];
-          uvs.push(ua, z0 / tile, ub, z0 / tile, ub, z1 / tile, ua, z0 / tile, ub, z1 / tile, ua, z1 / tile);
+          // Strips of the map just inside the edge, folded down, every other one mirrored.
+          for (let t = 0, j = 0; t < thick - 1e-9; t += band, j++) {
+            const t1 = Math.min(thick, t + band);
+            const d0 = j % 2 === 0 ? 0 : band;
+            const d1 = j % 2 === 0 ? t1 - t : band - (t1 - t);
+            quad(t, t1, inside(d0 + 0.5), inside(d1 + 0.5));
+          }
         }
         along += length;
+        continue;
       }
+      positions.push(ax, ay, za0, bx, by, zb0, bx, by, zb1, ax, ay, za0, bx, by, zb1, ax, ay, za1);
+      if (blend) {
+        const [a0, b0, b1, a1] = [tone([sax, say], 0.6), tone([sbx, sby], 0.6), tone([sbx, sby], 0.85), tone([sax, say], 0.85)];
+        sideColors.push(...a0, ...b0, ...b1, ...a0, ...b1, ...a1);
+      }
+      if (skin) {
+        const [sa, sb] = [skinAcross(skin, ax / u, ay / u), skinAcross(skin, bx / u, by / u)];
+        const at = (s: number, v: number) => {
+          const [x, y] = skinPoint(skin, s, v);
+          return this.uvAt(x * u, y * u);
+        };
+        const [a0, b0, b1, a1] = [at(sa, 0), at(sb, 0), at(sb, 1), at(sa, 1)];
+        uvs.push(...a0, ...b0, ...b1, ...a0, ...b1, ...a1);
+      } else {
+        const [ua, ub] = [along / tile, (along + length) / tile];
+        uvs.push(ua, za0 / tile, ub, zb0 / tile, ub, zb1 / tile, ua, za0 / tile, ub, zb1 / tile, ua, za1 / tile);
+      }
+      along += length;
     }
     const sides = new THREE.BufferGeometry();
     sides.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
@@ -3059,7 +3096,7 @@ export class VistazoView {
         y1: Math.max(...points.map((p) => p[1])),
       };
     });
-    this.slabTop = Math.max(0, ...this.slabs.map((slab) => slab.bridge.top));
+    this.slabTop = Math.max(0, ...this.slabs.map((slab) => bridgeHighest(slab.bridge)));
   }
 
   /** Whether a point (view units) is inside a bridge's slab: over its outline, between its underside and its top. */
@@ -3070,7 +3107,13 @@ export class VistazoView {
     const x = vx / this.u;
     const y = vy / this.u;
     const z = vz / this.k;
-    return this.slabs.some(({ bridge, x0, y0, x1, y1 }) => x >= x0 && x <= x1 && y >= y0 && y <= y1 && z >= bridge.bottom && z <= bridge.top && inShape(x, y, bridge.shape));
+    return this.slabs.some(({ bridge, x0, y0, x1, y1 }) => {
+      if (x < x0 || x > x1 || y < y0 || y > y1) {
+        return false;
+      }
+      const top = bridgeTop(bridge, x, y);
+      return z >= top - (bridge.top - bridge.bottom) && z <= top && inShape(x, y, bridge.shape);
+    });
   }
 
   /**
