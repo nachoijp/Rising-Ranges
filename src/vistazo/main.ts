@@ -665,6 +665,8 @@ async function start() {
     );
   };
   fill();
+  // Put together (its look, icons and texts): shown in place of the spinner (see vistazo.html).
+  requestAnimationFrame(() => document.documentElement.classList.add("ready"));
 
   let scene: VistazoScene | null = null;
   const reliefs: Reliefs = { byImage: new Map(), key: "" };

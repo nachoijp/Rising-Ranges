@@ -5,6 +5,59 @@
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Rising Ranges — 3D Glance</title>
+    <style>
+      /* Till the page is put together (its look, icons and texts: main.ts marks it "ready"), a spinner
+         in its place, not its pieces settling. Shown anyway after 2.5 s, should that never come. */
+      html:not(.ready) body {
+        visibility: hidden;
+        animation: rr-show 0s 2.5s forwards;
+      }
+      html:not(.ready)::before {
+        content: "";
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        width: 28px;
+        height: 28px;
+        margin: -14px 0 0 -14px;
+        box-sizing: border-box;
+        border: 3px solid rgba(187, 153, 255, 0.25);
+        border-top-color: #bb99ff;
+        border-radius: 50%;
+        animation: rr-spin 0.8s linear infinite, rr-hide 0s 2.5s forwards;
+      }
+      html.ready body {
+        animation: rr-in 0.12s ease-out;
+      }
+      @keyframes rr-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @keyframes rr-show {
+        to {
+          visibility: visible;
+        }
+      }
+      @keyframes rr-hide {
+        to {
+          visibility: hidden;
+        }
+      }
+      @keyframes rr-in {
+        from {
+          opacity: 0;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html:not(.ready)::before {
+          animation: rr-hide 0s 2.5s forwards;
+        }
+        html.ready body {
+          animation: none;
+        }
+      }
+    </style>
   </head>
   <body>
     <p class="message" id="message" hidden></p>
