@@ -70,11 +70,11 @@ The rest is folded into sections:
 
 ![Camera](screenshots/glance/camera.jpg)
 
-**Relief.** The height scale (to make heights read better), walls at the map's edge, the grid on the ground, and under **Look**: wall shading, shading by height, coloring the terrain by height, see-through terrain, animated water, and level lines on the walls.
+**Relief.** The height scale (to make heights read better), walls at the map's edge, the grid on the ground, and under **Look**: wall shading, shading by height, coloring the terrain by height, see-through terrain, animated water, animated video maps (a video map played on the ground), and level lines on the walls.
 
 **Props.** Items on the Prop layer, on the ground or standing, with shadows, lines to the ground, labels and distances.
 
-![Relief and props](screenshots/glance/relief-props.jpg)
+![Relief and props](screenshots/glance/relief-props.png)
 
 **Weather.** Rain, snow, sand, fire, petals or clouds from the Weather extension, if the scene has any; clouds as mist or as shadows on the ground.
 
