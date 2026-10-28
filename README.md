@@ -103,6 +103,14 @@ In the Terrain tab:
 
 > **Meant for maps seen from above.** Terrain isn't used on isometric or dimetric grids: the art already shows the relief there, and a token drawn on a roof stands up the screen from where it really is on the floor. On hex maps drawn in perspective, the art's relief and the measured distances may not match.
 
+## 3D Glance
+
+![The 3D Glance](docs/screenshots/glance/demo-3d.gif)
+
+[Watch it larger (WebM)](docs/screenshots/glance/demo-3d.webm)
+
+The scene as a small diorama: the relief raised, tokens at their elevation, range rings, distance lines and spell templates in 3D, and the relief editor for the GM. Everything about it is in the [3D Glance manual](docs/vistazo.md).
+
 ## Distances panel
 
 ![Distances panel](docs/screenshots/distances-panel.png)
