@@ -164,6 +164,8 @@ type Terrain = {
   terrainOff: boolean;
   /** Bridges and balconies: slabs floating over the ground (not ground themselves). */
   bridges: Bridge[];
+  /** Outlines (scene px) of what keeps its look under slabs: their fill isn't painted there. */
+  unfilled?: MultiPolygon[];
 };
 
 /** A bridge or balcony drawn: its outline (scene px), top and underside (grid units), its wall style. */
@@ -338,6 +340,7 @@ export function buildScene(
     measuredAt,
     terrainOff: terrain.terrainOff,
     bridges: terrain.bridges,
+    unfilled: terrain.unfilled,
     dpi,
     scale,
     squareGrid: gridType === "SQUARE",
@@ -487,5 +490,6 @@ function buildTerrain(
     measuredAt: (x, y) => heightAt(x, y) ?? 0,
     terrainOff,
     bridges: parts.flatMap((part) => part.bridges),
+    unfilled: parts.flatMap((part) => part.unfilled),
   };
 }

@@ -1633,7 +1633,7 @@ export class VistazoView {
           } else {
             const tile = VIEW_CELL * 2;
             // Along the wall's own direction (not x + y): steps of one straight edge then run on without a jump.
-            const s0 = ((ax * (bx - ax) + ay * (by - ay)) / (length || 1)) / tile;
+            const s0 = (wall.along !== undefined ? wall.along * u : (ax * (bx - ax) + ay * (by - ay)) / (length || 1)) / tile;
             uvTop = [s0, zt0 / tile, s0 + length / tile, zt1 / tile];
             uvBottom = [s0, zb0 / tile, s0 + length / tile, zb1 / tile];
           }
@@ -1655,7 +1655,7 @@ export class VistazoView {
           // A pattern 2 cells a tile, along the wall and down from the ground level (so courses line up).
           const tile = VIEW_CELL * 2;
           // Along the wall's own direction, as above.
-          const s0 = ((ax * (bx - ax) + ay * (by - ay)) / (length || 1)) / tile;
+          const s0 = (wall.along !== undefined ? wall.along * u : (ax * (bx - ax) + ay * (by - ay)) / (length || 1)) / tile;
           const v = (z: number) => z / tile;
           slice(0, height, [s0, v(zt), s0 + length / tile, v(zt)], [s0, v(zb), s0 + length / tile, v(zb)]);
         }
@@ -1885,15 +1885,23 @@ export class VistazoView {
       fill.minFilter = THREE.LinearFilter;
       fill.needsUpdate = true;
       const area = new THREE.Vector4(...kept.box);
-      // Its underside's height (view units) over the same box: one, if it's flat; else at each texel
-      // (nothing above it there is under it).
+      // Its underside's height (view units) over the same box (r: nothing above it there is under it), and
+      // where a shape keeping its look is (g: its outline, a little past it for its walls). One texel if
+      // it's flat with none of those under it; else each.
       const thick = bridge.top - bridge.bottom;
-      const [cols, rows] = bridge.surface ? [kept.cols, kept.rows] : [1, 1];
+      const reach = scene.dpi * 0.12;
+      const keeping = (scene.unfilled ?? []).filter((multi) => {
+        const ps = multi.flat(2);
+        return ps.some(([x]) => x >= area.x - reach) && ps.some(([x]) => x <= area.x + area.z + reach) && ps.some(([, y]) => y >= area.y - reach) && ps.some(([, y]) => y <= area.y + area.w + reach);
+      });
+      const [cols, rows] = bridge.surface || keeping.length > 0 ? [kept.cols, kept.rows] : [1, 1];
       const heights = new Float32Array(cols * rows * 4);
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           const [x, y] = [area.x + ((c + 0.5) / cols) * area.z, area.y + ((r + 0.5) / rows) * area.w];
           heights[(r * cols + c) * 4] = (bridgeTop(bridge, x, y) - thick) * this.k;
+          // Inside: all of it (its top); just round it: only its walls (the ground there gets the fill).
+          heights[(r * cols + c) * 4 + 1] = keeping.some((multi) => inShape(x, y, multi)) ? 1 : keeping.some((multi) => nearOutline(multi, x, y, reach)) ? 0.5 : 0;
         }
       }
       const underside = new THREE.DataTexture(heights, cols, rows, THREE.RGBAFormat, THREE.FloatType);
@@ -3411,4 +3419,20 @@ function softSampler(small: HTMLCanvasElement, x0: number, y0: number, w: number
     }
     return weight > 1e-6 ? [out[0] / weight, out[1] / weight, out[2] / weight] : STONE;
   };
+}
+
+/** Whether a scene point is within `reach` of an outline's sides (holes' too). */
+function nearOutline(multi: MultiPolygon, x: number, y: number, reach: number): boolean {
+  for (const ring of multi.flat()) {
+    for (let i = 0; i + 1 < ring.length; i++) {
+      const [ax, ay] = ring[i];
+      const [ex, ey] = [ring[i + 1][0] - ax, ring[i + 1][1] - ay];
+      const len2 = ex * ex + ey * ey;
+      const t = len2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * ex + (y - ay) * ey) / len2)) : 0;
+      if ((ax + ex * t - x) ** 2 + (ay + ey * t - y) ** 2 < reach * reach) {
+        return true;
+      }
+    }
+  }
+  return false;
 }

@@ -47,8 +47,13 @@ export const UNDER_FRAGMENT = /* glsl */ `
     if (m.x < 0.0 || m.x > 1.0 || m.y < 0.0 || m.y > 1.0) discard;
     vec4 fill = texture2D(uFill, m);
     if (fill.a < 0.01) discard;
-    // Only under its underside there (an inclined slab's lower end is below its higher end's).
-    if (vAt.z > texture2D(uUnderside, m).r + 0.01) discard;
+    // Only under its underside there (an inclined slab's lower end is below its higher end's), and not on
+    // a shape that keeps its look.
+    vec4 under = texture2D(uUnderside, m);
+    if (under.g > 0.75 || vAt.z > under.r + 0.01) discard;
+    // Just round it: its walls (upright faces, their slope from the screen's derivatives), not the ground.
+    vec3 face = normalize(cross(dFdx(vAt), dFdy(vAt)));
+    if (under.g > 0.25 && abs(face.z) < 0.5) discard;
     if (uMirror > 0.5) {
       // The map mirrored across each long side (just past it, going out as it goes in), the two blended
       // across its width: each side's own next to it, fading into the other's, so no seam in the middle.

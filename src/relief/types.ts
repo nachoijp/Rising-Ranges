@@ -61,6 +61,8 @@ export type Shape = {
    * isn't drawn on the map).
    */
   under?: UnderLook;
+  /** Its look kept under slabs over it: their fill (see `under`) isn't painted on its top or walls. */
+  keepLook?: boolean;
   stand?: StandEdge;
   /** A standing shape's picture on its sides too. */
   wrap?: boolean;

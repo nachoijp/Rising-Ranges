@@ -29,9 +29,13 @@ export function computeWalls(scene: VistazoScene, base: number, region?: Region,
           turn += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
         }
         const flip = turn > 0 !== (ri === 0);
+        // How far round the outline each side starts (a pattern runs on round it).
+        let run = 0;
         for (let i = 0; i < ring.length - 1; i++) {
           const [ax, ay] = ring[i];
           const [bx, by] = ring[i + 1];
+          const start = run;
+          run += Math.hypot(bx - ax, by - ay);
           if (
             region &&
             (Math.max(ax, bx) < region.x0 - reach || Math.min(ax, bx) > region.x1 + reach || Math.max(ay, by) < region.y0 - reach || Math.min(ay, by) > region.y1 + reach)
@@ -90,6 +94,7 @@ export function computeWalls(scene: VistazoScene, base: number, region?: Region,
               mx: (px + qx) / 2 - nx * probe * 3, my: (py + qy) / 2 - ny * probe * 3, nx, ny,
               lit: Math.max(0, (nx * LIGHT[0] + ny * LIGHT[1]) / l),
               seg,
+              along: start + (len * j) / steps,
             });
           }
         }

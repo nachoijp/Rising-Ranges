@@ -135,6 +135,8 @@ export type Wall = {
   skin?: TerrainSkin;
   /** The piece's edge it's of (piece, polygon, ring, side): what's worked out again of a region (see computeWalls). */
   seg: string;
+  /** How far round its outline it starts (scene px): a pattern runs on along it, round a curve too. */
+  along?: number;
 };
 
 export type TokenView = {

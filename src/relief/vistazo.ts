@@ -18,6 +18,8 @@ import type { Pt, Skin } from "./types";
 export type ReliefTerrain = {
   pieces: Piece[];
   bridges: Bridge[];
+  /** The outlines of the shapes that keep their look under slabs (scene px). */
+  unfilled: MultiPolygon[];
   /** Where the relief is: its map image's outline (scene px). */
   area: MultiPolygon;
   /** The height at a scene point, as drawn and measured (undefined off its image; 0 under the fog). */
@@ -236,7 +238,14 @@ export function reliefTerrain(
       under: shape.under,
     };
   });
-  return { pieces, bridges, area, heightAt };
+  const unfilled = relief.data.shapes.flatMap((s) => {
+    if (!s.keepLook) {
+      return [];
+    }
+    const [ring, holes] = relief.coordsOf(s);
+    return [sceneOf([[closed(ring), ...holes.map(closed)]])];
+  });
+  return { pieces, bridges, area, heightAt, unfilled };
 }
 
 /** A picture's points in the scene, as the Vistazo has them. */

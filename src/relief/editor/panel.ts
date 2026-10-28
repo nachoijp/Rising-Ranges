@@ -1093,6 +1093,7 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
     s.stand ? "" : `<span class="l" ${tip(t("relief.shape.walls"), t("relief.shape.wallsHint"))}>${esc(t("relief.shape.walls"))}</span><select class="field" data-k="wall" ${s.skin ? "disabled" : ""} aria-label="${esc(t("relief.shape.walls"))}">${WALL_LOOKS.map((v) => `<option value="${v}" ${(s.wall ?? "") === v ? "selected" : ""}>${esc(t(`relief.wall.${v || "default"}` as TranslationKey))}</option>`).join("")}</select>`,
     s.stand ? "" : `<span class="l" ${tip(t("relief.shape.picture"), t("relief.shape.pictureHint"))}>${esc(t("relief.shape.picture"))}</span><span class="line">${picture}</span>`,
     s.slab ? `<span class="l" ${tip(t("relief.shape.under"), t("relief.shape.underHint"))}>${esc(t("relief.shape.under"))}</span><select class="field" data-k="under" aria-label="${esc(t("relief.shape.under"))}">${UNDER_LOOKS.map((v) => `<option value="${v}" ${(s.under ?? "") === v ? "selected" : ""}>${esc(t(`relief.under.${v || "cover"}` as TranslationKey))}</option>`).join("")}</select>` : "",
+    `<span class="l"></span><label class="check" ${tip(t("relief.shape.keepLook"), t("relief.shape.keepLookHint"))}><input type="checkbox" data-k="keepLook" ${s.keepLook ? "checked" : ""} /> ${esc(t("relief.shape.keepLook"))}</label>`,
     s.slab || s.stand ? "" : `<span class="l" ${tip(t("relief.shape.water"), t("relief.shape.waterHint"))}>${esc(t("relief.shape.water"))}</span><span class="line">${stepper(numField("water", t("relief.shape.water"), 0, 20), "water", 0.25, t)}</span>`,
     s.slab || s.stand ? "" : `<span class="l" ${tip(t("relief.shape.edge"), t("relief.shape.edgeHint"))}>${esc(t("relief.shape.edge"))}</span>${edgeSlider(t, "soft")}`,
   ].join("");
@@ -1213,6 +1214,14 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
     noskin.onclick = () => {
       ed.pushUndo();
       s.skin = undefined;
+      redo();
+    };
+  }
+  const keepLook = el.querySelector<HTMLInputElement>('[data-k="keepLook"]');
+  if (keepLook) {
+    keepLook.onchange = () => {
+      ed.pushUndo();
+      s.keepLook = keepLook.checked || undefined;
       redo();
     };
   }

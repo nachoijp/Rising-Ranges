@@ -702,6 +702,8 @@ const es = {
   "relief.shape.under": "Debajo",
   "relief.shape.underHint": "Qué se ve en 3D debajo de la losa, si está dibujada en el mapa. Tapar el dibujo: los colores de alrededor, mezclados. Reflejar los costados: el mapa de sus lados largos en espejo (un río bajo un puente). Dejar el mapa: si no está dibujada, el mapa tal cual.",
   "relief.under.cover": "Tapar el dibujo",
+  "relief.shape.keepLook": "Que no la tapen las losas",
+  "relief.shape.keepLookHint": "Las losas que tenga arriba no pintan su relleno de Debajo sobre esta forma: su tapa y sus paredes conservan su textura (un pilar bajo una estatua, por ejemplo).",
   "relief.under.mirror": "Reflejar los costados",
   "relief.under.keep": "Dejar el mapa",
   "relief.shape.wallsHint": "Cómo se ven sus paredes en 3D, como en el Vistazo: el borde del mapa estirado o plegado hacia abajo, o un patrón teñido. Las de un pozo, con las del pozo.",

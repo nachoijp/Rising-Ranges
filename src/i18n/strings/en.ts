@@ -707,6 +707,8 @@ const en: Record<TranslationKey, string> = {
   "relief.shape.under": "Under it",
   "relief.shape.underHint": "What shows in 3D under the slab, if it's drawn on the map. Cover the drawing: the colours round it, blended. Mirror the sides: the map by its long sides, mirrored (a river under a bridge). Keep the map: if it isn't drawn, the map as it is.",
   "relief.under.cover": "Cover the drawing",
+  "relief.shape.keepLook": "Not covered by slabs",
+  "relief.shape.keepLookHint": "Slabs over it don't paint their Under it fill on this shape: its top and walls keep their look (a pillar under a statue, say).",
   "relief.under.mirror": "Mirror the sides",
   "relief.under.keep": "Keep the map",
   "relief.shape.wallsHint": "How its walls look in 3D, as in the 3D Glance: the map's edge stretched or folded down, or a tinted pattern. A pit's, with the pit's.",
