@@ -1982,6 +1982,10 @@ export class VistazoView {
     const skin = bridge.skin && this.mapTexture ? bridge.skin : undefined;
     // Blended: its sides the map's colours round it (blurred), its underside its tint; grain on both.
     const blend = style === "blend" && !skin;
+    // Stretched or folded: its sides the map just inside its edge, as a wall's (see buildWalls); plain
+    // (or those, with no map): one colour. Their underside its tint, no pattern.
+    const mapped = !skin && (style === "stretch" || style === "fold") && this.texture !== null;
+    const plain = !skin && (style === "flat" || style === "stretch" || style === "fold");
     let cx = 0;
     let cy = 0;
     let n = 0;
@@ -2019,7 +2023,7 @@ export class VistazoView {
     under.setAttribute("uv", new THREE.BufferAttribute(underUv, 2));
     const belly = new THREE.Mesh(
       under,
-      new THREE.MeshBasicMaterial({ map: skin ? this.mapTexture : blend ? null : patternTexture(kind), color: skin ? new THREE.Color(0.6, 0.6, 0.6) : tint(0.6), side: THREE.DoubleSide })
+      new THREE.MeshBasicMaterial({ map: skin ? this.mapTexture : blend || plain ? null : patternTexture(kind), color: skin ? new THREE.Color(0.6, 0.6, 0.6) : tint(0.6), side: THREE.DoubleSide })
     );
     if (blend) {
       grained(belly.material as THREE.MeshBasicMaterial);
@@ -2035,12 +2039,40 @@ export class VistazoView {
     const z1 = bridge.top * k;
     const soft = this.softColors;
     const tone = ([x, y]: number[], shade: number) => (soft ? soft(x, y) : rgb).map((v) => (v / 255) * shade);
+    // The fold's strip, as a wall's.
+    const band = VIEW_CELL * 0.75;
     for (const ring of bridge.shape.flat()) {
       let along = 0;
       for (let i = 0; i < ring.length - 1; i++) {
         const [ax, ay] = [ring[i][0] * u, ring[i][1] * u];
         const [bx, by] = [ring[i + 1][0] * u, ring[i + 1][1] * u];
         const length = Math.hypot(bx - ax, by - ay);
+        if (mapped && length > 1e-9) {
+          // Into the slab from this side (round a hole, away from it).
+          let [ix, iy] = [-(by - ay) / length, (bx - ax) / length];
+          if (!inShape((ax + bx) / 2 / u + (ix * 0.05) / u, (ay + by) / 2 / u + (iy * 0.05) / u, bridge.shape)) {
+            [ix, iy] = [-ix, -iy];
+          }
+          const inside = (d: number) => [...this.uvAt(ax + ix * d, ay + iy * d), ...this.uvAt(bx + ix * d, by + iy * d)];
+          const quad = (zt: number, zb: number, top: number[], bottom: number[]) => {
+            positions.push(ax, ay, zb, bx, by, zb, bx, by, zt, ax, ay, zb, bx, by, zt, ax, ay, zt);
+            uvs.push(bottom[0], bottom[1], bottom[2], bottom[3], top[2], top[3], bottom[0], bottom[1], top[2], top[3], top[0], top[1]);
+          };
+          if (style === "stretch") {
+            // The map's pixels at its edge (a hair inside), stretched down.
+            quad(z1, z0, inside(1.5), inside(1.5));
+          } else {
+            // Strips of the map just inside the edge, folded down, every other one mirrored.
+            const height = z1 - z0;
+            for (let t = 0, j = 0; t < height - 1e-9; t += band, j++) {
+              const t1 = Math.min(height, t + band);
+              const d0 = j % 2 === 0 ? 0 : band;
+              const d1 = j % 2 === 0 ? t1 - t : band - (t1 - t);
+              quad(z1 - t, z1 - t1, inside(d0 + 0.5), inside(d1 + 0.5));
+            }
+          }
+          continue;
+        }
         positions.push(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z0, bx, by, z1, ax, ay, z1);
         if (blend) {
           const [a0, b0, b1, a1] = [tone(ring[i], 0.6), tone(ring[i + 1], 0.6), tone(ring[i + 1], 0.85), tone(ring[i], 0.85)];
@@ -2072,7 +2104,11 @@ export class VistazoView {
         sides,
         blend
           ? grained(new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }))
-          : new THREE.MeshBasicMaterial({ map: skin ? this.plainTexture : patternTexture(kind), color: skin ? new THREE.Color(0.85, 0.85, 0.85) : tint(0.85), side: THREE.DoubleSide })
+          : new THREE.MeshBasicMaterial({
+              map: skin || mapped ? this.plainTexture : plain ? null : patternTexture(kind),
+              color: skin || mapped ? new THREE.Color(0.85, 0.85, 0.85) : tint(0.85),
+              side: THREE.DoubleSide,
+            })
       )
     );
   }

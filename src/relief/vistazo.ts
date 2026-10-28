@@ -222,7 +222,7 @@ export function reliefTerrain(
       shape: outline,
       top,
       bottom: top - layer.thick,
-      walls: shape.wall === "stretch" || shape.wall === "fold" ? undefined : shape.wall,
+      walls: shape.wall,
       skin: shape.skin ? skinOf(shape.skin, toScene) : undefined,
       frame: frameOf(layer.ring.map(toScene).map(([x, y]) => ({ x, y }))),
       si: layer.si,
