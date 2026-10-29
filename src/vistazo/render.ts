@@ -3,10 +3,10 @@ import { bisect } from "./view/bisect";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { MultiPolygon } from "polygon-clipping";
 import { bridgeHighest, bridgeTop, inShape, pieceHeight, type Bridge, type MapImage, type Piece, type Prop, type Token, type VistazoScene } from "./scene";
-import { cellsOutline, isHexShape, ringSteps } from "../engine/hex";
+import { isHexShape, ringSteps } from "../engine/hex";
 import type { Fog } from "./fog";
 import { visibleBox } from "./visibleBox";
-import { buildWeather, cloudShadowMaterial, setWeatherTime } from "./weather";
+import { CLOUD_GLSL, CLOUD_ZONES, buildWeather, cloudNoise, cloudShadowOf, setWeatherTime } from "./weather";
 import { buildTemplate, templateTip, type Template } from "./templates";
 import { QUALITY, STONE, TEXTURE_MAX, VIEW_CELL, type Camera, type DistanceLine, type Options, type Reach, type Texture, type TokenText, type TokenView, type Wall, type WallStyle, tintOf } from "./view/types";
 import { isShared, patternTexture } from "./view/patterns";
@@ -68,11 +68,9 @@ export class VistazoView {
   private picked: { shapes: number[]; color: string } = { shapes: [], color: "#bb99ff" };
   private readonly edgeGroup = new THREE.Group();
   private readonly tokenGroup = new THREE.Group();
-  private readonly ringGroup = new THREE.Group();
   /** The ground tinted by Banda: a copy of each flat piece, its texture the Bandas' colours (see buildReach). */
-  private readonly fillGroup = new THREE.Group();
   private reach: Reach | null = null;
-  /** The Banda tint, worked out on the ground at each pixel (see FILL_GLSL): shared by every copy it's on. */
+  /** The Bandas, worked out at each pixel of the terrain (see BAND_GLSL): shared by every material they're on. */
   private readonly fillUniforms = {
     uFillU: { value: 1 },
     uFillShape: { value: 0 },
@@ -83,6 +81,9 @@ export class VistazoView {
     uFillEdges: { value: new Array<number>(FILL_BANDS).fill(0) },
     uFillColors: { value: Array.from({ length: FILL_BANDS }, () => new THREE.Color()) },
     uFillBands: { value: 0 },
+    /** Whether the Bandas tint the ground, and draw their rings on it (the options). */
+    uFillTint: { value: 0 },
+    uFillRings: { value: 0 },
   };
   private reachFrame = 0;
   private applyFrame = 0;
@@ -112,7 +113,17 @@ export class VistazoView {
   /** The weather's particles (see weather.ts), what they were built from, and the frames they're drawn on. */
   private weatherGroup = new THREE.Group();
   /** Clouds as shadows: the terrain's surfaces under each (see copiesIn), with the shadows' material. */
-  private cloudShadowGroup = new THREE.Group();
+  /** The clouds' shadows, worked out at each pixel of the terrain (see clouded): their zones, and the time they've drifted to. */
+  private readonly cloudUniforms = {
+    uCloudTime: { value: 0 },
+    uCloudCell: { value: VIEW_CELL },
+    uCloudCount: { value: 0 },
+    uCloudBoxes: { value: Array.from({ length: CLOUD_ZONES }, () => new THREE.Vector4()) },
+    uCloudDrifts: { value: Array.from({ length: CLOUD_ZONES }, () => new THREE.Vector2()) },
+    uCloudCovers: { value: new Array<number>(CLOUD_ZONES).fill(0) },
+    // Their shapes' picture, made the first time there are any (a clear pixel till then).
+    uCloudNoise: { value: NO_FOG as THREE.Texture },
+  };
   /** Under each bridge, the terrain's surfaces there (see copiesIn), filled from beside it (see buildUnderBridges). */
   private underBridgeGroup = new THREE.Group();
   /** Volume templates placed here (see setTemplates), and the meshes drawn for them. */
@@ -134,10 +145,20 @@ export class VistazoView {
   private waterCache = new Map<string, { reach: WaterReach; shape: MultiPolygon; used: number }>();
   private weatherKey = "";
   private weatherFrame = 0;
-  /** The player view's fog: where it is, and its shade over copies of the flat pieces (as the Banda tint). */
-  private readonly fogGroup = new THREE.Group();
+  /** The player view's fog: its picture (see drawFog), laid on the terrain by its materials (see fogged). */
   private fogTexture: THREE.CanvasTexture | null = null;
   private fogCanvas: HTMLCanvasElement | null = null;
+  /**
+   * The player view's fog, laid on the terrain's tops and walls at each pixel (see fogged): its picture
+   * (see drawFog), the scene's box it covers (view units), whether there's fog.
+   */
+  private readonly fogUniforms = {
+    uFog: { value: NO_FOG as THREE.Texture },
+    uFogBox: { value: new THREE.Vector4(0, 0, 1, 1) },
+    uFogOn: { value: 0 },
+  };
+  /** The terrain's surfaces (tops, walls, standing pictures) and their heights, for what's drawn over them (see copiesIn). */
+  private surfaces: { geometry: THREE.BufferGeometry; z: number }[] = [];
   private fog: Fog | null = null;
   private fogFrame = 0;
   private readonly glCamera = new THREE.Camera();
@@ -182,6 +203,12 @@ export class VistazoView {
   private stillTexture: THREE.Texture | null = null;
   /** The materials of the pieces, to dim or see through without rebuilding. */
   private pieceMaterials: THREE.MeshBasicMaterial[] = [];
+  /**
+   * What the terrain's materials work out now, besides the bases (see layers): the Bandas, the clouds'
+   * shadows, the fog.
+   * Left out of their shaders when off (a slow graphics card pays for them even then).
+   */
+  private layersOn = { bands: false, clouds: false, fog: false };
   /** Outlines already cut small (see fineGeometry), by outline: their flat triangles, and the last build that used them. */
   private fineCache = new Map<string, { position: Float32Array; index: Uint32Array; used: number }>();
   /** Bridges' fills worked out (see bridgeFill) from this map, by outline, and the last build that used them. */
@@ -237,7 +264,7 @@ export class VistazoView {
     this.renderer = renderer;
     this.glCamera.matrixAutoUpdate = false;
     this.movingGroup.matrixAutoUpdate = false;
-    this.world.add(this.terrainGroup, this.underGroup, this.movingGroup, this.pickGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup, this.fogGroup, this.weatherGroup, this.cloudShadowGroup, this.underBridgeGroup, this.waterGroup, this.templateGroup);
+    this.world.add(this.terrainGroup, this.underGroup, this.movingGroup, this.pickGroup, this.edgeGroup, this.tokenGroup, this.weatherGroup, this.underBridgeGroup, this.waterGroup, this.templateGroup);
     this.overlay = document.createElement("div");
     this.overlay.className = "ov";
     this.lines = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -498,8 +525,8 @@ export class VistazoView {
 
   /**
    * Lightly, while the relief editor drags something: the terrain alone, without
-   * its copies for the fog, the Banda tint, the cloud shadows and under bridges
-   * (the most of a rebuild). Off again, the next scene is drawn whole (or,
+   * its surfaces kept for what's under bridges (see keepSurface),
+   * nor the walls' shadows (the most of a rebuild). Off again, the next scene is drawn whole (or,
    * `settling`, by settleNext's build).
    */
   setLite(lite: boolean, settling = false) {
@@ -588,120 +615,74 @@ export class VistazoView {
   }
 
   /**
-   * Each Banda's ring as on the map — across only, its height left out —
-   * laid on the terrain like a shadow: its outline (a circle, a square with
-   * the cubic metric, a hexagon on a hex grid) walked in short steps, each
-   * at the terrain's height there. And, if asked, the ground inside each
-   * tinted its colour (a texture over copies of the flat pieces).
+   * Each Banda as on the map — across only, its height left out — worked out at each pixel of the
+   * terrain (see tinted): its ring (a circle, a square with the cubic metric, a hexagon's cells on a hex
+   * grid) on the tops and walls, and, if asked, the ground inside it tinted its colour. Only numbers
+   * handed to the shader: nothing built, as a Medición moves.
    */
   private buildReach() {
-    this.clear(this.ringGroup);
     const r = this.reach;
     const scene = this.scene;
+    const f = this.fillUniforms;
     const show = !!r && !!scene && (this.options.rings || this.options.ringFill);
-    this.fillGroup.visible = show && this.options.ringFill;
+    f.uFillTint.value = this.options.ringFill ? 1 : 0;
+    f.uFillRings.value = this.options.rings ? 1 : 0;
     if (!r || !scene || !show) {
+      f.uFillBands.value = 0;
+      this.setLayers({ bands: false });
+      this.requestApply();
       return;
     }
     const dpi = scene.dpi;
-    const u = this.u;
-    const k = this.k;
     const bands = r.bands.filter((band) => Number.isFinite(band.reach)).map((band) => ({ ...band, across: band.reach + r.excess }));
     const shape = r.shape;
-    // A Banda's edge, as the tint compares it (see FILL_GLSL): on hex cells, the whole steps it reaches (ringSteps).
+    // A Banda's edge, as the shader compares it: on hex cells, the whole steps it reaches (ringSteps).
     const edgeOf = (across: number) => (isHexShape(shape) ? ringSteps(across * dpi, dpi) + 1e-6 : across);
-    if (this.options.ringFill) {
-      // Its Bandas and how they're measured, for the ground's copies to work out at each pixel.
-      const f = this.fillUniforms;
-      f.uFillShape.value = isHexShape(shape) ? (shape === "hexHorizontal" ? 2 : 3) : shape === "square" ? 1 : 0;
-      f.uFillOrigin.value.set(r.x, r.y);
-      f.uFillDpi.value = dpi;
-      const cells = (r.cells?.length ? r.cells : [{ x: 0, y: 0 }]).slice(0, FILL_CELLS);
-      cells.forEach((cell, k) => f.uFillCells.value[k].set(cell.x, cell.y));
-      f.uFillCellCount.value = cells.length;
-      const list = bands.slice(0, FILL_BANDS);
-      list.forEach((band, k) => {
-        f.uFillEdges.value[k] = edgeOf(band.across);
-        f.uFillColors.value[k].set(band.color);
-      });
-      f.uFillBands.value = list.length;
-    }
-    if (!this.options.rings) {
+    f.uFillShape.value = isHexShape(shape) ? (shape === "hexHorizontal" ? 2 : 3) : shape === "square" ? 1 : 0;
+    f.uFillOrigin.value.set(r.x, r.y);
+    f.uFillDpi.value = dpi;
+    const cells = (r.cells?.length ? r.cells : [{ x: 0, y: 0 }]).slice(0, FILL_CELLS);
+    cells.forEach((cell, k) => f.uFillCells.value[k].set(cell.x, cell.y));
+    f.uFillCellCount.value = cells.length;
+    const list = bands.slice(0, FILL_BANDS);
+    list.forEach((band, k) => {
+      f.uFillEdges.value[k] = edgeOf(band.across);
+      f.uFillColors.value[k].set(band.color);
+    });
+    f.uFillBands.value = list.length;
+    this.setLayers({ bands: list.length > 0 });
+    this.requestApply();
+  }
+
+  /** The terrain's materials with the Bandas or the fog in their shaders or not (see layersOn): only when that changes. */
+  private setLayers(on: Partial<VistazoView["layersOn"]>) {
+    const next = { ...this.layersOn, ...on };
+    if (next.bands === this.layersOn.bands && next.clouds === this.layersOn.clouds && next.fog === this.layersOn.fog) {
       return;
     }
-    // The outline's corners, in grid units from the token, for a Banda `across` wide: as the map's
-    // rings, by the Forma (bandRings.ts); on hex cells, the outline of every cell it reaches.
-    const outline = (across: number): [number, number][] => {
-      if (isHexShape(shape)) {
-        return cellsOutline(ringSteps(across * dpi, dpi), shape, r.cells).map((p): [number, number] => [p.x, p.y]);
-      }
-      if (shape === "square") {
-        return [[-across, -across], [across, -across], [across, across], [-across, across]];
-      }
-      return Array.from({ length: 96 }, (_, i) => [Math.cos((i * Math.PI) / 48) * across, Math.sin((i * Math.PI) / 48) * across]);
-    };
-    const stride = dpi * 0.1;
-    for (const band of bands) {
-      const corners = outline(band.across).map(([x, y]): [number, number] => [r.x + x * dpi, r.y + y * dpi]);
-      const segments: number[] = [];
-      let previous: number[] | null = null;
-      for (let c = 0; c < corners.length; c++) {
-        const [ax, ay] = corners[c];
-        const [bx, by] = corners[(c + 1) % corners.length];
-        const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / stride));
-        for (let s = c === 0 ? 0 : 1; s <= steps; s++) {
-          const x = ax + ((bx - ax) * s) / steps;
-          const y = ay + ((by - ay) * s) / steps;
-          // The terrain's own height there (as the brush's ring has it), not the heights grid's nearest:
-          // that one steps on slopes. Off the map: the line breaks there.
-          const ground = scene.heightAt(x, y);
-          const point = ground === undefined ? null : [x * u, y * u, ground * k + 1.5];
-          if (point && previous) {
-            segments.push(...previous, ...point);
-          }
-          previous = point;
-        }
-      }
-      if (segments.length === 0) {
-        continue;
-      }
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(segments), 3));
-      // Over everything, a hill between the eye and it too (as the brush's ring): whole, not cut where it dips in.
-      const lines = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color: new THREE.Color(band.color), transparent: true, forceSinglePass: true, opacity: 0.95, depthTest: false }));
-      lines.renderOrder = 19;
-      this.ringGroup.add(lines);
+    this.layersOn = next;
+    for (const material of this.pieceMaterials) {
+      this.layers(material);
+      material.needsUpdate = true;
     }
   }
 
-  /** A copy of a flat piece, for the Banda tint (see buildReach): the same shape, the tint worked out on it (see FILL_GLSL). */
-  private fillCopy(geometry: THREE.BufferGeometry, z: number, group = this.fillGroup, order = 3) {
-    if (this.lite) {
-      return;
+  /** A terrain material's shader with what's on now (see layersOn). */
+  private layers(material: THREE.MeshBasicMaterial) {
+    material.defines = { ...material.defines };
+    for (const [name, on] of [["RR_BANDS", this.layersOn.bands], ["RR_CLOUDS", this.layersOn.clouds], ["RR_FOG", this.layersOn.fog]] as const) {
+      if (on) {
+        material.defines[name] = "";
+      } else {
+        delete material.defines[name];
+      }
     }
-    const copy = geometry.clone();
-    const material = new THREE.ShaderMaterial({
-      vertexShader: FILL_VERTEX,
-      fragmentShader: FILL_GLSL,
-      uniforms: this.fillUniforms,
-      transparent: true, forceSinglePass: true,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
-    });
-    const mesh = new THREE.Mesh(copy, material);
-    mesh.position.z = z;
-    mesh.renderOrder = order;
-    group.add(mesh);
   }
 
   /**
-   * The player view's fog (null: none): a picture over everything on the
-   * ground (copies of the pieces, walls and standing pictures, see fogCopy),
-   * redrawn on its own once a frame at most — moving a light doesn't
-   * rebuild the terrain.
+   * The player view's fog (null: none): a picture laid on everything on the
+   * ground (the pieces, walls and standing pictures, see fogged), redrawn on
+   * its own once a frame at most — moving a light doesn't rebuild the terrain.
    */
   setFog(fog: Fog | null) {
     this.fog = fog;
@@ -726,12 +707,8 @@ export class VistazoView {
   private drawFog() {
     const fog = this.fog;
     const scene = this.scene;
-    this.fogGroup.visible = !!fog && !!scene;
-    for (const child of this.edgeGroup.children) {
-      if (child.userData.fog) {
-        child.visible = this.fogGroup.visible;
-      }
-    }
+    this.fogUniforms.uFogOn.value = fog && scene ? 1 : 0;
+    this.setLayers({ fog: !!fog && !!scene });
     if (!fog || !scene) {
       return;
     }
@@ -771,52 +748,19 @@ export class VistazoView {
     context.fill("nonzero");
     if (!this.fogTexture) {
       this.fogTexture = new THREE.CanvasTexture(canvas);
-      for (const child of [...this.fogGroup.children, ...this.edgeGroup.children.filter((c) => c.userData.fog)]) {
-        const material = (child as THREE.Mesh).material as THREE.MeshBasicMaterial;
-        material.map = this.fogTexture;
-        material.needsUpdate = true;
-      }
     }
     this.fogTexture.needsUpdate = true;
+    const u = this.u;
+    this.fogUniforms.uFog.value = this.fogTexture;
+    this.fogUniforms.uFogBox.value.set(x0 * u, y0 * u, w * u, h * u);
   }
 
-  /**
-   * A copy of something on the map (a piece, a wall, a standing picture),
-   * for the fog to cover: the same shape and place, its texture the fog's
-   * picture laid from above (so a wall takes the fog at its foot).
-   */
-  private fogCopy(geometry: THREE.BufferGeometry, z = 0, group: THREE.Group = this.fogGroup) {
-    if (this.lite) {
-      return;
+  /** A surface of the terrain (a top, a wall, a standing picture) kept for what's drawn over it (see copiesIn). */
+  private keepSurface(geometry: THREE.BufferGeometry, z = 0) {
+    if (!this.lite) {
+      // A little above, as what's drawn over it was.
+      this.surfaces.push({ geometry, z: z + 2 });
     }
-    const scene = this.scene!;
-    const { x0, y0, x1, y1 } = scene.bounds;
-    const position = geometry.getAttribute("position") as THREE.BufferAttribute;
-    const uv = new Float32Array(position.count * 2);
-    for (let i = 0; i < position.count; i++) {
-      uv[i * 2] = (position.getX(i) / this.u - x0) / (x1 - x0 || 1);
-      uv[i * 2 + 1] = 1 - (position.getY(i) / this.u - y0) / (y1 - y0 || 1);
-    }
-    const copy = geometry.clone();
-    copy.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
-    const mesh = new THREE.Mesh(
-      copy,
-      new THREE.MeshBasicMaterial({
-        map: this.fogTexture,
-        transparent: true, forceSinglePass: true,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-        polygonOffset: true,
-        polygonOffsetFactor: -3,
-        polygonOffsetUnits: -3,
-      })
-    );
-    // A little above, so what lies on the ground there (the Banda rings) is under it too.
-    mesh.position.z = z + 2;
-    mesh.renderOrder = 5;
-    mesh.visible = group === this.fogGroup || this.fogGroup.visible;
-    mesh.userData.fog = true;
-    group.add(mesh);
   }
 
   /** The token an event happened on, if it was one. */
@@ -1464,6 +1408,11 @@ export class VistazoView {
     if (top) {
       based(material, this.baseUniforms, top === "deck");
     }
+    // The Bandas: tinting the tops, their rings on them; the fog over everything.
+    tinted(material, this.fillUniforms, !!top);
+    clouded(material, this.cloudUniforms);
+    fogged(material, this.fogUniforms);
+    this.layers(material);
     this.pieceMaterials.push(material);
     return material;
   }
@@ -1647,14 +1596,20 @@ export class VistazoView {
       if (blend) {
         grained(material);
       }
+      // The Bandas' rings up the walls (no tint), and the fog: a wall would give the hidden terrain away.
+      tinted(material, this.fillUniforms, false);
+      clouded(material, this.cloudUniforms);
+      fogged(material, this.fogUniforms);
+      this.layers(material);
       material.userData.color = new THREE.Color(1, 1, 1);
       material.userData.mapTextured = fromMap ? "plain" : false;
       this.pieceMaterials.push(material);
       const mesh = new THREE.Mesh(geometry, material);
       mesh.userData.wall = true;
       group.add(mesh);
-      // The fog covers walls too (a wall would give the hidden terrain away); the map edge's, with them (shown or not).
-      this.fogCopy(geometry, 0, edge ? this.edgeGroup : this.fogGroup);
+      if (!edge) {
+        this.keepSurface(geometry);
+      }
       if (levels.length > 0) {
         const lines = new THREE.BufferGeometry();
         lines.setAttribute("position", new THREE.BufferAttribute(new Float32Array(levels), 3));
@@ -1753,8 +1708,7 @@ export class VistazoView {
     this.movingKey = "";
     this.movingGroup.matrix.identity();
     this.clear(this.edgeGroup);
-    this.clear(this.fillGroup);
-    this.clear(this.fogGroup);
+    this.surfaces = [];
     this.pieceMaterials = [];
     this.k = VIEW_CELL * this.options.heightScale;
 
@@ -1796,8 +1750,6 @@ export class VistazoView {
     if (!this.lite && !first) {
       time("3d.build.wallShadows", () => this.buildWallShadows());
     }
-    this.fogTexture?.dispose();
-    this.fogTexture = null;
     time("3d.build.fog", () => this.drawFog());
     if (!first) {
       time("3d.build.underBridges", () => this.buildUnderBridges());
@@ -1956,14 +1908,14 @@ export class VistazoView {
   }
 
   /**
-   * The terrain's surfaces (its fog copies: ground, tops, walls) within a box
+   * The terrain's surfaces (ground, tops, walls: see keepSurface) within a box
    * (view units; all of them with none), as one geometry: positions only,
-   * each copy's own offset in them. For what's drawn over the terrain itself
-   * (cloud shadows, a bridge's fill), in one draw.
+   * each one's own height in them. For what's drawn over the terrain itself
+   * (a bridge's fill), in one draw.
    */
   private copiesIn(box: { x0: number; y0: number; x1: number; y1: number } | null): THREE.BufferGeometry | null {
     const parts: THREE.BufferGeometry[] = [];
-    for (const copy of this.fogGroup.children as THREE.Mesh[]) {
+    for (const copy of this.surfaces) {
       const geometry = copy.geometry;
       if (!geometry.boundingBox) {
         geometry.computeBoundingBox();
@@ -1978,7 +1930,7 @@ export class VistazoView {
       // Only its triangles over the box (a copy is the whole ground often: a bridge's is a few of them),
       // read through its index (not made unindexed whole first); in the copy's own units (its offset taken
       // off the box), the corners' places only once the ones kept are known.
-      const [ox, oy, oz] = [copy.position.x, copy.position.y, copy.position.z];
+      const [ox, oy, oz] = [0, 0, copy.z];
       const [bx0, bx1, by0, by1] = box ? [box.x0 - ox, box.x1 - ox, box.y0 - oy, box.y1 - oy] : [-Infinity, Infinity, -Infinity, Infinity];
       const kept: number[] = [];
       for (let i = 0; i < corners; i += 3) {
@@ -2047,8 +1999,7 @@ export class VistazoView {
     const deck = new THREE.Mesh(top, this.pieceMaterial(bridge.top, true, undefined, "deck"));
     deck.position.z = sloped ? 0 : bridge.top * k;
     this.terrainGroup.add(deck);
-    this.fillCopy(top, deck.position.z);
-    this.fogCopy(top, deck.position.z);
+    this.keepSurface(top, deck.position.z);
 
     const style = bridge.walls ?? WALL_STYLE;
     const kind = style === "rubble" || style === "earth" || style === "wood" ? style : "stone";
@@ -2221,8 +2172,7 @@ export class VistazoView {
       mesh.userData.piece = piece;
       mesh.userData.fine = fine;
       this.terrainGroup.add(mesh);
-      this.fillCopy(geometry, piece.surface ? 0 : z);
-      this.fogCopy(geometry, piece.surface ? 0 : z);
+      this.keepSurface(geometry, piece.surface ? 0 : z);
       return;
     }
     // Standing: a block (its top plain stone, its sides walls) with the
@@ -2257,7 +2207,7 @@ export class VistazoView {
     const top = new THREE.Mesh(roofGeometry, roofMaterial);
     top.position.z = z;
     this.terrainGroup.add(top);
-    this.fogCopy(geometry, z);
+    this.keepSurface(geometry, z);
 
     if (piece.card) {
       // A relief's own picture (see relief/vistazo.ts): its corners where it has them, its picture from the map.
@@ -2282,7 +2232,7 @@ export class VistazoView {
       // Where on the map each corner's picture is (view units), for it to follow a drag (see moveShapes).
       cardMesh.userData.cardMap = Float32Array.from(piece.card.flatMap(([, , , mx, my]) => [mx * u, my * u, 0]));
       this.terrainGroup.add(cardMesh);
-      this.fogCopy(card);
+      this.keepSurface(card);
     }
   }
 
@@ -2585,30 +2535,29 @@ export class VistazoView {
     }
     this.weatherKey = key;
     this.clear(this.weatherGroup);
-    this.clear(this.cloudShadowGroup);
+    const c = this.cloudUniforms;
+    c.uCloudCount.value = 0;
     if (scene && weathers.length > 0) {
       const frame = { u: this.u, cell: VIEW_CELL, k: this.k, lowest: this.minH, highest: this.maxH, amount: this.look.amount };
       for (const object of buildWeather(weathers, frame, scene.dpi, this.options.clouds)) {
         this.weatherGroup.add(object);
       }
+      // As shadows: on the terrain's own shader (see clouded), each zone's numbers.
       if (this.options.clouds === "shadows") {
-        for (const weather of weathers.filter((w) => w.type === "CLOUD")) {
-          const material = cloudShadowMaterial(weather, frame);
-          // The terrain within its item's box, as one mesh (one draw).
-          const u = this.u;
-          const surfaces = this.copiesIn({ x0: weather.box.x0 * u, y0: weather.box.y0 * u, x1: weather.box.x1 * u, y1: weather.box.y1 * u });
-          if (!surfaces) {
-            material.dispose();
-            continue;
-          }
-          const shadow = new THREE.Mesh(surfaces, material);
-          // Under the fog (5), over the ground and its rings.
-          shadow.renderOrder = 4;
-          shadow.frustumCulled = false;
-          this.cloudShadowGroup.add(shadow);
+        const zones = weathers.filter((w) => w.type === "CLOUD").slice(0, CLOUD_ZONES);
+        zones.forEach((weather, i) => {
+          const zone = cloudShadowOf(weather, frame);
+          c.uCloudBoxes.value[i].set(...zone.box);
+          c.uCloudDrifts.value[i].set(...zone.drift);
+          c.uCloudCovers.value[i] = zone.cover;
+        });
+        c.uCloudCount.value = zones.length;
+        if (zones.length > 0) {
+          c.uCloudNoise.value = cloudNoise();
         }
       }
     }
+    this.setLayers({ clouds: c.uCloudCount.value > 0 });
     this.playWeather();
   }
 
@@ -2616,7 +2565,7 @@ export class VistazoView {
   private get hasWeather() {
     return (
       this.weatherGroup.children.length > 0 ||
-      this.cloudShadowGroup.children.length > 0 ||
+      this.cloudUniforms.uCloudCount.value > 0 ||
       (this.moving && this.templateGroup.children.length > 0) ||
       (this.moving && this.options.waterMotion && this.waterGroup.children.length > 0)
     );
@@ -2799,8 +2748,8 @@ export class VistazoView {
   /** The weather on to now, its particles sized for the camera (screen px a view unit at the eye's distance, in device px). */
   private weatherUniforms() {
     const pointScale = this.fit * this.camera.zoom * this.persp * (this.renderer?.getPixelRatio() ?? 1);
-    // The shadows share one material per cloud: set once is enough, but setting it again is harmless.
-    setWeatherTime([...this.weatherGroup.children, ...this.cloudShadowGroup.children], performance.now() / 1000, pointScale, this.persp, this.fit * this.camera.zoom);
+    setWeatherTime(this.weatherGroup.children, performance.now() / 1000, pointScale, this.persp, this.fit * this.camera.zoom);
+    this.cloudUniforms.uCloudTime.value = performance.now() / 1000;
     for (const mesh of this.templateGroup.children) {
       const { uniforms } = (mesh as THREE.Mesh).material as THREE.ShaderMaterial;
       // Still at low quality (their look, not moving).
@@ -3612,19 +3561,50 @@ function gridded(material: THREE.MeshBasicMaterial, uniforms: Record<string, { v
  * any) changes to the shader, kept.
  */
 function based(material: THREE.MeshBasicMaterial, uniforms: Record<string, { value: unknown }>, deck: boolean) {
+  layer(material, `based${deck ? "-deck" : ""}`, uniforms, `${deck ? "#define BASE_DECK\n" : ""}${BASE_GLSL}`, "outgoingLight = paintBases(outgoingLight, vLayerAt);");
+}
+
+/**
+ * The Bandas worked out at each pixel of a top or wall (see BAND_GLSL), as the map's rings: the ring
+ * of each, and on a top (`tint`) the ground inside it tinted, if the options ask.
+ */
+function tinted(material: THREE.MeshBasicMaterial, uniforms: Record<string, { value: unknown }>, tint: boolean) {
+  layer(material, `tinted${tint ? "" : "-rings"}`, uniforms, BAND_GLSL, `#ifdef RR_BANDS\noutgoingLight = paintBands(outgoingLight, vLayerAt.xy / uFillU, ${tint});\n#endif`);
+}
+
+/** The clouds' shadows over a top or wall (see CLOUD_GLSL), when there are any. */
+function clouded(material: THREE.MeshBasicMaterial, uniforms: Record<string, { value: unknown }>) {
+  layer(material, "clouded", uniforms, CLOUD_GLSL, "#ifdef RR_CLOUDS\noutgoingLight = shadeClouds(outgoingLight, vLayerAt.xy);\n#endif");
+}
+
+/** The player view's fog over a top or wall, from its picture laid from above (see drawFog). */
+function fogged(material: THREE.MeshBasicMaterial, uniforms: Record<string, { value: unknown }>) {
+  layer(material, "fogged", uniforms, FOG_GLSL, "#ifdef RR_FOG\noutgoingLight = paintFog(outgoingLight, vLayerAt.xy);\n#endif");
+}
+
+/**
+ * Something worked out at each pixel of a material, over what it draws: its uniforms; its functions;
+ * what it does to the colour (before it's written), from the pixel's place in the world (vLayerAt,
+ * view units: one for every layer, worked out once a vertex). Over what the material's shader had
+ * already (the grid, another layer), in that order.
+ */
+function layer(material: THREE.MeshBasicMaterial, name: string, uniforms: Record<string, { value: unknown }>, head: string, body: string) {
   const before = material.onBeforeCompile.bind(material);
   const key = material.customProgramCacheKey.bind(material);
   material.onBeforeCompile = (shader, renderer) => {
     before(shader, renderer);
     Object.assign(shader.uniforms, uniforms);
-    shader.vertexShader = shader.vertexShader
-      .replace("#include <common>", "#include <common>\nvarying vec3 vBaseAt;")
-      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvBaseAt = (modelMatrix * vec4(position, 1.0)).xyz;");
+    if (!shader.vertexShader.includes("vLayerAt")) {
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vLayerAt;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvLayerAt = (modelMatrix * vec4(position, 1.0)).xyz;");
+      shader.fragmentShader = shader.fragmentShader.replace("#include <common>", "#include <common>\nvarying vec3 vLayerAt;");
+    }
     shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", `#include <common>\nvarying vec3 vBaseAt;\n${deck ? "#define BASE_DECK\n" : ""}${BASE_GLSL}`)
-      .replace("#include <opaque_fragment>", "outgoingLight = paintBases(outgoingLight, vBaseAt);\n#include <opaque_fragment>");
+      .replace("#include <common>", `#include <common>\n${head}`)
+      .replace("#include <opaque_fragment>", `${body}\n#include <opaque_fragment>`);
   };
-  material.customProgramCacheKey = () => `${key()}+rising-ranges/based${deck ? "-deck" : ""}`;
+  material.customProgramCacheKey = () => `${key()}+rising-ranges/${name}`;
 }
 
 const BASE_GLSL = /* glsl */ `
@@ -3699,19 +3679,9 @@ const GRID_GLSL = /* glsl */ `
   }
 `;
 
-/** How many Bandas, and how many cells an Origen takes, the ground's tint works out (see FILL_GLSL). */
+/** How many Bandas, and how many cells an Origen takes, the ground works out (see BAND_GLSL). */
 const FILL_BANDS = 12;
 const FILL_CELLS = 16;
-
-const FILL_VERTEX = /* glsl */ `
-  uniform float uFillU;
-  varying vec2 vAt;
-  void main() {
-    vec4 world = modelMatrix * vec4(position, 1.0);
-    vAt = world.xy / uFillU;
-    gl_Position = projectionMatrix * viewMatrix * world;
-  }
-`;
 
 /**
  * The Banda tint at a ground point (scene px), as buildReach measured it on
@@ -3721,7 +3691,8 @@ const FILL_VERTEX = /* glsl */ `
  * fading in across the Banda (5% at its inner edge, 25% at its ring; on hex
  * cells by the point's own distance, not whole steps). Sharp at any zoom.
  */
-const FILL_GLSL = /* glsl */ `
+const BAND_GLSL = /* glsl */ `
+  uniform float uFillU;
   uniform float uFillShape;
   uniform vec2 uFillOrigin;
   uniform float uFillDpi;
@@ -3730,7 +3701,8 @@ const FILL_GLSL = /* glsl */ `
   uniform float uFillEdges[${FILL_BANDS}];
   uniform vec3 uFillColors[${FILL_BANDS}];
   uniform int uFillBands;
-  varying vec2 vAt;
+  uniform float uFillTint;
+  uniform float uFillRings;
   const float C30 = 0.8660254;
   // hexSteps: how many hex steps an offset (cells) is, continuously.
   float hexStepsG(vec2 d, bool horizontal) {
@@ -3760,8 +3732,9 @@ const FILL_GLSL = /* glsl */ `
     }
     return horizontal ? vec2(rr * C30, rq + rr * 0.5) : vec2(rq + rr * 0.5, rr * C30);
   }
-  void main() {
-    vec2 d = (vAt - uFillOrigin) / uFillDpi;
+  vec3 paintBands(vec3 color, vec2 at, bool tint) {
+    if (uFillBands == 0) return color;
+    vec2 d = (at - uFillOrigin) / uFillDpi;
     float across;
     float far = length(d);
     if (uFillShape < 0.5) {
@@ -3793,11 +3766,58 @@ const FILL_GLSL = /* glsl */ `
       }
       inner = uFillEdges[k];
     }
-    if (index < 0) discard;
-    float t = clamp((far - inner) / max(outer - inner, 1e-6), 0.0, 1.0);
-    gl_FragColor = vec4(uFillColors[index], 0.05 + 0.2 * t * t);
+    // How fast across and the Banda change from one pixel to the next (worked out here, where every
+    // pixel gets: the rings' width from them).
+    float step = max(fwidth(across), 1e-6);
+    float banded = fwidth(float(index < 0 ? uFillBands : index));
+    if (tint && uFillTint > 0.5 && index >= 0) {
+      float t = clamp((far - inner) / max(outer - inner, 1e-6), 0.0, 1.0);
+      color = mix(color, uFillColors[index], 0.05 + 0.2 * t * t);
+    }
+    if (uFillRings > 0.5) {
+      float line = 0.0;
+      vec3 ink = vec3(1.0);
+      if (uFillShape < 1.5) {
+        // A circle's or a square's: about two pixels wide on its edge, smooth.
+        for (int k = 0; k < ${FILL_BANDS}; k++) {
+          if (k >= uFillBands) break;
+          float a = 1.0 - smoothstep(0.5, 1.5, abs(across - uFillEdges[k]) / step);
+          if (a > line) {
+            line = a;
+            ink = uFillColors[k];
+          }
+        }
+      } else if (banded > 0.0) {
+        // Hex cells: where the Banda changes, between cells.
+        line = 1.0;
+        ink = uFillColors[index < 0 ? uFillBands - 1 : index];
+      }
+      color = mix(color, ink, 0.95 * line);
+    }
+    return color;
   }
 `;
+
+/** The fog's picture over a scene point (view units; see drawFog): its colour, as much as it covers there. */
+const FOG_GLSL = /* glsl */ `
+  uniform sampler2D uFog;
+  uniform vec4 uFogBox;
+  uniform float uFogOn;
+  vec3 paintFog(vec3 color, vec2 at) {
+    if (uFogOn < 0.5) return color;
+    vec2 uv = (at - uFogBox.xy) / uFogBox.zw;
+    vec4 fog = texture2D(uFog, vec2(uv.x, 1.0 - uv.y));
+    return mix(color, fog.rgb, fog.a);
+  }
+`;
+
+/** No picture: a clear pixel, for the fog's and the clouds' uniforms till there's one (see fogUniforms, cloudUniforms). */
+const NO_FOG = (() => {
+  const texture = new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1);
+  texture.needsUpdate = true;
+  return texture;
+})();
+
 
 /** The walls' look where their shape has none of its own (see buildWalls). */
 const WALL_STYLE: WallStyle = "blend";

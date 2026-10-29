@@ -214,13 +214,25 @@ export function reliefTerrain(
     pieces.unshift({ height: 0, shape: groundScene, surface: plainGround && !clear && !surfaced ? undefined : surfaceOf(null) });
   }
   // Slabs: bridges over the terrain (a slab's top as its middle has it; one that isn't flat, at each point too).
-  const bridges: Bridge[] = (within ? [] : relief.slabLayers.filter((layer) => !skip?.has(layer.si))).map((layer) => {
+  const bridges: Bridge[] = (within ? [] : relief.slabLayers.filter((layer) => !skip?.has(layer.si))).flatMap((layer) => {
     const shape = relief.data.shapes[layer.si];
     const [cx, cy] = centroid(layer.ring);
     const top = relief.surface(layer, cx, cy);
-    const outline = sceneOf([[closed(layer.ring), ...layer.holes.map(closed)]]);
+    let outline = sceneOf([[closed(layer.ring), ...layer.holes.map(closed)]]);
+    // Under the fog, as the shapes: cut to what's clear (its outline there would give it away), or none.
+    if (clear) {
+      try {
+        outline = clip.intersection(outline, clear);
+      } catch (error) {
+        console.error("Rising Ranges: 3D Glance couldn't cut a slab to the fog", error);
+        return [];
+      }
+      if (outline.length === 0) {
+        return [];
+      }
+    }
     const flat = shape.kind === "flat" && layer.pieces.length === 1 && !(shape.detail && shape.detail.v.size > 0);
-    return {
+    return [{
       id: `relief-${layer.si}`,
       shape: outline,
       top,
@@ -236,7 +248,7 @@ export function reliefTerrain(
       frame: frameOf(layer.ring.map(toScene).map(([x, y]) => ({ x, y }))),
       si: layer.si,
       under: shape.under,
-    };
+    }];
   });
   const unfilled = relief.data.shapes.flatMap((s) => {
     if (!s.keepLook) {

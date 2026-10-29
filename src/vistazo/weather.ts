@@ -473,7 +473,7 @@ export function buildWeather(weathers: Weather[], frame: WeatherFrame, dpi: numb
   const objects: THREE.Object3D[] = [];
   for (const weather of weathers) {
     if (weather.type === "CLOUD") {
-      // As shadows they're laid on the terrain itself (see cloudShadowMaterial).
+      // As shadows they're laid on the terrain itself (see CLOUD_GLSL).
       if (clouds === "mist") {
         objects.push(...buildWisps(weather, frame, CLOUD_MIST), ...buildPuffs(weather, frame, dpi, CLOUD_MIST_PUFFS));
       }
@@ -553,88 +553,114 @@ export function buildWeather(weathers: Weather[], frame: WeatherFrame, dpi: numb
   return objects;
 }
 
-const SHADOW_VERTEX = /* glsl */ `
-  uniform float uCell;
-  varying vec2 vCell;
-  varying vec2 vAt;
-  void main() {
-    vec4 world = modelMatrix * vec4(position, 1.0);
-    vAt = world.xy;
-    vCell = world.xy / uCell;
-    gl_Position = projectionMatrix * viewMatrix * world;
-  }
-`;
-
-const SHADOW_FRAGMENT = /* glsl */ `
-  uniform float uTime;
-  uniform vec2 uDrift;
-  uniform float uCover;
-  uniform float uOpacity;
-  uniform vec4 uBox;
-  uniform float uRim;
-  uniform vec3 uColor;
-  varying vec2 vCell;
-  varying vec2 vAt;
-  ${NOISE_2D}
-  // Few octaves, the high ones faint: rounded blobs, not filaments.
-  float fbm(vec2 p) {
-    float v = 0.0;
-    float a = 0.6;
-    for (int i = 0; i < 3; i++) {
-      v += a * noise(p);
-      p = p * 2.1 + vec2(17.1, 9.2);
-      a *= 0.4;
-    }
-    return v / 0.936;
-  }
-  void main() {
-    vec2 p = vCell * 0.12 - uDrift * uTime;
-    float n = fbm(p);
-    // Each cloud its own shade: some darker, some lighter.
-    float tone = fbm(vCell * 0.04 + 7.3 - uDrift * uTime * 0.8);
-    float edge = 1.0 - uCover;
-    float alpha = smoothstep(edge - 0.1, edge + 0.1, n) * mix(0.4, 1.0, smoothstep(0.3, 0.7, tone)) * uOpacity;
-    // Only over the weather's item, faded toward its edges.
-    vec2 inside = min(vAt - uBox.xy, uBox.zw - vAt);
-    alpha *= smoothstep(0.0, uRim, min(inside.x, inside.y));
-    if (alpha < 0.01) discard;
-    gl_FragColor = vec4(uColor, alpha);
-  }
-`;
+/** How many cloud zones the terrain shades at once (see CLOUD_GLSL). */
+export const CLOUD_ZONES = 4;
 
 /**
- * Clouds as their shadows: drawn on copies of the terrain's own surfaces
- * (ground, tops, walls; see fogCopy in render.ts), so they fall where the
- * ground is, raised or sunk. Big soft patches drifting with the wind, each
- * its own shade.
+ * A cloud zone's shadow on the terrain, as CLOUD_GLSL works it out: its item's box (view units), how
+ * it drifts with the wind (cells a second), how much of it is cloud.
  */
-export function cloudShadowMaterial(weather: Weather, frame: WeatherFrame): THREE.ShaderMaterial {
+export function cloudShadowOf(weather: Weather, frame: WeatherFrame): { box: [number, number, number, number]; drift: [number, number]; cover: number } {
   const pace = paceOf(weather.speed);
   const length = Math.hypot(weather.direction.x, weather.direction.y);
   const dir = length > 0 ? { x: weather.direction.x / length, y: weather.direction.y / length } : { x: 1, y: 0 };
   const { x0, y0, x1, y1 } = weather.box;
-  return new THREE.ShaderMaterial({
-    vertexShader: SHADOW_VERTEX,
-    fragmentShader: SHADOW_FRAGMENT,
-    transparent: true,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-    polygonOffset: true,
-    polygonOffsetFactor: -2,
-    polygonOffsetUnits: -2,
-    uniforms: {
-      uTime: { value: 0 },
-      uCell: { value: frame.cell },
-      uDrift: { value: new THREE.Vector2(dir.x, dir.y).multiplyScalar(0.6 * pace * 0.12) },
-      uCover: { value: Math.min(0.85, 0.3 + 0.1 * weather.density) },
-      uOpacity: { value: 0.47 },
-      // Almost black, a touch of blue (a shadow under a sky).
-      uColor: { value: new THREE.Color(0.02, 0.04, 0.09) },
-      uBox: { value: new THREE.Vector4(x0 * frame.u, y0 * frame.u, x1 * frame.u, y1 * frame.u) },
-      uRim: { value: frame.cell * 2 },
-    },
-  });
+  return {
+    box: [x0 * frame.u, y0 * frame.u, x1 * frame.u, y1 * frame.u],
+    drift: [dir.x * 0.6 * pace * 0.12, dir.y * 0.6 * pace * 0.12],
+    cover: Math.min(0.85, 0.3 + 0.1 * weather.density),
+  };
 }
+
+/** The clouds' noise picture (see cloudNoise): its side (px), and how many of the noise's cells it holds across. */
+const CLOUD_NOISE_SIZE = 256;
+const CLOUD_NOISE_CELLS = 16;
+
+let cloudNoiseTexture: THREE.DataTexture | null = null;
+
+/**
+ * The clouds' shapes as a picture, worked out once: the same fbm of a value noise the shaders use
+ * (three octaves, each twice as fine and 0.4 as strong), wrapping round on itself (each octave's
+ * cells repeat across it), so the shadows read it, repeated, instead of working the noise out at
+ * every pixel (two reads, not six noises: a slow graphics card feels those over the whole terrain).
+ */
+export function cloudNoise(): THREE.DataTexture {
+  if (cloudNoiseTexture) {
+    return cloudNoiseTexture;
+  }
+  const hash = (x: number, y: number) => {
+    let [px, py] = [(x * 123.34) % 1, (y * 456.21) % 1];
+    const d = px * (px + 45.32) + py * (py + 45.32);
+    [px, py] = [px + d, py + d];
+    return (((px * py) % 1) + 1) % 1;
+  };
+  const noise = (x: number, y: number, period: number) => {
+    const [ix, iy] = [Math.floor(x), Math.floor(y)];
+    const [fx, fy] = [x - ix, y - iy];
+    const [ux, uy] = [fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy)];
+    const at = (i: number, j: number) => hash(((i % period) + period) % period, ((j % period) + period) % period);
+    const a = at(ix, iy) + (at(ix + 1, iy) - at(ix, iy)) * ux;
+    const b = at(ix, iy + 1) + (at(ix + 1, iy + 1) - at(ix, iy + 1)) * ux;
+    return a + (b - a) * uy;
+  };
+  const data = new Uint8Array(CLOUD_NOISE_SIZE * CLOUD_NOISE_SIZE);
+  for (let j = 0; j < CLOUD_NOISE_SIZE; j++) {
+    for (let i = 0; i < CLOUD_NOISE_SIZE; i++) {
+      const [x, y] = [(i / CLOUD_NOISE_SIZE) * CLOUD_NOISE_CELLS, (j / CLOUD_NOISE_SIZE) * CLOUD_NOISE_CELLS];
+      let v = 0;
+      for (let o = 0, a = 0.6, f = 1; o < 3; o++, a *= 0.4, f *= 2) {
+        v += a * noise(x * f, y * f, CLOUD_NOISE_CELLS * f);
+      }
+      data[j * CLOUD_NOISE_SIZE + i] = Math.round(Math.min(1, v / 0.936) * 255);
+    }
+  }
+  const texture = new THREE.DataTexture(data, CLOUD_NOISE_SIZE, CLOUD_NOISE_SIZE, THREE.RedFormat, THREE.UnsignedByteType);
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.magFilter = THREE.LinearFilter;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.generateMipmaps = true;
+  texture.needsUpdate = true;
+  cloudNoiseTexture = texture;
+  return texture;
+}
+
+/**
+ * Clouds as their shadows, worked out at each pixel of the terrain (its tops and walls, see clouded
+ * in render.ts) from where it is (view units), so they fall where the ground is, raised or sunk: big
+ * soft patches drifting with the wind, each its own shade, almost black with a touch of blue (a
+ * shadow under a sky), over each zone's item and faded toward its edges. Their shapes read from the
+ * clouds' noise picture (see cloudNoise).
+ */
+export const CLOUD_GLSL = /* glsl */ `
+  uniform float uCloudTime;
+  uniform float uCloudCell;
+  uniform int uCloudCount;
+  uniform vec4 uCloudBoxes[${CLOUD_ZONES}];
+  uniform vec2 uCloudDrifts[${CLOUD_ZONES}];
+  uniform float uCloudCovers[${CLOUD_ZONES}];
+  uniform sampler2D uCloudNoise;
+  // The fbm at a point of the noise (its cells), from the picture, repeated.
+  float cloudFbm(vec2 p) {
+    return texture2D(uCloudNoise, p / ${CLOUD_NOISE_CELLS.toFixed(1)}).r;
+  }
+  vec3 shadeClouds(vec3 color, vec2 at) {
+    vec2 cell = at / uCloudCell;
+    for (int i = 0; i < ${CLOUD_ZONES}; i++) {
+      if (i >= uCloudCount) break;
+      vec4 b = uCloudBoxes[i];
+      vec2 inside = min(at - b.xy, b.zw - at);
+      float rim = smoothstep(0.0, uCloudCell * 2.0, min(inside.x, inside.y));
+      if (rim <= 0.0) continue;
+      vec2 drift = uCloudDrifts[i] * uCloudTime;
+      float n = cloudFbm(cell * 0.12 - drift);
+      float tone = cloudFbm(cell * 0.04 + 7.3 - drift * 0.8);
+      float edge = 1.0 - uCloudCovers[i];
+      float alpha = smoothstep(edge - 0.1, edge + 0.1, n) * mix(0.4, 1.0, smoothstep(0.3, 0.7, tone)) * 0.47 * rim;
+      color = mix(color, vec3(0.02, 0.04, 0.09), alpha);
+    }
+    return color;
+  }
+`;
 
 /**
  * Each weather on to `time` (seconds): its particles sized for the camera
