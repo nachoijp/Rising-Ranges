@@ -510,19 +510,26 @@ export function covers(layer: { box: Box; raster: Raster; ring: Pt[]; holes: Pt[
 
 /** The point of an outline nearest to (x, y), and how far it is. */
 export function nearestOnRing(ring: Pt[], x: number, y: number): { x: number; y: number; d: number } {
-  let best = { x: ring[0][0], y: ring[0][1], d: Infinity };
-  for (let k = 0; k < ring.length; k++) {
-    const [ax, ay] = ring[k];
-    const [bx, by] = ring[(k + 1) % ring.length];
-    const len2 = (bx - ax) ** 2 + (by - ay) ** 2;
-    const t = len2 < 1e-12 ? 0 : Math.max(0, Math.min(1, ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / len2));
-    const [px, py] = [ax + (bx - ax) * t, ay + (by - ay) * t];
-    const d = Math.hypot(px - x, py - y);
-    if (d < best.d) {
-      best = { x: px, y: py, d };
+  // Asked for every point of a soft edge, every build: plain numbers, the distance squared till the end.
+  let [bestX, bestY, best2] = [ring[0][0], ring[0][1], Infinity];
+  const n = ring.length;
+  for (let k = 0; k < n; k++) {
+    const a = ring[k];
+    const b = ring[k + 1 < n ? k + 1 : 0];
+    const ax = a[0];
+    const ay = a[1];
+    const dx = b[0] - ax;
+    const dy = b[1] - ay;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 < 1e-12 ? 0 : Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / len2));
+    const px = ax + dx * t;
+    const py = ay + dy * t;
+    const d2 = (px - x) * (px - x) + (py - y) * (py - y);
+    if (d2 < best2) {
+      [bestX, bestY, best2] = [px, py, d2];
     }
   }
-  return best;
+  return { x: bestX, y: bestY, d: Math.hypot(bestX - x, bestY - y) };
 }
 
 /** The point nearest to (x, y) on any of some outlines, and how far it is. */

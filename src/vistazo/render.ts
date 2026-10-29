@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { TessellateModifier } from "three/examples/jsm/modifiers/TessellateModifier.js";
+import { bisect } from "./view/bisect";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { MultiPolygon } from "polygon-clipping";
 import { bridgeHighest, bridgeTop, inShape, pieceHeight, type Bridge, type MapImage, type Piece, type Prop, type Token, type VistazoScene } from "./scene";
@@ -45,6 +45,8 @@ export { tintOf };
 // Colours pass through as they are, as they did in CSS: the map's pixels,
 // the walls' shades and the tints, without linear/sRGB conversions.
 THREE.ColorManagement.enabled = false;
+// The see-through materials here are drawn with both faces in one pass (forceSinglePass): otherwise
+// three.js draws a double-sided one twice, its shader looked up again each time, every frame.
 
 
 /** The painted bases' picture (see paintBases): pixels a cell, and the most a side (as a texture holds). */
@@ -430,7 +432,7 @@ export class VistazoView {
       const mesh = child as THREE.Mesh;
       const veil = new THREE.Mesh(
         mesh.geometry,
-        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.32, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
+        new THREE.MeshBasicMaterial({ color, transparent: true, forceSinglePass: true, opacity: 0.32, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
       );
       veil.position.copy(mesh.position);
       veil.renderOrder = 3;
@@ -636,9 +638,10 @@ export class VistazoView {
         for (let s = c === 0 ? 0 : 1; s <= steps; s++) {
           const x = ax + ((bx - ax) * s) / steps;
           const y = ay + ((by - ay) * s) / steps;
-          const ground = this.gridHeight(x, y);
-          // Off the map: the line breaks there.
-          const point = Number.isNaN(ground) ? null : [x * u, y * u, ground * k + 1.5];
+          // The terrain's own height there (as the brush's ring has it), not the heights grid's nearest:
+          // that one steps on slopes. Off the map: the line breaks there.
+          const ground = scene.heightAt(x, y);
+          const point = ground === undefined ? null : [x * u, y * u, ground * k + 1.5];
           if (point && previous) {
             segments.push(...previous, ...point);
           }
@@ -650,8 +653,9 @@ export class VistazoView {
       }
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(segments), 3));
-      const lines = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color: new THREE.Color(band.color), transparent: true, opacity: 0.95 }));
-      lines.renderOrder = 4;
+      // Over everything, a hill between the eye and it too (as the brush's ring): whole, not cut where it dips in.
+      const lines = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color: new THREE.Color(band.color), transparent: true, forceSinglePass: true, opacity: 0.95, depthTest: false }));
+      lines.renderOrder = 19;
       this.ringGroup.add(lines);
     }
   }
@@ -666,7 +670,7 @@ export class VistazoView {
       vertexShader: FILL_VERTEX,
       fragmentShader: FILL_GLSL,
       uniforms: this.fillUniforms,
-      transparent: true,
+      transparent: true, forceSinglePass: true,
       depthWrite: false,
       side: THREE.DoubleSide,
       polygonOffset: true,
@@ -785,7 +789,7 @@ export class VistazoView {
       copy,
       new THREE.MeshBasicMaterial({
         map: this.fogTexture,
-        transparent: true,
+        transparent: true, forceSinglePass: true,
         depthWrite: false,
         side: THREE.DoubleSide,
         polygonOffset: true,
@@ -968,7 +972,7 @@ export class VistazoView {
     // A third of a cell across: there to see and grab, not a token's size.
     const token = { id: FREE_POINT, name: "", x: at.x, y: at.y, size: scene.dpi / 3, terrain: ground, own: at.height - ground, rotation: 0, flipX: false, flipY: false, hidden: false } as Token;
     // A ring on the ground under it, and a dashed line up to it when it's raised.
-    const ring = new THREE.Mesh(new THREE.RingGeometry(scene.dpi * u * 0.14, scene.dpi * u * 0.19, 24), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide }));
+    const ring = new THREE.Mesh(new THREE.RingGeometry(scene.dpi * u * 0.14, scene.dpi * u * 0.19, 24), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, forceSinglePass: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide }));
     ring.position.set(at.x * u, at.y * u, ground * k + 1);
     ring.renderOrder = 3;
     ring.userData.prop = true;
@@ -977,7 +981,7 @@ export class VistazoView {
     if (Math.abs(at.height - ground) > 1e-6) {
       stem = new THREE.Line(
         new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(at.x * u, at.y * u, at.height * k), new THREE.Vector3(at.x * u, at.y * u, ground * k)]),
-        new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 6, gapSize: 5, transparent: true, opacity: 0.9 })
+        new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 6, gapSize: 5, transparent: true, forceSinglePass: true, opacity: 0.9 })
       );
       stem.computeLineDistances();
       stem.userData.prop = true;
@@ -1157,7 +1161,7 @@ export class VistazoView {
     copy.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
     const mesh = new THREE.Mesh(
       copy,
-      new THREE.MeshBasicMaterial({ map: this.baseTexture, transparent: true, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
+      new THREE.MeshBasicMaterial({ map: this.baseTexture, transparent: true, forceSinglePass: true, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
     );
     mesh.position.z = z;
     mesh.renderOrder = 3;
@@ -1201,7 +1205,7 @@ export class VistazoView {
     points.forEach((p, i) => positions.set([p.x * u, p.y * u, (scene.heightAt(p.x, p.y) ?? 0) * k + lift], i * 3));
     if (!this.brushRing) {
       // Over everything (a bump between the eye and it doesn't hide it), as the 2D map's own ring.
-      const material = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthTest: false });
+      const material = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, forceSinglePass: true, opacity: 0.9, depthTest: false });
       this.brushRing = new THREE.LineLoop(new THREE.BufferGeometry(), material);
       this.brushRing.renderOrder = 20;
       this.world.add(this.brushRing);
@@ -1415,10 +1419,11 @@ export class VistazoView {
       // Each pass cuts every triangle in two across its longest side (two passes halve them all): as many
       // as it takes to get them down to the target.
       const passes = Math.max(1, Math.min(28, 2 * Math.ceil(Math.log2(Math.max(1, span / target))) + 2));
-      const cut = new TessellateModifier(target, passes).modify(flat.toNonIndexed());
+      const plain = flat.toNonIndexed();
+      const from = bisect((plain.getAttribute("position") as THREE.BufferAttribute).array, target, passes);
+      plain.dispose();
       // Each corner once (the cut repeats it for every triangle round it, about six): its height is
       // then worked out once, not for each of them.
-      const from = (cut.getAttribute("position") as THREE.BufferAttribute).array;
       const seen = new Map<number, number>();
       const corners: number[] = [];
       const index = new Uint32Array(from.length / 3);
@@ -1436,7 +1441,6 @@ export class VistazoView {
         index[i] = n;
       }
       kept = { position: Float32Array.from(corners), index, used: 0 };
-      cut.dispose();
       flat.dispose();
       this.fineCache.set(key, kept);
     }
@@ -1688,7 +1692,7 @@ export class VistazoView {
       if (levels.length > 0) {
         const lines = new THREE.BufferGeometry();
         lines.setAttribute("position", new THREE.BufferAttribute(new Float32Array(levels), 3));
-        const levelLines = new THREE.LineSegments(lines, new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3 }));
+        const levelLines = new THREE.LineSegments(lines, new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, forceSinglePass: true, opacity: 0.3 }));
         levelLines.userData.wall = true;
         group.add(levelLines);
       }
@@ -1744,7 +1748,7 @@ export class VistazoView {
         geometry.setAttribute("color", new THREE.BufferAttribute(colors, 4));
         const shadows = new THREE.Mesh(
           geometry,
-          new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide })
+          new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, forceSinglePass: true, depthWrite: false, side: THREE.DoubleSide })
         );
         shadows.renderOrder = 1;
         shadows.userData.wall = true;
@@ -1902,7 +1906,7 @@ export class VistazoView {
       const material = new THREE.ShaderMaterial({
         vertexShader: UNDER_VERTEX,
         fragmentShader: UNDER_FRAGMENT,
-        transparent: true,
+        transparent: true, forceSinglePass: true,
         depthWrite: false,
         side: THREE.DoubleSide,
         polygonOffset: true,
@@ -1958,30 +1962,43 @@ export class VistazoView {
       if (box && (bounds.max.x < box.x0 || bounds.min.x > box.x1 || bounds.max.y < box.y0 || bounds.min.y > box.y1)) {
         continue;
       }
-      const flat = geometry.index ? geometry.toNonIndexed() : null;
-      const from = (flat ?? geometry).getAttribute("position").array as Float32Array;
-      flat?.dispose();
-      // Only its triangles over the box (a copy is the whole ground often: a bridge's is a few of them).
+      const at = (geometry.getAttribute("position") as THREE.BufferAttribute).array as Float32Array;
+      const index = geometry.index?.array;
+      const corners = index ? index.length : at.length / 3;
+      // Only its triangles over the box (a copy is the whole ground often: a bridge's is a few of them),
+      // read through its index (not made unindexed whole first); in the copy's own units (its offset taken
+      // off the box), the corners' places only once the ones kept are known.
       const [ox, oy, oz] = [copy.position.x, copy.position.y, copy.position.z];
-      let kept: Float32Array = from;
-      if (box) {
-        const out = new Float32Array(from.length);
-        let n = 0;
-        for (let i = 0; i < from.length; i += 9) {
-          const [xa, xb, xc, ya, yb, yc] = [from[i] + ox, from[i + 3] + ox, from[i + 6] + ox, from[i + 1] + oy, from[i + 4] + oy, from[i + 7] + oy];
-          if (Math.max(xa, xb, xc) < box.x0 || Math.min(xa, xb, xc) > box.x1 || Math.max(ya, yb, yc) < box.y0 || Math.min(ya, yb, yc) > box.y1) {
+      const [bx0, bx1, by0, by1] = box ? [box.x0 - ox, box.x1 - ox, box.y0 - oy, box.y1 - oy] : [-Infinity, Infinity, -Infinity, Infinity];
+      const kept: number[] = [];
+      for (let i = 0; i < corners; i += 3) {
+        const a = (index ? index[i] : i) * 3;
+        const b = (index ? index[i + 1] : i + 1) * 3;
+        const c = (index ? index[i + 2] : i + 2) * 3;
+        if (box) {
+          const xa = at[a];
+          const xb = at[b];
+          const xc = at[c];
+          const ya = at[a + 1];
+          const yb = at[b + 1];
+          const yc = at[c + 1];
+          if ((xa < bx0 && xb < bx0 && xc < bx0) || (xa > bx1 && xb > bx1 && xc > bx1) || (ya < by0 && yb < by0 && yc < by0) || (ya > by1 && yb > by1 && yc > by1)) {
             continue;
           }
-          out.set(from.subarray(i, i + 9), n);
-          n += 9;
         }
-        if (n === 0) {
-          continue;
-        }
-        kept = out.slice(0, n);
+        kept.push(a, b, c);
+      }
+      if (kept.length === 0) {
+        continue;
+      }
+      const out = new Float32Array(kept.length * 3);
+      for (let k = 0; k < kept.length; k++) {
+        out[k * 3] = at[kept[k]];
+        out[k * 3 + 1] = at[kept[k] + 1];
+        out[k * 3 + 2] = at[kept[k] + 2];
       }
       const part = new THREE.BufferGeometry();
-      part.setAttribute("position", new THREE.BufferAttribute(kept === from ? from.slice() : kept, 3));
+      part.setAttribute("position", new THREE.BufferAttribute(out, 3));
       part.translate(ox, oy, oz);
       parts.push(part);
     }
@@ -2271,9 +2288,9 @@ export class VistazoView {
     const u = this.u;
     const k = this.k;
     const overlay = document.createDocumentFragment();
-    const ring = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide });
-    const fill = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide });
-    const dashes = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 6, gapSize: 5, transparent: true, opacity: 0.9 });
+    const ring = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, forceSinglePass: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide });
+    const fill = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, forceSinglePass: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide });
+    const dashes = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 6, gapSize: 5, transparent: true, forceSinglePass: true, opacity: 0.9 });
     const stemOf = (at: { x: number; y: number }, zTok: number, zFloor: number) => {
       const stem = new THREE.Line(
         new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(at.x * u, at.y * u, zTok), new THREE.Vector3(at.x * u, at.y * u, zFloor)]),
@@ -2310,8 +2327,8 @@ export class VistazoView {
       if (flat) {
         // Its picture lying on the ground, where the map has it (and, raised, its shadow on the ground under it).
         img = document.createElement("span");
-        const material = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide, opacity: 0 });
-        const dark = propShadows && prop.own > 0 ? new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, depthWrite: false, side: THREE.DoubleSide, opacity: 0 }) : null;
+        const material = new THREE.MeshBasicMaterial({ transparent: true, forceSinglePass: true, depthWrite: false, side: THREE.DoubleSide, opacity: 0 });
+        const dark = propShadows && prop.own > 0 ? new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, forceSinglePass: true, depthWrite: false, side: THREE.DoubleSide, opacity: 0 }) : null;
         const show = (texture: THREE.Texture) => {
           material.map = texture;
           material.opacity = 1;
@@ -2651,7 +2668,7 @@ export class VistazoView {
       const u = this.u;
       const floor = this.gridHeight(x, y);
       const ground = Number.isNaN(floor) ? 0 : floor;
-      const ring = new THREE.Mesh(new THREE.RingGeometry(scene.dpi * u * 0.1, scene.dpi * u * 0.14, 20), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, depthWrite: false, side: THREE.DoubleSide }));
+      const ring = new THREE.Mesh(new THREE.RingGeometry(scene.dpi * u * 0.1, scene.dpi * u * 0.14, 20), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, forceSinglePass: true, opacity: 0.8, depthWrite: false, side: THREE.DoubleSide }));
       ring.position.set(x * u, y * u, ground * k + 1);
       ring.renderOrder = 3;
       ring.userData.prop = true;
@@ -2660,7 +2677,7 @@ export class VistazoView {
       if (Math.abs(z - ground) > 1e-6) {
         stem = new THREE.Line(
           new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(x * u, y * u, z * k), new THREE.Vector3(x * u, y * u, ground * k)]),
-          new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 6, gapSize: 5, transparent: true, opacity: 0.85 })
+          new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 6, gapSize: 5, transparent: true, forceSinglePass: true, opacity: 0.85 })
         );
         stem.computeLineDistances();
         stem.userData.prop = true;
