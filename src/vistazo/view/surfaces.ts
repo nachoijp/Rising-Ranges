@@ -47,12 +47,12 @@ export class FineSurfaces {
     }
   }
 
-  /** The cut surface of an outline (its corners at height 0, to be set; a copy, the triangles shared). */
-  get(shape: MultiPolygon, u: number): Surface {
-    const key = `${u}|${JSON.stringify(shape)}`;
+  /** The cut surface of an outline (its corners at height 0, to be set; a copy, the triangles shared); `coarse`: to a cell, not half (a drag's). */
+  get(shape: MultiPolygon, u: number, coarse = false): Surface {
+    const key = `${u}|${coarse}|${JSON.stringify(shape)}`;
     let kept = this.kept.get(key);
     if (!kept) {
-      const target = VIEW_CELL / 2;
+      const target = coarse ? VIEW_CELL : VIEW_CELL / 2;
       const flat = flatSurface(shape, u);
       let [minX, minY, maxX, maxY] = [Infinity, Infinity, -Infinity, -Infinity];
       for (let i = 0; i < flat.position.length; i += 3) {
@@ -116,14 +116,14 @@ export type PieceBuffers =
   | { kind: "top"; surface: Surface; uv: Float32Array; z: number; fine: boolean }
   | { kind: "stand"; surface: Surface; roofUv: Float32Array; roofColor: [number, number, number]; roof: WallStyle; z: number; card: { position: Float32Array; uv: Float32Array; map: Float32Array } | null };
 
-/** What a piece's top is worked out with (see pieceBuffers): view units per scene px and per height unit, the map's picture's box (uvs: the scene's without one; `texture`: none without one), its colours, the fine surfaces' cache. */
-export type PieceContext = { u: number; k: number; uvBox: UvBox; texture: UvBox | null; colors: MapColors | null; fine: FineSurfaces };
+/** What a piece's top is worked out with (see pieceBuffers): view units per scene px and per height unit, the map's picture's box (uvs: the scene's without one; `texture`: none without one), its colours, the fine surfaces' cache; `coarse`: cut to a cell (a drag's). */
+export type PieceContext = { u: number; k: number; uvBox: UvBox; texture: UvBox | null; colors: MapColors | null; fine: FineSurfaces; coarse?: boolean };
 
 export function pieceBuffers(piece: Piece, c: PieceContext): PieceBuffers {
   const { u, k } = c;
   const z = piece.height * k;
   const fine = !!piece.surface && !(piece.coarse && !piece.fine?.());
-  const surface = fine ? c.fine.get(piece.shape, u) : flatSurface(piece.shape, u);
+  const surface = fine ? c.fine.get(piece.shape, u, c.coarse) : flatSurface(piece.shape, u);
   const position = surface.position;
   const count = position.length / 3;
   if (!piece.stand) {

@@ -12,7 +12,8 @@ export type Region = { x0: number; y0: number; x1: number; y1: number };
  * With `region`, only the edges that reach into it (the heights changed
  * there: a brush); `done` gets each such edge (see Wall.seg), walls or not.
  */
-export function computeWalls(scene: VistazoScene, base: number, region?: Region, done?: Set<string>): Wall[] {
+/** `coarse`: a sloped edge cut in half cells, not quarters (a drag's). */
+export function computeWalls(scene: VistazoScene, base: number, region?: Region, done?: Set<string>, coarse = false): Wall[] {
   const probe = scene.dpi * 0.03;
   const l = Math.hypot(...LIGHT);
   // A surface that isn't flat about: its heights change along an edge.
@@ -58,7 +59,7 @@ export function computeWalls(scene: VistazoScene, base: number, region?: Region,
           const lower = scene.pieceAt(mx + nx * probe, my + ny * probe);
           // With slopes about, every edge is cut in short steps: a slope may meet it anywhere along
           // it (not only at its middle), and the heights on either side change there.
-          const steps = sloped ? Math.max(1, Math.ceil(len / (scene.dpi * 0.25) - 1e-6)) : 1;
+          const steps = sloped ? Math.max(1, Math.ceil(len / (scene.dpi * (coarse ? 0.5 : 0.25)) - 1e-6)) : 1;
           for (let j = 0; j < steps; j++) {
             const [px, py] = [ax + (dx * j) / steps, ay + (dy * j) / steps];
             const [qx, qy] = [ax + (dx * (j + 1)) / steps, ay + (dy * (j + 1)) / steps];
@@ -94,6 +95,7 @@ export function computeWalls(scene: VistazoScene, base: number, region?: Region,
               mx: (px + qx) / 2 - nx * probe * 3, my: (py + qy) / 2 - ny * probe * 3, nx, ny,
               lit: Math.max(0, (nx * LIGHT[0] + ny * LIGHT[1]) / l),
               seg,
+              si: piece.si,
               along: start + (len * j) / steps,
             });
           }

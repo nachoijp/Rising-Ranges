@@ -2240,8 +2240,10 @@ async function start() {
         view.setLite(lite);
         const map = items.find((item): item is Image => item.id === image && item.type === "IMAGE");
         // Shapes dragged whole: their meshes moved as they are; the first time, what's under them (where
-        // they were) drawn, only there. Let go, all of it is built again.
-        if (lite && moving && map && scene && (dragging || builtWith === `${reliefs.key}${reliefs.surfaced}`)) {
+        // they were) drawn, only there. Let go, all of it is built again. Not one with a soft edge: that's
+        // the ground round it (not its own meshes), drawn again as it goes, lightly.
+        const soft = !!moving && moving.shapes.some((si) => (relief.data.shapes[si]?.soft ?? 0) > 0);
+        if (lite && moving && !soft && map && scene && (dragging || builtWith === `${reliefs.key}${reliefs.surfaced}`)) {
           const anchor = anchorOf(map);
           const moved = time("vistazo.moveShapes", () => view.moveShapes(moving.shapes, sceneMap(anchor, dpi, moving.map)));
           if (moved === "started") {
@@ -2276,7 +2278,9 @@ async function start() {
         heightsOnly = null;
         brushed = null;
         reliefs.key = String(++reliefVersion);
-        soon();
+        // Its terrain worked out away from the page (see terrainJob): drawn again as often as it can be
+        // during a drag (the worker takes only the last asked), not a few times a second.
+        soon(lite && view.terrainAway ? 40 : 150);
       },
       scene: () => ({ items, dpi }),
       onPick: (shapes) => view.highlight(shapes, getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#bb99ff"),

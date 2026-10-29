@@ -12,6 +12,23 @@ import type { Texture } from "./types";
  */
 export type WaterReach = { mask: THREE.DataTexture; x0: number; y0: number; step: number; w: number; h: number };
 
+/** Where a water reaches as numbers (see waterReachData): a byte a grid point (255: reached), over its grid. */
+export type WaterReachData = { data: Uint8Array; x0: number; y0: number; step: number; w: number; h: number };
+
+/** Where a water reaches (see waterReachData), as its mask texture. */
+export function waterReach(scene: VistazoScene, piece: Piece & { water: number }): WaterReach {
+  return reachMask(waterReachData(scene, piece));
+}
+
+/** A water's reach as the mask its surface's material reads. */
+export function reachMask(reach: WaterReachData): WaterReach {
+  const mask = new THREE.DataTexture(reach.data, reach.w, reach.h, THREE.RedFormat, THREE.UnsignedByteType);
+  // A byte a cell: rows not padded to four bytes (any width).
+  mask.unpackAlignment = 1;
+  mask.needsUpdate = true;
+  return { mask, x0: reach.x0, y0: reach.y0, step: reach.step, w: reach.w, h: reach.h };
+}
+
 /**
  * Water fills what's below its level, not only its zone: from its zone
  * outward over the terrain's heights, through ground between its floor and
@@ -21,7 +38,7 @@ export type WaterReach = { mask: THREE.DataTexture; x0: number; y0: number; step
  * its zone's box and two cells round it: so its edges sit on its zone's,
  * not rounded to the coarser heights grid.
  */
-export function waterReach(scene: VistazoScene, piece: Piece & { water: number }): WaterReach {
+export function waterReachData(scene: VistazoScene, piece: Piece & { water: number }): WaterReachData {
   const level = piece.height + piece.water;
   const xs = piece.shape.flatMap((polygon) => polygon[0].map((p) => p[0]));
   const ys = piece.shape.flatMap((polygon) => polygon[0].map((p) => p[1]));
@@ -73,11 +90,7 @@ export function waterReach(scene: VistazoScene, piece: Piece & { water: number }
       }
     }
   }
-  const mask = new THREE.DataTexture(reached, gw, gh, THREE.RedFormat, THREE.UnsignedByteType);
-  // A byte a cell: rows not padded to four bytes (any width).
-  mask.unpackAlignment = 1;
-  mask.needsUpdate = true;
-  return { mask, x0: gx0, y0: gy0, step, w: gw, h: gh };
+  return { data: reached, x0: gx0, y0: gy0, step, w: gw, h: gh };
 }
 
 /** What a water's surface covers: its zone and two cells round it, on the map (the mask cuts it to its reach). */

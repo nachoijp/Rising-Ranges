@@ -6,10 +6,10 @@ const MAX_GRID_POINTS = 200_000;
 
 export type HeightGrid = { x0: number; y0: number; step: number; w: number; h: number; cells: Float32Array };
 
-/** The heights (grid units; NaN off the map) every fifth of a cell over the scene's box, or coarser (see MAX_GRID_POINTS). */
-export function heightGrid(bounds: { x0: number; y0: number; x1: number; y1: number }, dpi: number, heightAt: (x: number, y: number) => number | undefined): HeightGrid {
+/** The heights (grid units; NaN off the map) every fifth of a cell over the scene's box, or coarser (see MAX_GRID_POINTS; `coarse`: twice, a drag's). */
+export function heightGrid(bounds: { x0: number; y0: number; x1: number; y1: number }, dpi: number, heightAt: (x: number, y: number) => number | undefined, coarse = false): HeightGrid {
   const { x0, y0, x1, y1 } = bounds;
-  const step = Math.max(dpi / 5, Math.sqrt(((x1 - x0) * (y1 - y0)) / MAX_GRID_POINTS));
+  const step = Math.max(dpi / 5, Math.sqrt(((x1 - x0) * (y1 - y0)) / MAX_GRID_POINTS)) * (coarse ? 2 : 1);
   const w = Math.ceil((x1 - x0) / step) + 1;
   const h = Math.ceil((y1 - y0) / step) + 1;
   const cells = new Float32Array(w * h);

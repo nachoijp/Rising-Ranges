@@ -135,6 +135,8 @@ export type Wall = {
   skin?: TerrainSkin;
   /** The piece's edge it's of (piece, polygon, ring, side): what's worked out again of a region (see computeWalls). */
   seg: string;
+  /** The relief shape its piece is of, if any (what moves it whole, see moveShapes): its own, not by the scene it's read with. */
+  si?: number;
   /** How far round its outline it starts (scene px): a pattern runs on along it, round a curve too. */
   along?: number;
 };

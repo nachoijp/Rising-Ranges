@@ -4,7 +4,9 @@ import { WALL_STYLE, wallBuffers, type WallBuffers } from "./view/wallBuffers";
 import { wallShadowBuffers } from "./view/wallShadows";
 import { FineSurfaces, pieceBuffers, uvsOver, type PieceBuffers, type Surface } from "./view/surfaces";
 import { computeTerrain, type TerrainBuffers, type TerrainContext } from "./view/terrainBuffers";
+import { FILL_GROW, fillFrame, undersideBuffers } from "./view/undersides";
 import { TerrainJobs, type TerrainAnswer } from "./terrainJob";
+import { unpackWalls, type PackedWalls } from "./view/wallPack";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { MultiPolygon } from "polygon-clipping";
 import { bridgeHighest, bridgeTop, inShape, pieceHeight, type Bridge, type MapImage, type Piece, type Prop, type Token, type VistazoScene } from "./scene";
@@ -20,7 +22,7 @@ import { computeWalls, type Region } from "./view/walls";
 import { BaseBatch, moveBase, type BaseSeat } from "./view/bases";
 import { UNDER_FRAGMENT, UNDER_VERTEX, WALL_GRAIN } from "./view/shaders";
 import { NOISE_2D } from "./glsl";
-import { waterMaterial, waterReach, waterShape, type WaterReach } from "./view/water";
+import { reachMask, waterMaterial, waterReach, waterShape, type WaterReach } from "./view/water";
 import { since, stamp, time } from "../timing";
 
 export type { Camera, DistanceLine, Options, Quality, Reach, TokenText, WallStyle } from "./view/types";
@@ -177,7 +179,20 @@ export class VistazoView {
   private distanceLines: DistanceLine[] = [];
   /** View units per scene px. */
   private u = 1;
-  private walls: Wall[] = [];
+  /** The terrain's walls; or, from the worker, packed till they're asked for (see wallPack). */
+  private wallList: Wall[] = [];
+  private packedWalls: PackedWalls | null = null;
+  private get walls(): Wall[] {
+    if (this.packedWalls) {
+      this.wallList = unpackWalls(this.packedWalls);
+      this.packedWalls = null;
+    }
+    return this.wallList;
+  }
+  private set walls(walls: Wall[]) {
+    this.wallList = walls;
+    this.packedWalls = null;
+  }
   private tokenViews: TokenView[] = [];
   private colors: ((x: number, y: number) => [number, number, number]) | null = null;
   /** The map's colour at a scene point, blurred (a few pixels to a cell) and read between them: blended walls' (see buildWalls). */
@@ -418,10 +433,10 @@ export class VistazoView {
         this.terrainGroup.remove(child);
         this.movingGroup.add(child);
       }
-      // Their walls with them; the others built again without them, and the shadows at their feet.
-      const pieceOf = (wall: Wall) => scene.pieces[Number(wall.seg.split(":")[0])];
-      const mine = this.walls.filter((wall) => picked.has(pieceOf(wall)?.si ?? -1));
-      const others = this.walls.filter((wall) => !picked.has(pieceOf(wall)?.si ?? -1));
+      // Their walls with them; the others built again without them, and the shadows at their feet. By the
+      // shape each wall says it's of (the scene may be newer than the terrain drawn, its terrain on its way).
+      const mine = this.walls.filter((wall) => picked.has(wall.si ?? -1));
+      const others = this.walls.filter((wall) => !picked.has(wall.si ?? -1));
       for (const group of [this.terrainGroup, this.edgeGroup]) {
         for (const child of group.children.filter((c) => c.userData.wall)) {
           group.remove(child);
@@ -552,6 +567,13 @@ export class VistazoView {
       return;
     }
     this.lite = lite;
+    // A drag begins with the scene's terrain still on its way from the worker (a let go just before): built
+    // now, lightly, so what's dragged is what's there now (not what the last drag left), the worker's
+    // answer dropped. Let go, it's built whole again.
+    if (lite && this.asked && this.scene) {
+      this.asked = "";
+      this.build(true);
+    }
     if (!lite && !settling) {
       this.terrainKey = "";
     }
@@ -564,6 +586,11 @@ export class VistazoView {
    */
   settleNext() {
     this.settling = true;
+  }
+
+  /** Whether the terrain's worked out away from the page (see terrainJob): its builds don't hold it up. */
+  get terrainAway(): boolean {
+    return this.jobs !== null;
   }
 
   /** Whether WebGL could start (without it there's nothing to draw the terrain with). */
@@ -1048,27 +1075,30 @@ export class VistazoView {
 
   /**
    * The scene's terrain as numbers, up to date (true) or on its way (false): worked out by the worker
-   * when the scene says what it was built from (not while drawn lightly, nor while it's edited: those
-   * want it at once); else here, now. Its heights grid and walls the view's.
+   * when the scene says what it was built from, drawn lightly too (a drag: the page not held up while
+   * it's worked out, several times a second); else, or `now`, here (what the worker was asked for
+   * meanwhile then dropped, as it comes: older). Its heights grid and walls the view's.
    */
-  private ensureTerrain(): boolean {
+  private ensureTerrain(now = false): boolean {
     const scene = this.scene!;
     const { context, key } = this.terrainContext();
-    const want = `${scene.terrainKey}|${this.base}|${key}`;
+    // Drawn lightly, a terrain without its extras (see computeTerrain): not the one wanted once let go.
+    const want = `${scene.terrainKey}|${this.base}|${key}|${this.lite ? "lite" : ""}`;
     if (this.terrain && this.terrainFor === want) {
       return true;
     }
     const recipe = scene.recipe;
-    if (this.jobs && recipe && !this.lite && !recipe.reliefs.surfaced) {
+    if (this.jobs && recipe && !now) {
       if (this.asked !== want) {
         this.asked = want;
         if (this.mapColors) {
           this.jobs.colors(this.colorsFor, this.mapColors);
         }
-        void this.jobs.ask(recipe, this.base, context, this.mapColors ? this.colorsFor : null).then((answer) => this.answered(answer, want));
+        void this.jobs.ask(recipe, this.base, context, this.mapColors ? this.colorsFor : null, this.lite).then((answer) => this.answered(answer, want));
       }
       return false;
     }
+    this.asked = "";
     this.useTerrain(time("3d.terrain", () => computeTerrain(scene, this.base, context, this.fine, this.keepWalls, this.lite)), want);
     return true;
   }
@@ -1085,6 +1115,7 @@ export class VistazoView {
       this.jobs = null;
     } else if (this.scene?.terrainKey === answer.terrainKey) {
       this.useTerrain(answer.terrain, want);
+      this.packedWalls = answer.walls;
     }
     this.build();
   }
@@ -1532,13 +1563,14 @@ export class VistazoView {
     return [(x / this.u - t.x0) / t.w, 1 - (y / this.u - t.y0) / t.h];
   }
 
-  private build() {
+  /** The scene drawn (`now`: its terrain worked out here, not waited for from the worker). */
+  private build(now = false) {
     const scene = this.scene;
     if (!scene) {
       return;
     }
     this.k = VIEW_CELL * this.options.heightScale;
-    if (!this.ensureTerrain()) {
+    if (!this.ensureTerrain(now)) {
       // Its terrain on its way (see ensureTerrain): meanwhile what's drawn stays, the tokens where they are now.
       if (this.tokenViews.length === 0 || !this.moveTokens(scene)) {
         this.buildTokens();
@@ -1599,11 +1631,11 @@ export class VistazoView {
     // Their heights follow the height scale.
     time("3d.build.templates", () => this.buildTemplates());
 
-    time("3d.build.walls", () => this.buildWalls(this.walls, null, terrain.wallSets));
+    time("3d.build.walls", () => this.buildWalls([], null, terrain.wallSets));
 
     // Not while something's being dragged (drawn lightly): the shadows at the walls' feet come back as it's let go.
     if (!this.lite && !first) {
-      time("3d.build.wallShadows", () => this.buildWallShadows(this.walls, this.terrain?.shadows));
+      time("3d.build.wallShadows", () => this.buildWallShadows(this.terrain?.shadows !== undefined ? [] : this.walls, this.terrain?.shadows));
     }
     time("3d.build.fog", () => this.drawFog());
     if (!first) {
@@ -1646,7 +1678,7 @@ export class VistazoView {
           return;
         }
         time("3d.build.water", () => this.buildWater());
-        time("3d.build.wallShadows", () => this.buildWallShadows(this.walls, this.terrain?.shadows));
+        time("3d.build.wallShadows", () => this.buildWallShadows(this.terrain?.shadows !== undefined ? [] : this.walls, this.terrain?.shadows));
         time("3d.build.underBridges", () => this.buildUnderBridges());
         this.compiling = true;
         void compile().then(() => {
@@ -1674,7 +1706,7 @@ export class VistazoView {
     if (!scene || !texture || !this.mapTexture) {
       return;
     }
-    for (const bridge of scene.bridges) {
+    for (const [b, bridge] of scene.bridges.entries()) {
       if (bridge.under === "keep") {
         continue;
       }
@@ -1695,29 +1727,8 @@ export class VistazoView {
       fill.minFilter = THREE.LinearFilter;
       fill.needsUpdate = true;
       const area = new THREE.Vector4(...kept.box);
-      // Its underside's height (view units) over the same box (r: nothing above it there is under it), and
-      // where a shape keeping its look is (g: its outline, a little past it for its walls). One texel if
-      // it's flat with none of those under it; else each.
-      const thick = bridge.top - bridge.bottom;
-      const reach = scene.dpi * 0.12;
-      // Each with its box (and reach round it): a texel outside it isn't tested against its outline.
-      const keeping = (scene.unfilled ?? []).flatMap((multi) => {
-        const ps = multi.flat(2);
-        const [x0, x1] = [Math.min(...ps.map(([x]) => x)) - reach, Math.max(...ps.map(([x]) => x)) + reach];
-        const [y0, y1] = [Math.min(...ps.map(([, y]) => y)) - reach, Math.max(...ps.map(([, y]) => y)) + reach];
-        return x1 >= area.x && x0 <= area.x + area.z && y1 >= area.y && y0 <= area.y + area.w ? [{ multi, x0, x1, y0, y1 }] : [];
-      });
-      const [cols, rows] = bridge.surface || keeping.length > 0 ? [kept.cols, kept.rows] : [1, 1];
-      const heights = new Float32Array(cols * rows * 4);
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          const [x, y] = [area.x + ((c + 0.5) / cols) * area.z, area.y + ((r + 0.5) / rows) * area.w];
-          heights[(r * cols + c) * 4] = (bridgeTop(bridge, x, y) - thick) * this.k;
-          // Inside: all of it (its top); just round it: only its walls (the ground there gets the fill).
-          const near = keeping.filter((k) => x >= k.x0 && x <= k.x1 && y >= k.y0 && y <= k.y1);
-          heights[(r * cols + c) * 4 + 1] = near.some((k) => inShape(x, y, k.multi)) ? 1 : near.some((k) => nearOutline(k.multi, x, y, reach)) ? 0.5 : 0;
-        }
-      }
+      // Its underside's heights over the same box (see undersideBuffers): the terrain's numbers, or now.
+      const { cols, rows, heights } = this.terrain?.undersides[b] ?? undersideBuffers(scene, bridge, this.k);
       const underside = new THREE.DataTexture(heights, cols, rows, THREE.RGBAFormat, THREE.FloatType);
       underside.needsUpdate = true;
       const material = new THREE.ShaderMaterial({
@@ -2487,15 +2498,21 @@ export class VistazoView {
       return;
     }
     const t = this.texture;
+    // Worked out with the terrain (see computeTerrain): as its waters, in order.
+    const worked = this.terrain?.water ?? [];
+    let w = 0;
     for (const piece of scene.pieces) {
       if (!piece.water || piece.stand) {
         continue;
       }
+      const ready = worked[w++];
       const level = piece.height + piece.water;
       const key = `${level}|${JSON.stringify(piece.shape)}|${this.gridKey(piece.shape, scene.dpi * 2)}`;
       let kept = this.waterCache.get(key);
       if (!kept) {
-        kept = { reach: waterReach(scene, piece as Piece & { water: number }), shape: waterShape(scene, piece), used: 0 };
+        kept = ready
+          ? { reach: reachMask(ready.reach), shape: ready.shape, used: 0 }
+          : { reach: waterReach(scene, piece as Piece & { water: number }), shape: waterShape(scene, piece), used: 0 };
         this.waterCache.set(key, kept);
       }
       kept.used = this.builds;
@@ -3078,10 +3095,6 @@ export const FREE_POINT = "rising-ranges/free-point";
 /** What a template's handle's id starts with: then the template's id and ":origin" or ":tip". */
 export const TEMPLATE_HANDLE = "rising-ranges/template:";
 
-/** The longest side of a bridge's fill (see bridgeFill), texels. */
-const FILL_SIZE = 192;
-/** How far past a bridge's outline its fill reaches (cells): over its drawn edge, which the outline seldom follows exactly. */
-const FILL_GROW = 0.15;
 
 /** A bridge's fill (see bridgeFill): RGBA bytes, cols × rows, over a box (scene units: x, y, width, height). */
 type BridgeFill = { pixels: Uint8Array; cols: number; rows: number; box: [number, number, number, number] };
@@ -3097,12 +3110,7 @@ type BridgeFill = { pixels: Uint8Array; cols: number; rows: number; box: [number
  * the map can't be read (the drawing is then left as it is).
  */
 function bridgeFill(shape: MultiPolygon, map: Texture, grow: number): BridgeFill | null {
-  const points = shape.flat(2);
-  const [sx0, sx1] = [Math.min(...points.map((p) => p[0])) - grow, Math.max(...points.map((p) => p[0])) + grow];
-  const [sy0, sy1] = [Math.min(...points.map((p) => p[1])) - grow, Math.max(...points.map((p) => p[1])) + grow];
-  const step = Math.max(1e-6, sx1 - sx0, sy1 - sy0) / (FILL_SIZE - 8);
-  const [x0, y0] = [sx0 - step * 4, sy0 - step * 4];
-  const [cols, rows] = [Math.ceil((sx1 - sx0) / step) + 8, Math.ceil((sy1 - sy0) / step) + 8];
+  const { x0, y0, step, cols, rows } = fillFrame(shape, grow);
   // Its sides (round it and its holes) as ax, ay, and the way to b, four numbers each.
   const list: number[] = [];
   for (const ring of shape.flat()) {
@@ -3258,22 +3266,6 @@ function grained<M extends THREE.MeshBasicMaterial>(material: M): M {
   };
   material.customProgramCacheKey = () => "rising-ranges/grained";
   return material;
-}
-
-/** Whether a scene point is within `reach` of an outline's sides (holes' too). */
-function nearOutline(multi: MultiPolygon, x: number, y: number, reach: number): boolean {
-  for (const ring of multi.flat()) {
-    for (let i = 0; i + 1 < ring.length; i++) {
-      const [ax, ay] = ring[i];
-      const [ex, ey] = [ring[i + 1][0] - ax, ring[i + 1][1] - ay];
-      const len2 = ex * ex + ey * ey;
-      const t = len2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * ex + (y - ay) * ey) / len2)) : 0;
-      if ((ax + ex * t - x) ** 2 + (ay + ey * t - y) ** 2 < reach * reach) {
-        return true;
-      }
-    }
-  }
-  return false;
 }
 
 /** The longest side of the ground's texture while a video map is played on it (drawn again every frame), px. */
