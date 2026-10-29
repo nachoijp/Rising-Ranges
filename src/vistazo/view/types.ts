@@ -167,7 +167,12 @@ export type TokenView = {
 
 export type PropView = { data: Prop; flat: boolean; mesh: THREE.Mesh | null; shadow: THREE.Mesh | null };
 
-export type Texture = { canvas: HTMLCanvasElement; x0: number; y0: number; w: number; h: number };
+/**
+ * The map's picture over the scene's box (x0, y0, w × h, scene px): drawn on `canvas`; or, a lone map
+ * image, `bitmap` (the image itself, sized for the graphics card), `canvas` then only a small copy
+ * of it (for what reads its pixels: see bridgeFill).
+ */
+export type Texture = { canvas: HTMLCanvasElement; x0: number; y0: number; w: number; h: number; bitmap?: ImageBitmap };
 
 
 /** Light from the north-west, for the walls' shading. */

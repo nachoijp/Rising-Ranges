@@ -102,6 +102,8 @@ export function waterMaterial(map: THREE.Texture, texture: Texture, u: number, d
     uniforms: {
       uTime: { value: 0 },
       uMap: { value: map },
+      // Its place on the map (a lone map image's picture is placed by it: see placed in render.ts).
+      uMapMatrix: { value: map.matrix },
       uU: { value: u },
       uCell: { value: dpi },
       uTex: { value: new THREE.Vector4(texture.x0, texture.y0, texture.w, texture.h) },

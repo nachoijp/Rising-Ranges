@@ -1205,12 +1205,28 @@ export class VistazoView {
         const played = this.options.videoMaps && scene.maps.some((map) => map.video);
         const cap = played ? (this.options.quality === "high" ? VIDEO_TEXTURE_MAX : VIDEO_TEXTURE_LIGHT) : TEXTURE_MAX;
         const most = Math.min(cap, this.renderer?.capabilities.maxTextureSize ?? TEXTURE_MAX);
-        const big = draw(images, Math.min(1, most / Math.max(w, h)));
+        // A lone map (an image, or a video's first frame): its picture itself, made the graphics card's
+        // size by the browser (off the page's own work), placed by its texture's transform; not drawn again
+        // on a canvas as big (see placed).
+        const lone = images.length === 1 && (images[0] instanceof HTMLImageElement || images[0] instanceof HTMLVideoElement) ? images[0] : null;
+        let bitmap: ImageBitmap | null = null;
+        if (lone && typeof createImageBitmap === "function") {
+          const [lw, lh] = lone instanceof HTMLVideoElement ? [lone.videoWidth, lone.videoHeight] : [lone.naturalWidth, lone.naturalHeight];
+          const fit = Math.min(1, most / Math.max(lw, lh, 1));
+          try {
+            bitmap = await createImageBitmap(lone, { resizeWidth: Math.max(1, Math.round(lw * fit)), resizeHeight: Math.max(1, Math.round(lh * fit)), resizeQuality: "high" });
+          } catch {
+            bitmap = null;
+          }
+        }
+        const big = bitmap ? small : draw(images, Math.min(1, most / Math.max(w, h)));
         await pause();
         if (key !== this.colorsFor) {
+          bitmap?.close();
           return;
         }
-        this.texture = { canvas: big.canvas, x0, y0, w, h };
+        this.texture?.bitmap?.close();
+        this.texture = { canvas: big.canvas, x0, y0, w, h, ...(bitmap ? { bitmap } : {}) };
         this.mapMedia = { images, maps: scene.maps };
         this.fillCache.clear();
         this.useTexture();
@@ -1244,7 +1260,13 @@ export class VistazoView {
     if (lone) {
       map = videoTexture(lone, media!.maps[0], texture);
       this.directVideo = lone;
-      this.stillTexture = new THREE.CanvasTexture(texture.canvas);
+      // Its first frame, still (for the water and what's under bridges).
+      this.stillTexture = texture.bitmap ? placed(new THREE.Texture(texture.bitmap), media!.maps[0], texture, true) : new THREE.CanvasTexture(texture.canvas);
+      this.stillTexture.needsUpdate = true;
+    } else if (texture.bitmap && media) {
+      map = placed(new THREE.Texture(texture.bitmap), media.maps[0], texture, true);
+      map.anisotropy = anisotropy;
+      map.needsUpdate = true;
     } else {
       map = new THREE.CanvasTexture(source);
       map.anisotropy = anisotropy;
@@ -1879,6 +1901,7 @@ export class VistazoView {
           uCell: { value: VIEW_CELL },
           uMirror: { value: bridge.under === "mirror" ? 1 : 0 },
           uMap: { value: this.stillTexture ?? this.mapTexture },
+          uMapMatrix: { value: (this.stillTexture ?? this.mapTexture).matrix },
           uTex: { value: new THREE.Vector4(texture.x0, texture.y0, texture.w, texture.h) },
           uFrame: { value: new THREE.Vector4(center.x, center.y, along.x, along.y) },
           uAcross: { value: new THREE.Vector4(across.x, across.y, halfAlong, halfAcross) },
@@ -3516,6 +3539,16 @@ function videoTexture(video: HTMLVideoElement, map: MapImage, box: Texture): THR
   const texture = new THREE.VideoTexture(video);
   texture.generateMipmaps = false;
   texture.minFilter = THREE.LinearFilter;
+  return placed(texture, map, box);
+}
+
+/**
+ * A map's own picture (a video's, a lone image's) placed on the scene's box by its texture's transform:
+ * the uvs worked out over the box (see uvs) taken to the picture's. `upright`: the picture sent as it
+ * is (an ImageBitmap isn't turned over on its way to the graphics card), so its rows are read the other
+ * way up.
+ */
+function placed<T extends THREE.Texture>(texture: T, map: MapImage, box: Texture, upright = false): T {
   const l = new DOMMatrix(map.transform).inverse();
   const [x0, y1, w, h] = [box.x0, box.y0 + box.h, box.w, box.h];
   // Scene (x, y) = (x0 + u·w, y1 − v·h); the map's own point = l·(x, y); the video's uv = (lx / W, 1 − ly / H).
@@ -3526,6 +3559,10 @@ function videoTexture(video: HTMLVideoElement, map: MapImage, box: Texture): THR
     (-l.b * w) / H, (l.d * h) / H, 1 - (l.b * x0 + l.d * y1 + l.f) / H,
     0, 0, 1
   );
+  if (upright) {
+    texture.flipY = false;
+    texture.matrix.premultiply(new THREE.Matrix3().set(1, 0, 0, 0, -1, 1, 0, 0, 1));
+  }
   return texture;
 }
 

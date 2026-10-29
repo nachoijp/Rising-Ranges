@@ -1,4 +1,5 @@
-// GLSL shared by the Vistazo's shaders (weather, water): a value noise in 2D,
+// GLSL shared by the Vistazo's shaders (walls' grain, water, what's under bridges; the weather reads its
+// noise from a picture, see cloudNoise): a value noise in 2D,
 // from a cheap hash. Each shader builds its own fbm from it (their octaves and
 // weights differ, tuned to how each looks).
 

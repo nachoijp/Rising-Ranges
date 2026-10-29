@@ -1,12 +1,15 @@
 import * as THREE from "three";
 import type { Item } from "@owlbear-rodeo/sdk";
-import { NOISE_2D } from "./glsl";
 
 // The Weather extension's weather (github.com/owlbear-rodeo/weather), drawn
 // in 3D: it keeps its settings on a Map- or Fog-layer item, under its own
 // metadata key, and covers that item's area with an animated effect. Only
 // its settings are read here (it's GPL: nothing of its code is used); the
 // Vistazo draws its own particles from them, falling between the heights.
+
+/** The clouds' noise picture (see cloudNoise): its side (px), and how many of the noise's cells it holds across. */
+const CLOUD_NOISE_SIZE = 256;
+const CLOUD_NOISE_CELLS = 16;
 
 export const WEATHER_KEY = "rodeo.owlbear.weather/weather";
 
@@ -150,16 +153,10 @@ const WISP_FRAGMENT = /* glsl */ `
   varying vec2 vCell;
   varying vec2 vUv;
   varying float vFacing;
-  ${NOISE_2D}
+  uniform sampler2D uNoise;
+  // An fbm of the noise (four octaves halving: up to 0.94), read from the noise picture (see cloudNoise).
   float fbm(vec2 p) {
-    float v = 0.0;
-    float a = 0.5;
-    for (int i = 0; i < 4; i++) {
-      v += a * noise(p);
-      p = p * 2.03 + vec2(17.1, 9.2);
-      a *= 0.5;
-    }
-    return v;
+    return texture2D(uNoise, p / ${CLOUD_NOISE_CELLS.toFixed(1)}).g * 0.94;
   }
   void main() {
     vec2 p = vCell * ${WISP_SCALE.toFixed(3)} + uSeed - uDrift * uTime;
@@ -271,16 +268,11 @@ const PUFF_FRAGMENT = /* glsl */ `
   varying float vPhase;
   varying float vFade;
   varying float vHeight;
-  ${NOISE_2D}
+  uniform sampler2D uNoise;
+  // An fbm of the noise (octaves halving, as the haze's: up to 0.88 as three of them sum), read from the
+  // noise picture (see cloudNoise).
   float fbm(vec2 p) {
-    float v = 0.0;
-    float a = 0.5;
-    for (int i = 0; i < 3; i++) {
-      v += a * noise(p);
-      p = p * 2.07 + vec2(11.3, 4.7);
-      a *= 0.5;
-    }
-    return v;
+    return texture2D(uNoise, p / ${CLOUD_NOISE_CELLS.toFixed(1)}).g * 0.88;
   }
   void main() {
     float r = length(vCorner) * 2.0;
@@ -340,6 +332,7 @@ function buildPuffs(weather: Weather, frame: WeatherFrame, dpi: number, look = P
     blending: look.glow ? THREE.AdditiveBlending : THREE.NormalBlending,
     uniforms: {
       uTime: { value: 0 },
+      uNoise: { value: cloudNoise() },
       uMin: { value: new THREE.Vector3(x0 * frame.u, y0 * frame.u, bottom) },
       uSize: { value: new THREE.Vector3(Math.max(1, (x1 - x0) * frame.u), Math.max(1, (y1 - y0) * frame.u), Math.max(1, top - bottom)) },
       uVel: { value: new THREE.Vector3(dir.x * look.drift * pace * frame.cell, dir.y * look.drift * pace * frame.cell, look.rise * pace * frame.k) },
@@ -380,6 +373,7 @@ function buildWisps(weather: Weather, frame: WeatherFrame, wisps = WISPS[weather
       blending: wisps.glow ? THREE.AdditiveBlending : THREE.NormalBlending,
       uniforms: {
         uTime: { value: 0 },
+        uNoise: { value: cloudNoise() },
         uCell: { value: frame.cell },
         uEyeZ: { value: 1 },
         uDrift: { value: new THREE.Vector2(dir.x, dir.y).multiplyScalar(wisps.drift * pace * WISP_SCALE * (1 + index * 0.35)) },
@@ -572,17 +566,14 @@ export function cloudShadowOf(weather: Weather, frame: WeatherFrame): { box: [nu
   };
 }
 
-/** The clouds' noise picture (see cloudNoise): its side (px), and how many of the noise's cells it holds across. */
-const CLOUD_NOISE_SIZE = 256;
-const CLOUD_NOISE_CELLS = 16;
-
 let cloudNoiseTexture: THREE.DataTexture | null = null;
 
 /**
- * The clouds' shapes as a picture, worked out once: the same fbm of a value noise the shaders use
- * (three octaves, each twice as fine and 0.4 as strong), wrapping round on itself (each octave's
- * cells repeat across it), so the shadows read it, repeated, instead of working the noise out at
- * every pixel (two reads, not six noises: a slow graphics card feels those over the whole terrain).
+ * The weather's noise as a picture, worked out once: the fbms of a value noise the shaders used
+ * (the clouds' shadows', the haze's and puffs'), each octave twice as fine, wrapping round on itself
+ * (each octave's cells repeat across it), so they read it, repeated, instead of working the noise
+ * out at every pixel (a read, not up to twelve noises: a slow graphics card feels those over the
+ * whole terrain, and over every sheet of haze).
  */
 export function cloudNoise(): THREE.DataTexture {
   if (cloudNoiseTexture) {
@@ -603,18 +594,20 @@ export function cloudNoise(): THREE.DataTexture {
     const b = at(ix, iy + 1) + (at(ix + 1, iy + 1) - at(ix, iy + 1)) * ux;
     return a + (b - a) * uy;
   };
-  const data = new Uint8Array(CLOUD_NOISE_SIZE * CLOUD_NOISE_SIZE);
+  // Two fbms of the same noise: red, the clouds' (three octaves, each 0.4 as strong: blobs); green, the
+  // haze's (four, each half as strong: finer billows).
+  const data = new Uint8Array(CLOUD_NOISE_SIZE * CLOUD_NOISE_SIZE * 2);
   for (let j = 0; j < CLOUD_NOISE_SIZE; j++) {
     for (let i = 0; i < CLOUD_NOISE_SIZE; i++) {
       const [x, y] = [(i / CLOUD_NOISE_SIZE) * CLOUD_NOISE_CELLS, (j / CLOUD_NOISE_SIZE) * CLOUD_NOISE_CELLS];
-      let v = 0;
-      for (let o = 0, a = 0.6, f = 1; o < 3; o++, a *= 0.4, f *= 2) {
-        v += a * noise(x * f, y * f, CLOUD_NOISE_CELLS * f);
-      }
-      data[j * CLOUD_NOISE_SIZE + i] = Math.round(Math.min(1, v / 0.936) * 255);
+      const octaves = [0, 1, 2, 3].map((o) => noise(x * 2 ** o, y * 2 ** o, CLOUD_NOISE_CELLS * 2 ** o));
+      const clouds = (0.6 * octaves[0] + 0.24 * octaves[1] + 0.096 * octaves[2]) / 0.936;
+      const haze = (0.5 * octaves[0] + 0.25 * octaves[1] + 0.125 * octaves[2] + 0.0625 * octaves[3]) / 0.9375;
+      data[(j * CLOUD_NOISE_SIZE + i) * 2] = Math.round(Math.min(1, clouds) * 255);
+      data[(j * CLOUD_NOISE_SIZE + i) * 2 + 1] = Math.round(Math.min(1, haze) * 255);
     }
   }
-  const texture = new THREE.DataTexture(data, CLOUD_NOISE_SIZE, CLOUD_NOISE_SIZE, THREE.RedFormat, THREE.UnsignedByteType);
+  const texture = new THREE.DataTexture(data, CLOUD_NOISE_SIZE, CLOUD_NOISE_SIZE, THREE.RGFormat, THREE.UnsignedByteType);
   texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
   texture.magFilter = THREE.LinearFilter;
   texture.minFilter = THREE.LinearMipmapLinearFilter;

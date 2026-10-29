@@ -1166,3 +1166,9 @@ input[type="checkbox"]:focus-visible {
 .cinematic .guided-badge {
   display: none !important;
 }
+
+/* Edit relief, while the editor's code is fetched the first time (see loadEditor in main.ts). */
+#reliefEdit.waiting {
+  cursor: progress;
+  opacity: 0.6;
+}

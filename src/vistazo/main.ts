@@ -21,10 +21,9 @@ import { compose, inverse } from "../relief/relief";
 import type { Affine } from "../relief/types";
 import { Relief } from "../relief/relief";
 import { watchReliefs } from "../relief/store";
-import { startEditing, type EditSession } from "../relief/editor/session";
+import type { EditSession } from "../relief/editor/session";
 import { icon, type IconName } from "../relief/editor/icons";
 import vistazoLogo from "../assets/vistazo.svg?raw";
-import "../relief/editor/editor.css";
 import { FREE_POINT, TEMPLATE_HANDLE, VistazoView, type Camera, type DistanceLine, type Options } from "./render";
 import { templateReaches, type Template, type TemplateLook, type TemplateShape } from "./templates";
 import { LIVE_DRAG_CHANNEL, type LiveDrag } from "./live";
@@ -2147,6 +2146,18 @@ async function start() {
   let session: EditSession | null = null;
   /** Opened to edit (from the panel's button): editing starts once the reliefs are known. */
   let editAsked = FULL && new URLSearchParams(location.search).has("edit");
+  /**
+   * The relief editor's code and look, fetched the first time they're needed (see enterEdit), not with
+   * the Glance's: players never edit. Opened to edit, fetched at once, while the reliefs come in.
+   */
+  type EditorModule = typeof import("../relief/editor/session");
+  let editor: EditorModule | null = null;
+  let editorLoading: Promise<EditorModule> | null = null;
+  const loadEditor = () =>
+    (editorLoading ??= Promise.all([import("../relief/editor/session"), import("../relief/editor/editor.css")]).then(([module]) => (editor = module)));
+  if (editAsked && isGM) {
+    void loadEditor();
+  }
   /** Opened to edit from the panel: done editing, back to the panel as it was (its size, where it was). */
   const backToPanel = FULL && new URLSearchParams(location.search).has("back");
   /** While editing, the scene drawn again a few times a second at most (not only once it's still). */
@@ -2172,6 +2183,15 @@ async function start() {
     if (!isGM || session || !reliefsKnown) {
       return;
     }
+    // Its code not here yet: fetched, then in (the button waiting meanwhile).
+    if (!editor) {
+      $("reliefEdit").classList.add("waiting");
+      void loadEditor()
+        .then(() => enterEdit())
+        .catch((error) => console.error("Rising Ranges: the relief editor couldn't load", error))
+        .finally(() => $("reliefEdit").classList.remove("waiting"));
+      return;
+    }
     const images = mapImages();
     if (images.length === 0) {
       // Nothing to edit: said, and back where it was opened from (the panel), not left on an empty screen.
@@ -2187,7 +2207,7 @@ async function start() {
     reliefs.surfaced = true;
     // Opened from a map image's menu: that one (see createReliefMenu); otherwise the largest.
     const asked = new URLSearchParams(location.search).get("image");
-    session = startEditing({
+    session = editor.startEditing({
       t,
       images,
       reliefs: reliefs.byImage,

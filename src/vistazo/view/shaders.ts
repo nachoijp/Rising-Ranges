@@ -33,6 +33,7 @@ export const UNDER_FRAGMENT = /* glsl */ `
   uniform vec4 uBox;
   uniform float uMirror;
   uniform sampler2D uMap;
+  uniform mat3 uMapMatrix;
   uniform vec4 uTex;
   uniform vec4 uFrame;
   uniform vec4 uAcross;
@@ -70,8 +71,8 @@ export const UNDER_FRAGMENT = /* glsl */ `
       vec2 north = base + uAcross.xy * (2.0 * uAcross.w - b + 2.0 + deep);
       vec2 south = base + uAcross.xy * (-2.0 * uAcross.w - b - 2.0 - deep);
       vec2 scale = vec2(1.0 / uTex.z, -1.0 / uTex.w);
-      vec3 fromNorth = texture2D(uMap, (north - uTex.xy) * scale + vec2(0.0, 1.0)).rgb;
-      vec3 fromSouth = texture2D(uMap, (south - uTex.xy) * scale + vec2(0.0, 1.0)).rgb;
+      vec3 fromNorth = texture2D(uMap, (uMapMatrix * vec3((north - uTex.xy) * scale + vec2(0.0, 1.0), 1.0)).xy).rgb;
+      vec3 fromSouth = texture2D(uMap, (uMapMatrix * vec3((south - uTex.xy) * scale + vec2(0.0, 1.0), 1.0)).xy).rgb;
       vec3 color = mix(fromSouth, fromNorth, smoothstep(0.0, 1.0, (b + uAcross.w) / (2.0 * uAcross.w)));
       // Faded out toward its ends, into what the map has there (no straight cut across the walls).
       float ends = 1.0 - smoothstep(uAcross.z - uAcross.w * 0.6, uAcross.z, abs(a));
@@ -97,6 +98,7 @@ export const WATER_VERTEX = /* glsl */ `
 export const WATER_FRAGMENT = /* glsl */ `
   uniform float uTime;
   uniform sampler2D uMap;
+  uniform mat3 uMapMatrix;
   uniform float uU;
   uniform float uCell;
   uniform vec4 uTex;
@@ -117,7 +119,7 @@ export const WATER_FRAGMENT = /* glsl */ `
     // The map's picture there, wobbling a little (a few hundredths of a cell).
     vec2 wobble = (vec2(a, b) - 0.5) * 0.06 * uCell;
     vec2 q = vAt / uU + wobble;
-    vec3 under = texture2D(uMap, vec2((q.x - uTex.x) / uTex.z, 1.0 - (q.y - uTex.y) / uTex.w)).rgb;
+    vec3 under = texture2D(uMap, (uMapMatrix * vec3((q.x - uTex.x) / uTex.z, 1.0 - (q.y - uTex.y) / uTex.w, 1.0)).xy).rgb;
     // Glints where the two ripple patterns meet.
     float glint = smoothstep(0.82, 0.95, 1.0 - abs(a - b) * 3.0) * 0.35;
     vec3 color = under * vec3(0.82, 0.92, 1.0) + glint;
