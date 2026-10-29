@@ -16,7 +16,7 @@ import { BaseBatch, moveBase, type BaseSeat } from "./view/bases";
 import { UNDER_FRAGMENT, UNDER_VERTEX, WALL_GRAIN } from "./view/shaders";
 import { NOISE_2D } from "./glsl";
 import { waterMaterial, waterReach, waterShape, type WaterReach } from "./view/water";
-import { time } from "../timing";
+import { since, stamp, time } from "../timing";
 
 export type { Camera, DistanceLine, Options, Quality, Reach, TokenText, WallStyle } from "./view/types";
 export { tintOf };
@@ -50,8 +50,6 @@ THREE.ColorManagement.enabled = false;
 /** The painted bases' picture (see paintBases): pixels a cell, and the most a side (as a texture holds). */
 const BASES_PER_CELL = 48;
 const BASES_MAX = 4096;
-
-/** Which grid a scene's cells are drawn on the map for (see useTexture): to tell when Owlbear's changes. */
 
 export class VistazoView {
   private readonly canvas: HTMLCanvasElement;
@@ -93,6 +91,13 @@ export class VistazoView {
   /** The flat props' videos (webm): drawn again on each new frame of theirs (see watchVideo). */
   private videoTextures = new Set<THREE.VideoTexture>();
   private videoFrame = 0;
+  /** The frame last drawn in (its time, see drawSoon). */
+  private drawnAt = -1;
+  /**
+   * Materials taken off (see clear), let go once the picture's drawn with the new ones: a shader no
+   * material uses any more is deleted, and built again (slowly) for the next that does.
+   */
+  private retired: THREE.Material[] = [];
   /** The panel minimized: every video paused (see setPaused). */
   private paused = false;
   /** The weather's particles (see weather.ts), what they were built from, and the frames they're drawn on. */
@@ -1338,10 +1343,8 @@ export class VistazoView {
     this.plainTexture = map;
     // Drawn again every frame: no smaller copies worked out each time (as costly as sending it).
     if (played) {
-      for (const t of new Set([map, this.plainTexture])) {
-        t.generateMipmaps = false;
-        t.minFilter = THREE.LinearFilter;
-      }
+      map.generateMipmaps = false;
+      map.minFilter = THREE.LinearFilter;
     }
     for (const material of this.pieceMaterials) {
       if (material.userData.mapTextured) {
@@ -1384,9 +1387,13 @@ export class VistazoView {
           if (own && own !== this.mapTexture && own !== this.plainTexture && own !== this.stillTexture && !isShared(own)) {
             own.dispose();
           }
-          m.dispose();
+          this.retired.push(m);
         });
       });
+    }
+    // Nothing drawn for a long while (minimized): not kept on.
+    if (this.retired.length > 2000) {
+      this.retired.splice(0).forEach((m) => m.dispose());
     }
   }
 
@@ -1872,9 +1879,12 @@ export class VistazoView {
       // it's flat with none of those under it; else each.
       const thick = bridge.top - bridge.bottom;
       const reach = scene.dpi * 0.12;
-      const keeping = (scene.unfilled ?? []).filter((multi) => {
+      // Each with its box (and reach round it): a texel outside it isn't tested against its outline.
+      const keeping = (scene.unfilled ?? []).flatMap((multi) => {
         const ps = multi.flat(2);
-        return ps.some(([x]) => x >= area.x - reach) && ps.some(([x]) => x <= area.x + area.z + reach) && ps.some(([, y]) => y >= area.y - reach) && ps.some(([, y]) => y <= area.y + area.w + reach);
+        const [x0, x1] = [Math.min(...ps.map(([x]) => x)) - reach, Math.max(...ps.map(([x]) => x)) + reach];
+        const [y0, y1] = [Math.min(...ps.map(([, y]) => y)) - reach, Math.max(...ps.map(([, y]) => y)) + reach];
+        return x1 >= area.x && x0 <= area.x + area.z && y1 >= area.y && y0 <= area.y + area.w ? [{ multi, x0, x1, y0, y1 }] : [];
       });
       const [cols, rows] = bridge.surface || keeping.length > 0 ? [kept.cols, kept.rows] : [1, 1];
       const heights = new Float32Array(cols * rows * 4);
@@ -1883,7 +1893,8 @@ export class VistazoView {
           const [x, y] = [area.x + ((c + 0.5) / cols) * area.z, area.y + ((r + 0.5) / rows) * area.w];
           heights[(r * cols + c) * 4] = (bridgeTop(bridge, x, y) - thick) * this.k;
           // Inside: all of it (its top); just round it: only its walls (the ground there gets the fill).
-          heights[(r * cols + c) * 4 + 1] = keeping.some((multi) => inShape(x, y, multi)) ? 1 : keeping.some((multi) => nearOutline(multi, x, y, reach)) ? 0.5 : 0;
+          const near = keeping.filter((k) => x >= k.x0 && x <= k.x1 && y >= k.y0 && y <= k.y1);
+          heights[(r * cols + c) * 4 + 1] = near.some((k) => inShape(x, y, k.multi)) ? 1 : near.some((k) => nearOutline(k.multi, x, y, reach)) ? 0.5 : 0;
         }
       }
       const underside = new THREE.DataTexture(heights, cols, rows, THREE.RGBAFormat, THREE.FloatType);
@@ -1948,11 +1959,31 @@ export class VistazoView {
         continue;
       }
       const flat = geometry.index ? geometry.toNonIndexed() : null;
-      const part = new THREE.BufferGeometry();
-      part.setAttribute("position", (flat ?? geometry).getAttribute("position").clone());
-      part.translate(copy.position.x, copy.position.y, copy.position.z);
-      parts.push(part);
+      const from = (flat ?? geometry).getAttribute("position").array as Float32Array;
       flat?.dispose();
+      // Only its triangles over the box (a copy is the whole ground often: a bridge's is a few of them).
+      const [ox, oy, oz] = [copy.position.x, copy.position.y, copy.position.z];
+      let kept: Float32Array = from;
+      if (box) {
+        const out = new Float32Array(from.length);
+        let n = 0;
+        for (let i = 0; i < from.length; i += 9) {
+          const [xa, xb, xc, ya, yb, yc] = [from[i] + ox, from[i + 3] + ox, from[i + 6] + ox, from[i + 1] + oy, from[i + 4] + oy, from[i + 7] + oy];
+          if (Math.max(xa, xb, xc) < box.x0 || Math.min(xa, xb, xc) > box.x1 || Math.max(ya, yb, yc) < box.y0 || Math.min(ya, yb, yc) > box.y1) {
+            continue;
+          }
+          out.set(from.subarray(i, i + 9), n);
+          n += 9;
+        }
+        if (n === 0) {
+          continue;
+        }
+        kept = out.slice(0, n);
+      }
+      const part = new THREE.BufferGeometry();
+      part.setAttribute("position", new THREE.BufferAttribute(kept === from ? from.slice() : kept, 3));
+      part.translate(ox, oy, oz);
+      parts.push(part);
     }
     if (parts.length === 0) {
       return null;
@@ -2506,7 +2537,7 @@ export class VistazoView {
     if (!this.videoFrame) {
       this.videoFrame = requestAnimationFrame(() => {
         this.videoFrame = 0;
-        this.render();
+        this.drawSoon();
       });
     }
   }
@@ -2733,7 +2764,7 @@ export class VistazoView {
       if (time - last >= this.look.frameMs) {
         last = time;
         this.weatherUniforms();
-        this.render();
+        this.drawSoon();
       }
       this.weatherFrame = requestAnimationFrame(tick);
     };
@@ -3005,7 +3036,23 @@ export class VistazoView {
   private render() {
     if (this.renderer && this.scene && this.width > 0 && this.height > 0) {
       time("3d.render", () => this.renderer!.render(this.world, this.glCamera));
+      this.drawnAt = Number(document.timeline.currentTime ?? -1);
+      for (const material of this.retired.splice(0)) {
+        material.dispose();
+      }
     }
+  }
+
+  /**
+   * For what moves by itself (a video's new frame, the weather, the water): drawn, unless the picture was
+   * drawn in this frame already or the camera's about to draw it (see requestApply), which shows the
+   * change too. Otherwise each would draw it again, the same frame.
+   */
+  private drawSoon() {
+    if (this.applyFrame || this.drawnAt === Number(document.timeline.currentTime ?? -2)) {
+      return;
+    }
+    this.render();
   }
 
   apply() {
@@ -3043,6 +3090,7 @@ export class VistazoView {
 
     // The tokens' 3D points on screen: the same matrix, then the perspective (eye at z = persp).
     const eye = camM.inverse().transformPoint(new DOMPoint(0, 0, this.persp));
+    const placed = stamp();
     for (const view of [...this.tokenViews, ...(this.point ? [this.point] : []), ...this.handles]) {
       const { token, el, disc, img, zTok } = view;
       const p = camM.transformPoint(new DOMPoint(token.x * u, token.y * u, zTok));
@@ -3084,6 +3132,7 @@ export class VistazoView {
       view.hidden = this.blocked(token.x * u, token.y * u, zTok + lift + 4, eye);
       el.classList.toggle("hidden", view.hidden);
     }
+    since("3d.apply.tokens", placed);
     this.drawLines();
     this.onCamera();
   }

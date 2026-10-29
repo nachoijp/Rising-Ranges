@@ -1,6 +1,6 @@
 ---
 title: Rising Ranges
-description: A relative, 3D-aware range and elevation measuring tool — drag to see live range rings, per-token readings, and optional persistent elevation markers
+description: A relative, 3D-aware range and elevation measuring tool — live range rings, per-token readings, elevation markers, terrain relief, and a 3D view of the scene
 author: Ignacio Pedraza
 image: https://raw.githubusercontent.com/nachoijp/Rising-Ranges/main/docs/screenshots/in-action.png
 icon: https://raw.githubusercontent.com/nachoijp/Rising-Ranges/main/public/logo.png
@@ -29,8 +29,13 @@ and optional persistent elevation markers.
 - **Elevation tracking** — right-click a token to set a persistent
   elevation marker, or nudge elevation live with hotkeys while measuring, range by
   range or one grid cell at a time. Readings account for elevation in 3D, with a
-  choice of spherical, cubic, or cylindrical distance, and big creatures take
-  up space upwards too.
+  choice of spherical, cubic, cylindrical, or octagonal (5-10-5) distance, and
+  big creatures take up space upwards too.
+- **Terrain** — give the map a relief (raised ground, pits, ramps, stairs,
+  slopes, bridges) and tokens standing on it are measured from up there.
+- **3D Glance** — the scene as a small diorama: relief, tokens at their
+  elevation, range rings, distance lines and spell templates in 3D, with the
+  relief editor for the GM.
 - **Three built-in presets** — Dagger, Steel (Draw Steel's distances,
   measured square by square), and Dragons — or build your own set of ranges
   from scratch.
@@ -74,6 +79,26 @@ rings around the Origin say, with the size of both labels — with any set of
 ranges, presets included.
 
 ![Map settings](https://raw.githubusercontent.com/nachoijp/Rising-Ranges/main/docs/screenshots/map-tab.png)
+
+## Terrain
+
+The GM draws the relief over the map in the relief editor — shapes with their
+own heights, slopes, stairs, bridges and balconies. A token standing on it adds
+that height to its own when measuring: an archer on a 30 ft tower is measured
+from 30 ft up, and a token under a bridge from the ground. The relief follows
+its map image, and a toolbar button picks who sees it on the map.
+
+![The relief editor](https://raw.githubusercontent.com/nachoijp/Rising-Ranges/main/docs/screenshots/glance/editor.jpg)
+
+## 3D Glance
+
+Open the scene as a small diorama: orbit, pan and zoom around the raised
+relief, with tokens at their elevation, range rings, distance lines and
+readings in 3D. Place spell templates (sphere, cube, cylinder, cone, line),
+show props and weather, play camera moves, and sync your view to the players —
+each still sees through their own fog. The GM decides who gets it.
+
+![The 3D Glance](https://raw.githubusercontent.com/nachoijp/Rising-Ranges/main/docs/screenshots/glance/fullscreen.jpg)
 
 ## Distances panel
 

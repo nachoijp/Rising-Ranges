@@ -59,6 +59,8 @@ export type EditSession = {
   imageId: string;
   /** A key pressed while editing: whether the editor took it (Escape only if it had something to drop). */
   key(event: KeyboardEvent): boolean;
+  /** Something open or half done that Escape drops before anything else: a menu, the shortcuts, an outline being drawn, a skin being picked. */
+  pending(): boolean;
   /** The language changed: texts again. */
   retext(): void;
   /** Saved now, and the editor's pieces taken away. */
@@ -924,6 +926,9 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
         editor.hover = -1;
         map.redraw();
       },
+    },
+    pending() {
+      return !!document.querySelector(".re-menu") || !$("pop").hidden || editor.drawing !== null || editor.skinPick !== null;
     },
     key(event) {
       const target = event.target as HTMLElement;

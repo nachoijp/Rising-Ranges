@@ -240,16 +240,20 @@ export function moveItem(ed: ReliefEditor, item: ListItem, drop: ListDrop): bool
   if ("group" in drop && !target) {
     return false;
   }
-  const targetMembers = target ? membersOf(data, target.id) : [];
+  // The group's own, but not what's moving (it may be in it): what it's put by.
+  const targetMembers = target ? membersOf(data, target.id).filter((i) => !block.includes(i)) : [];
   // Over a row: just above its shape (or its group's topmost); under: just below it (or its group's lowest).
   const [anchor, after] =
     "shape" in drop ? [data.shapes[drop.shape], drop.side === "above"] : drop.side === "below" ? [data.shapes[targetMembers[0]], false] : [data.shapes[targetMembers[targetMembers.length - 1]], true];
   const parent = "shape" in drop ? data.shapes[drop.shape].group : drop.side === "into" ? target!.id : target!.parent;
   ed.pushUndo();
   const moving = block.map((i) => data.shapes[i]);
-  const rest = data.shapes.filter((s) => !moving.includes(s));
-  const at = rest.indexOf(anchor) + (after ? 1 : 0);
-  reorder(ed, [...rest.slice(0, at), ...moving, ...rest.slice(at)]);
+  // Nothing else in that group to put it by: it stays where it is in the list.
+  if (anchor) {
+    const rest = data.shapes.filter((s) => !moving.includes(s));
+    const at = rest.indexOf(anchor) + (after ? 1 : 0);
+    reorder(ed, [...rest.slice(0, at), ...moving, ...rest.slice(at)]);
+  }
   if ("shape" in item) {
     moving[0].group = parent;
   } else {

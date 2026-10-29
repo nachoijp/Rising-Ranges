@@ -38,6 +38,7 @@ export const UNDER_FRAGMENT = /* glsl */ `
   uniform vec4 uAcross;
   varying vec3 vAt;
   ${NOISE_2D}
+  ${WALL_GRAIN}
   void main() {
     // Only what's below the bridge's underside, within its outline (see bridgeFill), fading into the
     // map over its last texel.
@@ -78,12 +79,9 @@ export const UNDER_FRAGMENT = /* glsl */ `
       gl_FragColor = vec4(color * 0.82, ends * fill.a);
       return;
     }
-    // The map's colours round it, with a subtle grain so it isn't a flat smear: in cells, the height in
-    // it too (walls get theirs down them).
-    vec2 q = vec2(vAt.x + vAt.z * 0.7, vAt.y - vAt.z * 0.7) / uCell;
-    float grain = noise(q * 6.0) * 0.6 + noise(q * 17.0) * 0.4;
-    // A little darker: in the bridge's shadow.
-    gl_FragColor = vec4(fill.rgb * 0.82 * (0.92 + grain * 0.16), fill.a);
+    // The map's colours round it, with a blended wall's grain so it isn't a flat smear (walls get theirs
+    // down them). A little darker: in the bridge's shadow.
+    gl_FragColor = vec4(fill.rgb * 0.82 * wallGrain(vAt, uCell), fill.a);
   }
 `;
 

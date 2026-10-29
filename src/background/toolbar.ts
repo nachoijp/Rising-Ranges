@@ -39,12 +39,15 @@ function placePanelActions(shown: { vistazo: boolean; terrain: boolean; distance
   const key = JSON.stringify(shown);
   const reorder = key !== lastShown;
   lastShown = key;
-  placing = placing.then(async () => {
-    if (reorder) {
-      await Promise.all(PANEL_ACTIONS.map((id) => OBR.tool.removeAction(id).catch(() => {})));
-    }
-    create();
-  });
+  // One that fails doesn't stop the ones after it.
+  placing = placing
+    .then(async () => {
+      if (reorder) {
+        await Promise.all(PANEL_ACTIONS.map((id) => OBR.tool.removeAction(id).catch(() => {})));
+      }
+      create();
+    })
+    .catch((error) => console.error("Rising Ranges: toolbar", error));
 }
 /** The scene grid's type: terrain is left out on isometric and dimetric grids (see terrainOn). */
 let gridType: GridType = "SQUARE";

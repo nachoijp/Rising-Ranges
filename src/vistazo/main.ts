@@ -993,7 +993,7 @@ async function start() {
     $("cinematic").setAttribute("aria-expanded", "true");
     (menu.firstElementChild as HTMLElement | null)?.focus();
   };
-  document.addEventListener("pointerdown", (event) => shotMenu && !shotMenu.contains(event.target as Node) && event.target !== $("cinematic") && closeShots(), true);
+  document.addEventListener("pointerdown", (event) => shotMenu && !shotMenu.contains(event.target as Node) && !$("cinematic").contains(event.target as Node) && closeShots(), true);
   $("stage").addEventListener("pointerdown", () => sweeping() && stopSweep(), true);
   // Esc stops it (first, wherever the focus is: not closing the window, nor anything else).
   document.addEventListener(
@@ -2279,11 +2279,17 @@ async function start() {
     void closeVistazoPanel(true);
   };
   // While editing, the keys are the editor's first. An Escape it had no use for is the Vistazo's
-  // (the free point, a template), but it never leaves the full screen.
+  // (the free point, a template), but it never leaves the full screen. The free point goes before
+  // what's picked in the editor (its panel stays), not before a menu or an outline half drawn.
   document.addEventListener(
     "keydown",
     (event) => {
       if (!session) {
+        return;
+      }
+      if (event.key === "Escape" && !(cancelMove || placing || aiming) && !session.pending() && clearPoint()) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
         return;
       }
       const taken = session.key(event);

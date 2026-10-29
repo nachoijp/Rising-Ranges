@@ -181,19 +181,43 @@ export function delaunay(pts: number[][], tris: number[][]) {
     const size = Math.abs(terms[0]) + Math.abs(terms[1]) + Math.abs(terms[2]);
     return terms[0] + terms[1] + terms[2] > 1e-9 * size;
   };
+  // Each edge (one way round) to the triangle that has it: a neighbour found at once, not by a search.
+  const edges = new Map<string, number>();
+  const link = (t: number) => {
+    for (let e = 0; e < 3; e++) {
+      const key = `${tris[t][e]},${tris[t][(e + 1) % 3]}`;
+      if (!edges.has(key)) {
+        edges.set(key, t);
+      }
+    }
+  };
+  const unlink = (t: number) => {
+    for (let e = 0; e < 3; e++) {
+      const key = `${tris[t][e]},${tris[t][(e + 1) % 3]}`;
+      if (edges.get(key) === t) {
+        edges.delete(key);
+      }
+    }
+  };
+  tris.forEach((_, t) => link(t));
   for (let pass = 0, flipped = true; flipped && pass < 100; pass++) {
     flipped = false;
     for (let m = 0; m < tris.length; m++) {
       for (let e = 0; e < 3; e++) {
         const [u, v, c] = [tris[m][e], tris[m][(e + 1) % 3], tris[m][(e + 2) % 3]];
-        const n = tris.findIndex((tr, k) => k !== m && hasEdge(tr, v, u));
+        const found = edges.get(`${v},${u}`);
+        const n = found !== undefined && found !== m && hasEdge(tris[found], v, u) ? found : -1;
         if (n < 0) {
           continue;
         }
         const w = tris[n].find((k) => k !== u && k !== v)!;
         if (inside(pts[u], pts[v], pts[c], pts[w]) && cross(pts[c], pts[w], pts[u]) * cross(pts[c], pts[w], pts[v]) < 0) {
+          unlink(m);
+          unlink(n);
           tris[m] = [u, w, c];
           tris[n] = [w, v, c];
+          link(m);
+          link(n);
           flipped = true;
           break;
         }

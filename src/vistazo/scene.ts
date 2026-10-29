@@ -417,7 +417,9 @@ function buildTerrain(
   const xs = world.flatMap((polygon) => polygon[0].map((p) => p[0]));
   const ys = world.flatMap((polygon) => polygon[0].map((p) => p[1]));
   const bounds = { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
-  const inWorld = (x: number, y: number) => x >= bounds.x0 && x <= bounds.x1 && y >= bounds.y0 && y <= bounds.y1 && inShape(x, y, world);
+  // A world that's its box (one map, not turned): the box says it, no outline asked (it's asked a lot).
+  const boxOnly = world.length === 1 && world[0].length === 1 && world[0][0].every(([x, y]) => (x === bounds.x0 || x === bounds.x1) && (y === bounds.y0 || y === bounds.y1));
+  const inWorld = (x: number, y: number) => x >= bounds.x0 && x <= bounds.x1 && y >= bounds.y0 && y <= bounds.y1 && (boxOnly || inShape(x, y, world));
   const heightAt = (x: number, y: number): number | undefined => {
     if (!inWorld(x, y)) {
       return undefined;

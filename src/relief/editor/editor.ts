@@ -255,6 +255,11 @@ export class ReliefEditor {
     if (this.tool !== "edit" || this.settings.pickMode === "shapes" || this.drawing || mods.alt || mods.shift || mods.ctrl) {
       return null;
     }
+    // Picking both: the picked shape's handles (size, turn) come first.
+    const grab = this.settings.pickMode === "both" ? this.grabAt(p) : null;
+    if (grab && grab.kind !== "move") {
+      return null;
+    }
     const reach = this.host.snapReach();
     const used = this.takeable();
     if (this.data.verts.some((v, i) => used.has(i) && Math.hypot(v.x - p.x, v.y - p.y) < reach) || this.pointNear(p, reach) >= 0) {
