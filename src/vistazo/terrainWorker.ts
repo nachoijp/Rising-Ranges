@@ -25,6 +25,11 @@ self.onmessage = (event: MessageEvent<TerrainMessage>) => {
   }
   const started = performance.now();
   try {
+    // A relief sent again under the same key (changed where it is: a brush let go): the last scene isn't
+    // reused (its terrain is the old relief's), whatever its key.
+    if (job.reliefData.length > 0) {
+      previous = undefined;
+    }
     for (const [image, version, data] of job.reliefData) {
       reliefs.set(image, { version, relief: new Relief(data) });
     }

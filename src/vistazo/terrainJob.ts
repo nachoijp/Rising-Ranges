@@ -34,7 +34,7 @@ export type TerrainMessage =
       reliefs: [string, number][];
       reliefData: [string, number, ReliefData][];
       base: number;
-      /** Drawn lightly (a drag): without the walls' shadows, what's under bridges and the water (see computeTerrain). */
+      /** Drawn lightly (a drag): without the walls' shadows (see computeTerrain). */
       lite: boolean;
       context: Omit<TerrainContext, "colors">;
       colorsKey: string | null;
@@ -62,6 +62,8 @@ export class TerrainJobs {
   /** Being worked out by the worker now; what's to be sent once it's done (the last asked). */
   private busy = false;
   private queued: TerrainMessage | null = null;
+  /** It failed to start or died (see the constructor): every ask answered as failed, for the page to work it out itself. */
+  private dead = false;
 
   static make(): TerrainJobs | null {
     try {
@@ -96,6 +98,21 @@ export class TerrainJobs {
         waiting?.(event.data);
       }
     };
+    // Its script didn't load (a stale chunk after a deploy), or it died (out of memory): what's waiting answered as failed.
+    this.worker.onerror = this.worker.onmessageerror = (event: Event) => {
+      event.preventDefault();
+      this.dead = true;
+      this.busy = false;
+      this.queued = null;
+      const waiting = this.waiting;
+      this.waiting = null;
+      waiting?.({ request: this.request, failed: "the worker stopped" });
+    };
+  }
+
+  /** A relief changed where it is, its key kept (a brush let go that settles: see VistazoView.setScene): sent again next time. */
+  touched() {
+    this.sent.clear();
   }
 
   /** The map's colours, sent if the worker doesn't have them (`key`: which they are). */
@@ -128,6 +145,9 @@ export class TerrainJobs {
     void _colors;
     const request = ++this.request;
     this.waiting = null;
+    if (this.dead) {
+      return Promise.resolve({ request, failed: "the worker stopped" });
+    }
     const message: TerrainMessage = { kind: "terrain", request, recipe: { ...rest, reliefKey: reliefs.key, surfaced: !!reliefs.surfaced }, reliefs: list, reliefData: data, base, lite, context: plain, colorsKey };
     if (this.busy) {
       // A queued one's reliefs that this one doesn't send again (sent then) go with it.

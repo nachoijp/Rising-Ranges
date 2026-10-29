@@ -2167,9 +2167,16 @@ async function start() {
   let editor: EditorModule | null = null;
   let editorLoading: Promise<EditorModule> | null = null;
   const loadEditor = () =>
-    (editorLoading ??= Promise.all([import("../relief/editor/session"), import("../relief/editor/editor.css")]).then(([module]) => (editor = module)));
+    (editorLoading ??= Promise.all([import("../relief/editor/session"), import("../relief/editor/editor.css")])
+      .then(([module]) => (editor = module))
+      .catch((error: unknown) => {
+        // Not kept: asked again (the button pressed again), fetched again.
+        editorLoading = null;
+        throw error;
+      }));
   if (editAsked && isGM) {
-    void loadEditor();
+    // Said if it fails once it's asked for (see enterEdit).
+    loadEditor().catch(() => {});
   }
   /** Opened to edit from the panel: done editing, back to the panel as it was (its size, where it was). */
   const backToPanel = FULL && new URLSearchParams(location.search).has("back");

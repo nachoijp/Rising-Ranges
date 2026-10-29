@@ -4,6 +4,7 @@ import { WALL_STYLE, wallBuffers, type WallBuffers } from "./view/wallBuffers";
 import { wallShadowBuffers } from "./view/wallShadows";
 import { FineSurfaces, pieceBuffers, uvsOver, type PieceBuffers, type Surface } from "./view/surfaces";
 import { computeTerrain, type TerrainBuffers, type TerrainContext } from "./view/terrainBuffers";
+import { BASE_TEX_WIDTH, binBases } from "./view/baseBins";
 import { FILL_GROW, fillFrame, undersideBuffers } from "./view/undersides";
 import { TerrainJobs, type TerrainAnswer } from "./terrainJob";
 import { unpackWalls, type PackedWalls } from "./view/wallPack";
@@ -56,8 +57,6 @@ THREE.ColorManagement.enabled = false;
 // three.js draws a double-sided one twice, its shader looked up again each time, every frame.
 
 
-/** The most bases painted on the terrain (see paintBases, BASE_GLSL). */
-const BASES = 64;
 
 export class VistazoView {
   private readonly canvas: HTMLCanvasElement;
@@ -108,6 +107,8 @@ export class VistazoView {
    */
   private drawnOnce = false;
   private compiling = false;
+  /** Openings' compiles (see firstDraw): the last one clears `compiling`. */
+  private compiles = 0;
   /** This build is the map's arrival: what can wait, a moment later as at the opening (see firstDraw). */
   private deferExtras = false;
   /**
@@ -251,12 +252,14 @@ export class VistazoView {
   private settling = false;
   /**
    * The bases painted on the terrain (see paintBases): worked out at each pixel of its tops (see based),
-   * each one where it is, its radius (view units; negative: no ring) and the ground it stands on; how
-   * many; how far from that ground a slab's top still shows it.
+   * from a texture of them and the bins they're in (see binBases); how many (none: not painted); the
+   * bins' corner, size and how many across, and down; how far from the ground a slab's top still shows one.
    */
   private readonly baseUniforms = {
-    uBases: { value: Array.from({ length: BASES }, () => new THREE.Vector4()) },
+    uBaseTex: { value: baseTexture(new Float32Array(BASE_TEX_WIDTH * 4), 1) },
     uBaseCount: { value: 0 },
+    uBaseBins: { value: new THREE.Vector4(0, 0, 1, 1) },
+    uBaseDown: { value: 1 },
     uBaseReach: { value: VIEW_CELL },
   };
   private baseCount = 0;
@@ -626,6 +629,12 @@ export class VistazoView {
     this.base = base;
     // Its walls kept when a brush's let go settles (its outlines haven't changed), as its level.
     this.keepWalls = settling && sameBase ? this.walls : undefined;
+    if (settling) {
+      // Its relief changed where it is, its key the same: the terrain worked out from it again (here, with
+      // the walls kept; the worker sent it again for next time).
+      this.terrainFor = "";
+      this.jobs?.touched();
+    }
     time("3d.build", () => this.build());
     time("3d.colors", () => this.loadColors());
   }
@@ -1088,7 +1097,7 @@ export class VistazoView {
       return true;
     }
     const recipe = scene.recipe;
-    if (this.jobs && recipe && !now) {
+    if (this.jobs && recipe && !now && !this.keepWalls) {
       if (this.asked !== want) {
         this.asked = want;
         if (this.mapColors) {
@@ -1141,8 +1150,20 @@ export class VistazoView {
    */
   private paintBases() {
     const u = this.u;
-    const list = this.tokenViews.flatMap((view) => (view.painted ? [view.painted] : [])).slice(0, BASES);
-    list.forEach((base, i) => this.baseUniforms.uBases.value[i].set(base.x * u, base.y * u, base.r * u * (base.ring ? 1 : -1), base.z));
+    const list = this.tokenViews.flatMap((view) => (view.painted ? [view.painted] : [])).map((base) => ({ x: base.x * u, y: base.y * u, r: base.r * u * (base.ring ? 1 : -1), z: base.z }));
+    const b = this.scene?.bounds ?? { x0: 0, y0: 0, x1: 0, y1: 0 };
+    const { data, rows, bins, down } = binBases(list, { x0: b.x0 * u, y0: b.y0 * u, x1: b.x1 * u, y1: b.y1 * u });
+    // The same size: its texels written over; else a texture that size.
+    const texture = this.baseUniforms.uBaseTex.value;
+    if (texture.image.height === rows) {
+      (texture.image.data as unknown as Float32Array).set(data);
+      texture.needsUpdate = true;
+    } else {
+      texture.dispose();
+      this.baseUniforms.uBaseTex.value = baseTexture(data, rows);
+    }
+    this.baseUniforms.uBaseBins.value.set(...bins);
+    this.baseUniforms.uBaseDown.value = down;
     this.baseCount = list.length;
     this.baseUniforms.uBaseReach.value = this.k / 2;
     this.basesMoved = false;
@@ -1316,9 +1337,9 @@ export class VistazoView {
         this.fillCache.clear();
         this.useTexture();
         // The water, the walls' shadows and what's under bridges (its fill, from this map) a moment later.
+        // Kept till that build draws (with the worker: once its terrain's back).
         this.deferExtras = true;
         this.build();
-        this.deferExtras = false;
         this.playMaps();
       })
       .catch((error) => {
@@ -1622,6 +1643,9 @@ export class VistazoView {
     time("3d.build.slabs", () => this.computeSlabs());
     // Opening: the water, the walls' shadows and what's under bridges a moment later (see firstDraw).
     const first = (!this.drawnOnce || this.deferExtras) && !this.lite;
+    if (!this.lite) {
+      this.deferExtras = false;
+    }
     if (first) {
       this.clear(this.waterGroup);
       this.clear(this.underBridgeGroup);
@@ -1665,12 +1689,19 @@ export class VistazoView {
     // A moment at most (a lost context never answers): drawn then all the same, compiling as it draws.
     const compile = () =>
       Promise.race([this.renderer ? this.renderer.compileAsync(this.world, this.glCamera).catch(() => {}) : Promise.resolve(), new Promise((resolve) => setTimeout(resolve, 3000))]);
+    // Compiling till it's done, unless another opening's compile has taken over since (that one says then).
+    const compiling = ++this.compiles;
+    const done = () => {
+      if (this.compiles === compiling) {
+        this.compiling = false;
+      }
+    };
     this.compiling = true;
     void compile().then(() => {
+      done();
       if (this.builds !== at) {
         return;
       }
-      this.compiling = false;
       this.drawnOnce = true;
       time("3d.measure", () => this.measure());
       setTimeout(() => {
@@ -1682,7 +1713,7 @@ export class VistazoView {
         time("3d.build.underBridges", () => this.buildUnderBridges());
         this.compiling = true;
         void compile().then(() => {
-          this.compiling = false;
+          done();
           this.requestApply();
         });
       });
@@ -3351,6 +3382,13 @@ function gridded(material: THREE.MeshBasicMaterial, uniforms: Record<string, { v
  * Over what's drawn there, the grid too, as the picture of them laid over it was. With gridded's (or
  * any) changes to the shader, kept.
  */
+/** The bases' texture (see binBases): `rows` rows of BASE_TEX_WIDTH float texels, read texel by texel. */
+function baseTexture(data: Float32Array, rows: number): THREE.DataTexture {
+  const texture = new THREE.DataTexture(data, BASE_TEX_WIDTH, rows, THREE.RGBAFormat, THREE.FloatType);
+  texture.needsUpdate = true;
+  return texture;
+}
+
 function based(material: THREE.MeshBasicMaterial, uniforms: Record<string, { value: unknown }>, deck: boolean) {
   layer(material, `based${deck ? "-deck" : ""}`, uniforms, `${deck ? "#define BASE_DECK\n" : ""}${BASE_GLSL}`, "outgoingLight = paintBases(outgoingLight, vLayerAt);");
 }
@@ -3399,16 +3437,27 @@ function layer(material: THREE.MeshBasicMaterial, name: string, uniforms: Record
 }
 
 const BASE_GLSL = /* glsl */ `
-  uniform vec4 uBases[${BASES}];
+  uniform highp sampler2D uBaseTex;
   uniform int uBaseCount;
+  uniform vec4 uBaseBins;
+  uniform float uBaseDown;
   uniform float uBaseReach;
+  vec4 baseTexel(int i) {
+    return texelFetch(uBaseTex, ivec2(i % ${BASE_TEX_WIDTH}, i / ${BASE_TEX_WIDTH}), 0);
+  }
   vec3 paintBases(vec3 color, vec3 at) {
-    // Half a pixel either side of each edge (smooth at any zoom), worked out once: every pixel of the
-    // tops asks, so each base far from it costs a subtraction and a comparison only.
+    // Half a pixel either side of each edge (smooth at any zoom), worked out once (before anything that
+    // differs from one pixel to the next: a derivative needs its neighbours to have got here too).
     float aa = max(length(fwidth(at.xy)), 1e-4) * 0.5;
-    for (int i = 0; i < ${BASES}; i++) {
-      if (i >= uBaseCount) break;
-      vec4 b = uBases[i];
+    if (uBaseCount == 0) return color;
+    // Only the bases in this pixel's bin (see binBases): however many there are, a few at most each.
+    vec2 bin = floor((at.xy - uBaseBins.xy) / uBaseBins.z);
+    if (bin.x < 0.0 || bin.y < 0.0 || bin.x >= uBaseBins.w || bin.y >= uBaseDown) return color;
+    vec4 list = baseTexel(uBaseCount + int(bin.y * uBaseBins.w + bin.x));
+    int start = int(list.x);
+    int count = int(list.y);
+    for (int n = 0; n < count; n++) {
+      vec4 b = baseTexel(int(baseTexel(start + n).x));
       vec2 off = at.xy - b.xy;
       float r = abs(b.z);
       if (dot(off, off) > (r + aa) * (r + aa)) continue;

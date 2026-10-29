@@ -42,8 +42,7 @@ export type TerrainBuffers = {
 
 /**
  * The terrain of a scene, the lowest level it reaches being `base`; `walls`: those already worked out
- * for it, kept; `lite`: without the walls' shadows, what's under bridges and the water (worked out on the
- * page later, if they're wanted); `coarse`: its surfaces, walls and heights grid cut coarser (a drag's,
+ * for it, kept; `lite`: without the walls' shadows (worked out on the page later, if they're wanted); `coarse`: its surfaces, walls and heights grid cut coarser (a drag's,
  * worked out several times a second: whole again once it's let go).
  */
 export function computeTerrain(scene: VistazoScene, base: number, c: TerrainContext, fine: FineSurfaces, walls?: Wall[], lite = false, took?: Record<string, number>, coarse = false): TerrainBuffers {
@@ -66,12 +65,10 @@ export function computeTerrain(scene: VistazoScene, base: number, c: TerrainCont
     wallSets: timed("wallSets", () => wallBuffers(list, { u: c.u, k: c.k, shade: c.shade, levels: c.levels, box: c.texture, colors: c.colors })),
     ...(lite ? {} : { shadows: wallShadowBuffers(list, scene.heightAt, { u: c.u, k: c.k, relief: c.relief }) }),
     pieces: timed("pieces", () => scene.pieces.map((piece) => pieceBuffers(piece, { u: c.u, k: c.k, uvBox: c.uvBox, texture: c.texture, colors: c.colors, fine, coarse }))),
-    undersides: lite ? [] : scene.bridges.map((bridge) => (bridge.under === "keep" ? null : undersideBuffers(scene, bridge, c.k))),
-    water: lite
-      ? []
-      : scene.pieces
-          .filter((piece): piece is Piece & { water: number } => !!piece.water && !piece.stand)
-          .map((piece) => ({ reach: waterReachData(scene, piece), shape: waterShape(scene, piece), level: piece.height + piece.water })),
+    undersides: scene.bridges.map((bridge) => (bridge.under === "keep" ? null : undersideBuffers(scene, bridge, c.k))),
+    water: scene.pieces
+      .filter((piece): piece is Piece & { water: number } => !!piece.water && !piece.stand)
+      .map((piece) => ({ reach: waterReachData(scene, piece), shape: waterShape(scene, piece), level: piece.height + piece.water })),
   };
 }
 
