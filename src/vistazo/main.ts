@@ -2068,10 +2068,11 @@ async function start() {
       }
       const fogNow = options.playerView ? sightFog : null;
       const t0 = stamp();
+      // The map being edited drawn even hidden (a map got ready before it's shown).
+      const drawn = session ? items.map((item) => (item.id === session!.imageId && !item.visible ? { ...item, visible: true } : item)) : items;
       scene = buildScene(
         sceneMetadata,
-        // The map being edited drawn even hidden (a map got ready before it's shown).
-        session ? items.map((item) => (item.id === session!.imageId && !item.visible ? { ...item, visible: true } : item)) : items,
+        drawn,
         dpi,
         scale,
         gridType,
@@ -2081,6 +2082,18 @@ async function start() {
         fogNow ? { key: sightFogKey, clear: (world) => clearOf(fogNow, world) } : null,
         reliefs
       );
+      // What it was built from: its terrain worked out away from the page from it (see terrainJob).
+      scene.recipe = {
+        metadata: sceneMetadata,
+        items: drawn,
+        dpi,
+        scale,
+        gridType,
+        hexCenter,
+        playerView: options.playerView,
+        fog: fogNow ? { key: sightFogKey, filled: fogNow.filled, shapes: fogNow.shapes, lit: fogNow.lit } : null,
+        reliefs,
+      };
       since("vistazo.buildScene", t0);
       builtWith = `${reliefs.key}${reliefs.surfaced}`;
       heightsOnly = null;

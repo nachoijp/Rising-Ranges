@@ -1,5 +1,10 @@
 import * as THREE from "three";
-import { bisect } from "./view/bisect";
+import { colorAt, softColorAt, softPixels, type MapColors } from "./view/mapColors";
+import { WALL_STYLE, wallBuffers, type WallBuffers } from "./view/wallBuffers";
+import { wallShadowBuffers } from "./view/wallShadows";
+import { FineSurfaces, pieceBuffers, uvsOver, type PieceBuffers, type Surface } from "./view/surfaces";
+import { computeTerrain, type TerrainBuffers, type TerrainContext } from "./view/terrainBuffers";
+import { TerrainJobs, type TerrainAnswer } from "./terrainJob";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { MultiPolygon } from "polygon-clipping";
 import { bridgeHighest, bridgeTop, inShape, pieceHeight, type Bridge, type MapImage, type Piece, type Prop, type Token, type VistazoScene } from "./scene";
@@ -8,9 +13,9 @@ import type { Fog } from "./fog";
 import { visibleBox } from "./visibleBox";
 import { CLOUD_GLSL, CLOUD_ZONES, buildWeather, cloudNoise, cloudShadowOf, setWeatherTime } from "./weather";
 import { buildTemplate, templateTip, type Template } from "./templates";
-import { QUALITY, STONE, TEXTURE_MAX, VIEW_CELL, type Camera, type DistanceLine, type Options, type Reach, type Texture, type TokenText, type TokenView, type Wall, type WallStyle, tintOf } from "./view/types";
+import { QUALITY, STONE, TEXTURE_MAX, VIEW_CELL, type Camera, type DistanceLine, type Options, type Reach, type Texture, type TokenText, type TokenView, type Wall, tintOf } from "./view/types";
 import { isShared, patternTexture } from "./view/patterns";
-import { floorOf, mediaElement, propsKey, propToken, raised, skinAcross, skinPoint, visibleOnScreen, within } from "./view/helpers";
+import { floorOf, mediaElement, propsKey, propToken, raised, skinAcross, skinPoint, visibleOnScreen } from "./view/helpers";
 import { computeWalls, type Region } from "./view/walls";
 import { BaseBatch, moveBase, type BaseSeat } from "./view/bases";
 import { UNDER_FRAGMENT, UNDER_VERTEX, WALL_GRAIN } from "./view/shaders";
@@ -177,6 +182,8 @@ export class VistazoView {
   private colors: ((x: number, y: number) => [number, number, number]) | null = null;
   /** The map's colour at a scene point, blurred (a few pixels to a cell) and read between them: blended walls' (see buildWalls). */
   private softColors: ((x: number, y: number) => [number, number, number]) | null = null;
+  /** The map's colours as plain numbers (see mapColors): what colors and softColors read. */
+  private mapColors: MapColors | null = null;
   private colorsFor = "";
   /** The map drawn once on a canvas (see loadColors); null until it's ready, or if the images can't be read. */
   private texture: Texture | null = null;
@@ -210,7 +217,18 @@ export class VistazoView {
    */
   private layersOn = { bands: false, clouds: false, fog: false };
   /** Outlines already cut small (see fineGeometry), by outline: their flat triangles, and the last build that used them. */
-  private fineCache = new Map<string, { position: Float32Array; index: Uint32Array; used: number }>();
+  /** Surfaces that aren't flat, cut small once for an outline (see FineSurfaces). */
+  private readonly fine = new FineSurfaces();
+  /** The scene's terrain as numbers (see computeTerrain), and what it was worked out with (see terrainContext). */
+  private terrain: TerrainBuffers | null = null;
+  private terrainFor = "";
+  /**
+   * Away from the page (see terrainJob): the worker, and what it was last asked for (till it answers);
+   * the walls a settling brush keeps (see setScene). None, or failed: the page works it out itself.
+   */
+  private jobs: TerrainJobs | null = TerrainJobs.make();
+  private asked = "";
+  private keepWalls: Wall[] | undefined;
   /** Bridges' fills worked out (see bridgeFill) from this map, by outline, and the last build that used them. */
   private fillCache = new Map<string, BridgeFill & { used: number }>();
   private builds = 0;
@@ -579,10 +597,8 @@ export class VistazoView {
     const sameBase = base === this.base;
     this.terrainKey = scene.terrainKey;
     this.base = base;
-    time("3d.grid", () => this.computeGrid());
-    if (!settling || !sameBase) {
-      this.walls = time("3d.walls.compute", () => computeWalls(scene, base));
-    }
+    // Its walls kept when a brush's let go settles (its outlines haven't changed), as its level.
+    this.keepWalls = settling && sameBase ? this.walls : undefined;
     time("3d.build", () => this.build());
     time("3d.colors", () => this.loadColors());
   }
@@ -1022,21 +1038,63 @@ export class VistazoView {
   // ---------- Geometry ----------
 
   /** Heights on a grid of a fifth of a cell, for the rays (NaN outside the map). */
-  private computeGrid() {
+  /** What the terrain's numbers are worked out with now (see computeTerrain), and a key that changes with it. */
+  private terrainContext(): { context: TerrainContext; key: string } {
+    const t = this.texture;
+    const texture = t ? { x0: t.x0, y0: t.y0, w: t.w, h: t.h } : null;
+    const context: TerrainContext = { u: this.u, k: this.k, shade: this.options.shade, levels: this.options.levels, relief: this.options.relief, texture, uvBox: this.uvBox(), colors: this.mapColors };
+    return { context, key: JSON.stringify([context.u, context.k, context.shade, context.levels, context.relief, texture, context.uvBox, this.colorsFor, !!this.mapColors]) };
+  }
+
+  /**
+   * The scene's terrain as numbers, up to date (true) or on its way (false): worked out by the worker
+   * when the scene says what it was built from (not while drawn lightly, nor while it's edited: those
+   * want it at once); else here, now. Its heights grid and walls the view's.
+   */
+  private ensureTerrain(): boolean {
     const scene = this.scene!;
-    const { x0, y0, x1, y1 } = scene.bounds;
-    // A fifth of a cell; coarser on a very big map, so it's never more than MAX_GRID_POINTS points (what
-    // it's for, hiding tokens and the lines' sight, doesn't need more).
-    const step = Math.max(scene.dpi / 5, Math.sqrt(((x1 - x0) * (y1 - y0)) / MAX_GRID_POINTS));
-    const w = Math.ceil((x1 - x0) / step) + 1;
-    const h = Math.ceil((y1 - y0) / step) + 1;
-    const cells = new Float32Array(w * h);
-    for (let j = 0; j < h; j++) {
-      for (let i = 0; i < w; i++) {
-        cells[j * w + i] = scene.heightAt(x0 + i * step, y0 + j * step) ?? NaN;
-      }
+    const { context, key } = this.terrainContext();
+    const want = `${scene.terrainKey}|${this.base}|${key}`;
+    if (this.terrain && this.terrainFor === want) {
+      return true;
     }
-    this.grid = { x0, y0, step, w, h, cells };
+    const recipe = scene.recipe;
+    if (this.jobs && recipe && !this.lite && !recipe.reliefs.surfaced) {
+      if (this.asked !== want) {
+        this.asked = want;
+        if (this.mapColors) {
+          this.jobs.colors(this.colorsFor, this.mapColors);
+        }
+        void this.jobs.ask(recipe, this.base, context, this.mapColors ? this.colorsFor : null).then((answer) => this.answered(answer, want));
+      }
+      return false;
+    }
+    this.useTerrain(time("3d.terrain", () => computeTerrain(scene, this.base, context, this.fine, this.keepWalls, this.lite)), want);
+    return true;
+  }
+
+  /** The worker's answer: built from, if it's still what's wanted (else it's been asked again since). Failed: worked out here from then on. */
+  private answered(answer: TerrainAnswer, want: string) {
+    if (this.asked !== want) {
+      return;
+    }
+    this.asked = "";
+    if ("failed" in answer) {
+      console.error("Rising Ranges: 3D Glance's terrain worker failed, working it out on the page", answer.failed);
+      this.jobs?.stop();
+      this.jobs = null;
+    } else if (this.scene?.terrainKey === answer.terrainKey) {
+      this.useTerrain(answer.terrain, want);
+    }
+    this.build();
+  }
+
+  private useTerrain(terrain: TerrainBuffers, want: string) {
+    this.terrain = terrain;
+    this.terrainFor = want;
+    this.grid = terrain.grid;
+    this.walls = terrain.walls;
+    this.keepWalls = undefined;
   }
 
   /** Whether a token at a scene point stands on the terrain itself (not a slab's top, nor in the air): its base painted on it. */
@@ -1132,6 +1190,7 @@ export class VistazoView {
     this.colorsFor = key;
     this.colors = null;
     this.softColors = null;
+    this.mapColors = null;
     this.mapMedia = null;
     this.mapsPlaying++;
     this.texture = null;
@@ -1187,16 +1246,11 @@ export class VistazoView {
           return;
         }
         const small = draw(images, Math.min(1, 1024 / Math.max(w, h)));
-        const data = small.context.getImageData(0, 0, small.canvas.width, small.canvas.height).data;
-        const sw = small.canvas.width;
-        const sh = small.canvas.height;
-        this.colors = (x, y) => {
-          const i = Math.max(0, Math.min(sw - 1, Math.round(((x - x0) / w) * sw)));
-          const j = Math.max(0, Math.min(sh - 1, Math.round(((y - y0) / h) * sh)));
-          const at = (j * sw + i) * 4;
-          return data[at + 3] === 0 ? STONE : [data[at], data[at + 1], data[at + 2]];
-        };
-        this.softColors = softSampler(small.canvas, x0, y0, w, h, scene.dpi);
+        const pixels = { data: small.context.getImageData(0, 0, small.canvas.width, small.canvas.height).data, w: small.canvas.width, h: small.canvas.height };
+        const colors: MapColors = { x0, y0, w, h, small: pixels, soft: softPixels(small.canvas, w, h, scene.dpi) };
+        this.mapColors = colors;
+        this.colors = (x, y) => colorAt(colors, x, y);
+        this.softColors = (x, y) => softColorAt(colors, x, y);
         await pause();
         if (key !== this.colorsFor) {
           return;
@@ -1329,55 +1383,9 @@ export class VistazoView {
     }
   }
 
-  /**
-   * A surface that isn't flat: its outline's triangles cut small, to half a
-   * cell (the painted ground's own step), however big it is.
-   */
-  private fineGeometry(piece: Piece): THREE.BufferGeometry {
-    // Cut once for an outline: the same one again (only its heights changed, a brush let go) takes the
-    // same triangles, its heights set by the caller.
-    const key = `${this.u}|${JSON.stringify(piece.shape)}`;
-    let kept = this.fineCache.get(key);
-    if (!kept) {
-      const target = VIEW_CELL / 2;
-      const flat = this.shapeGeometry(piece.shape);
-      flat.computeBoundingBox();
-      const box = flat.boundingBox!;
-      const span = Math.hypot(box.max.x - box.min.x, box.max.y - box.min.y);
-      // Each pass cuts every triangle in two across its longest side (two passes halve them all): as many
-      // as it takes to get them down to the target.
-      const passes = Math.max(1, Math.min(28, 2 * Math.ceil(Math.log2(Math.max(1, span / target))) + 2));
-      const plain = flat.toNonIndexed();
-      const from = bisect((plain.getAttribute("position") as THREE.BufferAttribute).array, target, passes);
-      plain.dispose();
-      // Each corner once (the cut repeats it for every triangle round it, about six): its height is
-      // then worked out once, not for each of them.
-      const seen = new Map<number, number>();
-      const corners: number[] = [];
-      const index = new Uint32Array(from.length / 3);
-      for (let i = 0; i < index.length; i++) {
-        const x = from[i * 3];
-        const y = from[i * 3 + 1];
-        // To a thousandth of a view unit, as one number (both well under 2^26 thousandths).
-        const at = Math.round(x * 1e3) * 2 ** 27 + Math.round(y * 1e3);
-        let n = seen.get(at);
-        if (n === undefined) {
-          n = corners.length / 3;
-          seen.set(at, n);
-          corners.push(x, y, 0);
-        }
-        index[i] = n;
-      }
-      kept = { position: Float32Array.from(corners), index, used: 0 };
-      flat.dispose();
-      this.fineCache.set(key, kept);
-    }
-    kept.used = this.builds;
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.BufferAttribute(kept.position.slice(), 3));
-    // Never changed: shared by every copy of it.
-    geometry.setIndex(new THREE.BufferAttribute(kept.index, 1));
-    return geometry;
+  /** A surface that isn't flat: its outline's triangles cut small (see FineSurfaces), its corners at height 0. */
+  private fineGeometry(piece: Pick<Piece, "shape">): THREE.BufferGeometry {
+    return geometryOf(this.fine.get(piece.shape, this.u));
   }
 
   /** A piece's outline as a flat shape, in view units. */
@@ -1393,15 +1401,14 @@ export class VistazoView {
 
   /** Texture coordinates for view-unit points `xy` (x, y pairs), from where the map texture lies. */
   private uvs(xy: ArrayLike<number>, count: number): Float32Array {
-    const uv = new Float32Array(count * 2);
+    return uvsOver(xy, count, this.u, this.uvBox());
+  }
+
+  /** Where the map's picture lies (scene px): the texture's box, or the scene's without one. */
+  private uvBox() {
     const t = this.texture;
     const scene = this.scene!;
-    const box = t ?? { x0: scene.bounds.x0, y0: scene.bounds.y0, w: scene.bounds.x1 - scene.bounds.x0 || 1, h: scene.bounds.y1 - scene.bounds.y0 || 1 };
-    for (let i = 0; i < count; i++) {
-      uv[i * 2] = (xy[i * 3] / this.u - box.x0) / box.w;
-      uv[i * 2 + 1] = 1 - (xy[i * 3 + 1] / this.u - box.y0) / box.h;
-    }
-    return uv;
+    return t ? { x0: t.x0, y0: t.y0, w: t.w, h: t.h } : { x0: scene.bounds.x0, y0: scene.bounds.y0, w: scene.bounds.x1 - scene.bounds.x0 || 1, h: scene.bounds.y1 - scene.bounds.y0 || 1 };
   }
 
   /** A top's or wall's material; `top`: the bases are painted on it (see based; a slab's, "deck"). */
@@ -1458,157 +1465,16 @@ export class VistazoView {
    * has them (their zone's, or the Vistazo's), and level lines at every
    * whole cell of height.
    */
-  private buildWalls(list: Wall[] = this.walls, into: THREE.Group | null = null) {
-    const u = this.u;
-    const k = this.k;
-    // The fold's strip: how far into the map it reaches, in view units.
-    const band = VIEW_CELL * 0.75;
-    // One mesh for each style, inside and at the map's edge (which can be hidden).
-    // A wall with a picture from the map's rectangle goes in its own mesh ("skin"), textured with the map.
-    const styleOf = (wall: Wall): WallStyle | "skin" => (wall.skin && this.texture ? "skin" : (wall.style ?? WALL_STYLE));
-    const styles = new Set(list.map(styleOf));
-    for (const [edge, style] of [false, true].flatMap((e) => [...styles].map((st) => [e, st] as const))) {
-      const walls = list.filter((wall) => wall.edge === edge && styleOf(wall) === style);
-      if (walls.length === 0) {
-        continue;
-      }
-      const fromMap = (style === "stretch" || style === "fold" || style === "skin") && this.texture !== null;
+  private buildWalls(list: Wall[] = this.walls, into: THREE.Group | null = null, worked?: WallBuffers[]) {
+    const t = this.texture;
+    const sets = worked ?? wallBuffers(list, { u: this.u, k: this.k, shade: this.options.shade, levels: this.options.levels, box: t ? { x0: t.x0, y0: t.y0, w: t.w, h: t.h } : null, colors: this.mapColors });
+    for (const { edge, style, fromMap, positions, colors, uvs, levels } of sets) {
       const blend = style === "blend";
       const pattern = style === "stone" || style === "rubble" || style === "earth" || style === "wood" ? patternTexture(style) : null;
-      const positions: number[] = [];
-      const colors: number[] = [];
-      const uvs: number[] = [];
-      const levels: number[] = [];
-      for (const wall of walls) {
-        const s = 1 - this.options.shade * (1 - (0.45 + 0.55 * wall.lit));
-        // Taken from the map, its colour is in the texture: the vertices only shade it.
-        const rgb = fromMap ? [255, 255, 255] : this.colors ? this.colors(wall.mx, wall.my) : STONE;
-        const top = rgb.map((v) => (v / 255) * s * 0.92);
-        const bottom = top.map((v) => v * 0.62);
-        const [ax, ay, bx, by] = [wall.ax * u, wall.ay * u, wall.bx * u, wall.by * u];
-        const [zt0, zt1, zb0, zb1] = [wall.t0 * k, wall.t1 * k, wall.b0 * k, wall.b1 * k];
-        const zt = zt0;
-        const zb = zb0;
-        const length = Math.hypot(bx - ax, by - ay);
-        // A slanting side (beside a ramp): one quad with its own heights at each end.
-        const slanted = Math.abs(zt0 - zt1) > 1e-3 || Math.abs(zb0 - zb1) > 1e-3;
-        // Where its picture is: into the raised piece from the edge (the wall's normal points out,
-        // to the lower side); a sunken zone's walls (a pit, a ravine: not above the ground) are drawn
-        // on the map inside the hollow, on that lower side.
-        const sunken = Math.max(wall.t0, wall.t1) <= 1e-6;
-        const [ix, iy] = sunken ? [wall.nx, wall.ny] : [-wall.nx, -wall.ny];
-        // One slice of the face, from depth t0 to t1 below the top, with its texture coordinates.
-        const slice = (t0: number, t1: number, uvTop: number[], uvBottom: number[]) => {
-          const z0 = zt - t0;
-          const z1 = zt - t1;
-          const c0 = top.map((v, i) => v + (bottom[i] - v) * (t0 / (zt - zb || 1)));
-          const c1 = top.map((v, i) => v + (bottom[i] - v) * (t1 / (zt - zb || 1)));
-          positions.push(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z0, bx, by, z1, ax, ay, z1);
-          colors.push(...c0, ...c0, ...c1, ...c0, ...c1, ...c1);
-          // uvTop / uvBottom: [aU, aV, bU, bV] at the slice's top and bottom.
-          uvs.push(uvTop[0], uvTop[1], uvTop[2], uvTop[3], uvBottom[2], uvBottom[3], uvTop[0], uvTop[1], uvBottom[2], uvBottom[3], uvBottom[0], uvBottom[1]);
-        };
-        const mapUv = (x: number, y: number) => this.uvAt(x, y);
-        const height = zt - zb;
-        if (blend) {
-          // Blended from the map: its colours along it (every half cell), the higher side's (a little
-          // into it) at the top, running into the lower side's at the foot; its grain in its material.
-          const soft = this.softColors;
-          const reach = 0.3 * (VIEW_CELL / u);
-          const tone = (x: number, y: number, shade: number) => (soft ? soft(x, y) : rgb).map((v) => (v / 255) * s * shade);
-          const point = (f: number) => {
-            const [x, y] = [wall.ax + (wall.bx - wall.ax) * f, wall.ay + (wall.by - wall.ay) * f];
-            return {
-              x: x * u,
-              y: y * u,
-              zt: zt0 + (zt1 - zt0) * f,
-              zb: zb0 + (zb1 - zb0) * f,
-              top: tone(x - wall.nx * reach, y - wall.ny * reach, 0.92),
-              bottom: tone(x + wall.nx * reach, y + wall.ny * reach, 0.62),
-            };
-          };
-          const n = Math.max(1, Math.ceil(length / (VIEW_CELL * 0.5)));
-          let a = point(0);
-          for (let j = 1; j <= n; j++) {
-            const b = point(j / n);
-            positions.push(a.x, a.y, a.zt, b.x, b.y, b.zt, b.x, b.y, b.zb, a.x, a.y, a.zt, b.x, b.y, b.zb, a.x, a.y, a.zb);
-            colors.push(...a.top, ...b.top, ...b.bottom, ...a.top, ...b.bottom, ...a.bottom);
-            uvs.push(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-            a = b;
-          }
-        } else if (style === "skin" && wall.skin) {
-          // The rectangle's picture: across it by where round the zone each end is, up it by height.
-          const across = (x: number, y: number) => skinAcross(wall.skin!, x / u, y / u);
-          const [sa, sb] = [across(ax, ay), across(bx, by)];
-          const lowest = Math.min(zb0, zb1);
-          const span = Math.max(zt0, zt1) - lowest || 1;
-          const at = (s: number, z: number) => {
-            const [x, y] = skinPoint(wall.skin!, s, (z - lowest) / span);
-            return this.uvAt(x * u, y * u);
-          };
-          positions.push(ax, ay, zt0, bx, by, zt1, bx, by, zb1, ax, ay, zt0, bx, by, zb1, ax, ay, zb0);
-          colors.push(...top, ...top, ...bottom, ...top, ...bottom, ...bottom);
-          const [a0, b0, b1, a1] = [at(sa, zt0), at(sb, zt1), at(sb, zb1), at(sa, zb0)];
-          uvs.push(...a0, ...b0, ...b1, ...a0, ...b1, ...a1);
-        } else if (slanted) {
-          positions.push(ax, ay, zt0, bx, by, zt1, bx, by, zb1, ax, ay, zt0, bx, by, zb1, ax, ay, zb0);
-          colors.push(...top, ...top, ...bottom, ...top, ...bottom, ...bottom);
-          let uvTop: number[];
-          let uvBottom: number[];
-          if (style === "fold" && fromMap) {
-            const deep = Math.min(band, Math.max(zt0 - zb0, zt1 - zb1));
-            uvTop = [...mapUv(ax + ix * 0.5, ay + iy * 0.5), ...mapUv(bx + ix * 0.5, by + iy * 0.5)];
-            uvBottom = [...mapUv(ax + ix * deep, ay + iy * deep), ...mapUv(bx + ix * deep, by + iy * deep)];
-          } else if (style === "stretch" && fromMap) {
-            uvTop = [...mapUv(ax + ix * 1.5, ay + iy * 1.5), ...mapUv(bx + ix * 1.5, by + iy * 1.5)];
-            uvBottom = uvTop;
-          } else {
-            const tile = VIEW_CELL * 2;
-            // Along the wall's own direction (not x + y): steps of one straight edge then run on without a jump.
-            const s0 = (wall.along !== undefined ? wall.along * u : (ax * (bx - ax) + ay * (by - ay)) / (length || 1)) / tile;
-            uvTop = [s0, zt0 / tile, s0 + length / tile, zt1 / tile];
-            uvBottom = [s0, zb0 / tile, s0 + length / tile, zb1 / tile];
-          }
-          uvs.push(uvTop[0], uvTop[1], uvTop[2], uvTop[3], uvBottom[2], uvBottom[3], uvTop[0], uvTop[1], uvBottom[2], uvBottom[3], uvBottom[0], uvBottom[1]);
-        } else if (style === "fold" && fromMap) {
-          // Strips of the map just inside the edge, folded down, every other one mirrored.
-          const inside = (d: number) => [...mapUv(ax + ix * d, ay + iy * d), ...mapUv(bx + ix * d, by + iy * d)];
-          for (let t = 0, j = 0; t < height; t += band, j++) {
-            const t1 = Math.min(height, t + band);
-            const d0 = j % 2 === 0 ? 0 : band;
-            const d1 = j % 2 === 0 ? t1 - t : band - (t1 - t);
-            slice(t, t1, inside(d0 + 0.5), inside(d1 + 0.5));
-          }
-        } else if (style === "stretch" && fromMap) {
-          // The map's pixels at the top edge (a hair inside), stretched down.
-          const edgeUv = [...mapUv(ax + ix * 1.5, ay + iy * 1.5), ...mapUv(bx + ix * 1.5, by + iy * 1.5)];
-          slice(0, height, edgeUv, edgeUv);
-        } else {
-          // A pattern 2 cells a tile, along the wall and down from the ground level (so courses line up).
-          const tile = VIEW_CELL * 2;
-          // Along the wall's own direction, as above.
-          const s0 = (wall.along !== undefined ? wall.along * u : (ax * (bx - ax) + ay * (by - ay)) / (length || 1)) / tile;
-          const v = (z: number) => z / tile;
-          slice(0, height, [s0, v(zt), s0 + length / tile, v(zt)], [s0, v(zb), s0 + length / tile, v(zb)]);
-        }
-        // Level lines at every whole cell of height, counted from the ground.
-        if (this.options.levels) {
-          const lowest = Math.min(wall.b0, wall.b1);
-          const highest = Math.max(wall.t0, wall.t1);
-          for (let n = Math.ceil(lowest + 1e-6); n < highest - 1e-6; n++) {
-            // Where along the wall that height is on its face (bottom ≤ n ≤ top), 0 to 1.
-            const span = within(wall.b0, wall.b1, wall.t0, wall.t1, n);
-            if (span) {
-              const [s0, s1] = span;
-              levels.push(ax + (bx - ax) * s0, ay + (by - ay) * s0, n * k, ax + (bx - ax) * s1, ay + (by - ay) * s1, n * k);
-            }
-          }
-        }
-      }
       const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
-      geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(colors), 3));
-      geometry.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uvs), 2));
+      geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+      geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
       const group = into ?? (edge ? this.edgeGroup : this.terrainGroup);
       const material = new THREE.MeshBasicMaterial({
         vertexColors: true,
@@ -1634,7 +1500,7 @@ export class VistazoView {
       }
       if (levels.length > 0) {
         const lines = new THREE.BufferGeometry();
-        lines.setAttribute("position", new THREE.BufferAttribute(new Float32Array(levels), 3));
+        lines.setAttribute("position", new THREE.BufferAttribute(levels, 3));
         const levelLines = new THREE.LineSegments(lines, new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, forceSinglePass: true, opacity: 0.3 }));
         levelLines.userData.wall = true;
         group.add(levelLines);
@@ -1643,60 +1509,20 @@ export class VistazoView {
   }
 
   /** A soft shadow on the ground at the foot of each wall (all of them, or those given), fading out from it. */
-  private buildWallShadows(list: Wall[] = this.walls) {
+  private buildWallShadows(list: Wall[] = this.walls, worked?: TerrainBuffers["shadows"]) {
     const scene = this.scene!;
-    const u = this.u;
-    const k = this.k;
-    if (this.options.relief > 0) {
-      const inside = list.filter((wall) => !wall.edge);
-      const positions = new Float32Array(inside.length * 18);
-      const colors = new Float32Array(inside.length * 24);
-      const reach = VIEW_CELL * 0.45;
-      const dark = 0.45 * this.options.relief;
-      // Each end goes out along the walls' normals there, averaged with the next wall's: the shadows of
-      // a wall's pieces meet at their ends (out along each piece's own normal, a curve's left wedges between).
-      const key = (x: number, y: number) => `${Math.round(x * 100)},${Math.round(y * 100)}`;
-      const normals = new Map<string, [number, number]>();
-      for (const wall of inside) {
-        for (const [x, y] of [[wall.ax, wall.ay], [wall.bx, wall.by]]) {
-          const sum = normals.get(key(x, y)) ?? [0, 0];
-          normals.set(key(x, y), [sum[0] + wall.nx, sum[1] + wall.ny]);
-        }
-      }
-      const out = (x: number, y: number, wall: (typeof inside)[number]): [number, number] => {
-        const [sx, sy] = normals.get(key(x, y)) ?? [wall.nx, wall.ny];
-        const length = Math.hypot(sx, sy);
-        // Walls facing apart (a thin wall's two sides): its own way.
-        return length < 0.5 ? [wall.nx, wall.ny] : [sx / length, sy / length];
-      };
-      inside.forEach((wall, i) => {
-        const [ax, ay, bx, by] = [wall.ax * u, wall.ay * u, wall.bx * u, wall.by * u];
-        const [nax, nay] = out(wall.ax, wall.ay, wall);
-        const [nbx, nby] = out(wall.bx, wall.by, wall);
-        const [cx, cy, dx, dy] = [ax + nax * reach, ay + nay * reach, bx + nbx * reach, by + nby * reach];
-        const za = wall.b0 * k + 0.4;
-        const zb = wall.b1 * k + 0.4;
-        // Its far edge down on the ground there where that falls away (a slope: level with the
-        // wall's foot it would hang in the air), but never up: by a corner its far edge lands on the next
-        // wall's top, and climbing to it, it would cut through that wall.
-        const zc = Math.min(wall.b0, scene.heightAt(cx / u, cy / u) ?? wall.b0) * k + 0.4;
-        const zd = Math.min(wall.b1, scene.heightAt(dx / u, dy / u) ?? wall.b1) * k + 0.4;
-        positions.set([ax, ay, za, bx, by, zb, dx, dy, zd, ax, ay, za, dx, dy, zd, cx, cy, zc], i * 18);
-        const alphas = [dark, dark, 0, dark, 0, 0];
-        alphas.forEach((a, j) => colors.set([0, 0, 0, a], i * 24 + j * 4));
-      });
-      if (inside.length > 0) {
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-        geometry.setAttribute("color", new THREE.BufferAttribute(colors, 4));
-        const shadows = new THREE.Mesh(
-          geometry,
-          new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, forceSinglePass: true, depthWrite: false, side: THREE.DoubleSide })
-        );
-        shadows.renderOrder = 1;
-        shadows.userData.wall = true;
-        this.terrainGroup.add(shadows);
-      }
+    const shade = worked !== undefined ? worked : wallShadowBuffers(list, scene.heightAt, { u: this.u, k: this.k, relief: this.options.relief });
+    if (shade) {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(shade.positions, 3));
+      geometry.setAttribute("color", new THREE.BufferAttribute(shade.colors, 4));
+      const shadows = new THREE.Mesh(
+        geometry,
+        new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, forceSinglePass: true, depthWrite: false, side: THREE.DoubleSide })
+      );
+      shadows.renderOrder = 1;
+      shadows.userData.wall = true;
+      this.terrainGroup.add(shadows);
     }
   }
 
@@ -1711,13 +1537,20 @@ export class VistazoView {
     if (!scene) {
       return;
     }
+    this.k = VIEW_CELL * this.options.heightScale;
+    if (!this.ensureTerrain()) {
+      // Its terrain on its way (see ensureTerrain): meanwhile what's drawn stays, the tokens where they are now.
+      if (this.tokenViews.length === 0 || !this.moveTokens(scene)) {
+        this.buildTokens();
+      }
+      this.requestApply();
+      return;
+    }
     // The cut outlines not used by the last two builds: let go.
     this.builds++;
-    for (const cache of [this.fineCache, this.fillCache]) {
-      for (const [key, kept] of cache) {
-        if (kept.used < this.builds - 2) {
-          cache.delete(key);
-        }
+    for (const [key, kept] of this.fillCache) {
+      if (kept.used < this.builds - 2) {
+        this.fillCache.delete(key);
       }
     }
     this.clear(this.terrainGroup);
@@ -1732,7 +1565,7 @@ export class VistazoView {
     this.clear(this.edgeGroup);
     this.surfaces = [];
     this.pieceMaterials = [];
-    this.k = VIEW_CELL * this.options.heightScale;
+    const terrain = this.terrain!;
 
     // Each one's meshes marked with the relief shape it's of (for moving it whole).
     const mark = (from: number, si: number | undefined) => {
@@ -1741,11 +1574,11 @@ export class VistazoView {
       }
     };
     time("3d.build.pieces", () => {
-      for (const piece of scene.pieces) {
+      scene.pieces.forEach((piece, i) => {
         const from = this.terrainGroup.children.length;
-        this.buildPiece(piece);
+        this.buildPiece(piece, terrain.pieces[i]);
         mark(from, piece.si);
-      }
+      });
     });
     time("3d.build.bridges", () => {
       for (const bridge of scene.bridges) {
@@ -1766,11 +1599,11 @@ export class VistazoView {
     // Their heights follow the height scale.
     time("3d.build.templates", () => this.buildTemplates());
 
-    time("3d.build.walls", () => this.buildWalls());
+    time("3d.build.walls", () => this.buildWalls(this.walls, null, terrain.wallSets));
 
     // Not while something's being dragged (drawn lightly): the shadows at the walls' feet come back as it's let go.
     if (!this.lite && !first) {
-      time("3d.build.wallShadows", () => this.buildWallShadows());
+      time("3d.build.wallShadows", () => this.buildWallShadows(this.walls, this.terrain?.shadows));
     }
     time("3d.build.fog", () => this.drawFog());
     if (!first) {
@@ -1813,7 +1646,7 @@ export class VistazoView {
           return;
         }
         time("3d.build.water", () => this.buildWater());
-        time("3d.build.wallShadows", () => this.buildWallShadows());
+        time("3d.build.wallShadows", () => this.buildWallShadows(this.walls, this.terrain?.shadows));
         time("3d.build.underBridges", () => this.buildUnderBridges());
         this.compiling = true;
         void compile().then(() => {
@@ -2009,7 +1842,7 @@ export class VistazoView {
     const thick = (bridge.top - bridge.bottom) * k;
     // Not flat: cut small (as a surfaced piece), each corner at its own height.
     const sloped = !!bridge.surface;
-    const top = sloped ? this.fineGeometry({ height: bridge.top, shape: bridge.shape }) : this.shapeGeometry(bridge.shape);
+    const top = sloped ? this.fineGeometry({ shape: bridge.shape }) : this.shapeGeometry(bridge.shape);
     const position = top.getAttribute("position") as THREE.BufferAttribute;
     top.setAttribute("uv", new THREE.BufferAttribute(this.uvs(position.array, position.count), 2));
     if (sloped) {
@@ -2172,77 +2005,34 @@ export class VistazoView {
     );
   }
 
-  private buildPiece(piece: Piece) {
-    const u = this.u;
-    const k = this.k;
-    const z = piece.height * k;
-    const fine = !!piece.surface && !(piece.coarse && !piece.fine?.());
-    const geometry = fine ? this.fineGeometry(piece) : this.shapeGeometry(piece.shape);
-    const position = geometry.getAttribute("position") as THREE.BufferAttribute;
-    if (!piece.stand) {
-      geometry.setAttribute("uv", new THREE.BufferAttribute(this.uvs(position.array, position.count), 2));
+  /** A piece's meshes, from its numbers (worked out now if not given: see pieceBuffers). */
+  private buildPiece(piece: Piece, worked?: PieceBuffers) {
+    const t = this.texture;
+    const built = worked ?? pieceBuffers(piece, { u: this.u, k: this.k, uvBox: this.uvBox(), texture: t ? { x0: t.x0, y0: t.y0, w: t.w, h: t.h } : null, colors: this.mapColors, fine: this.fine });
+    const geometry = geometryOf(built.surface);
+    if (built.kind === "top") {
+      geometry.setAttribute("uv", new THREE.BufferAttribute(built.uv, 2));
       const mesh = new THREE.Mesh(geometry, this.pieceMaterial(piece.height, true, undefined, true));
-      if (piece.surface) {
-        // A ramp: each corner at its own height (a plane: the triangles stay flat).
-        for (let i = 0; i < position.count; i++) {
-          position.setZ(i, pieceHeight(piece, position.getX(i) / u, position.getY(i) / u) * k);
-        }
-        position.needsUpdate = true;
-      } else {
-        mesh.position.z = z;
-      }
+      mesh.position.z = built.z;
       // Its corners can be moved up or down where they are (see reheight).
       mesh.userData.piece = piece;
-      mesh.userData.fine = fine;
+      mesh.userData.fine = built.fine;
       this.terrainGroup.add(mesh);
-      this.keepSurface(geometry, piece.surface ? 0 : z);
+      this.keepSurface(geometry, built.z);
       return;
     }
-    // Standing: a block (its top plain stone, its sides walls) with the
-    // relief's picture of it in front (its card).
-    let x0 = Infinity;
-    let y0 = Infinity;
-    let x1 = -Infinity;
-    let y1 = -Infinity;
-    for (const polygon of piece.shape) {
-      for (const [x, y] of polygon[0]) {
-        x0 = Math.min(x0, x);
-        y0 = Math.min(y0, y);
-        x1 = Math.max(x1, x);
-        y1 = Math.max(y1, y);
-      }
-    }
-    const rgb = this.colors ? this.colors((x0 + x1) / 2, (y0 + y1) / 2) : STONE;
-    // Its top: the walls' pattern (stone, earth or wood; stone when they take theirs from the map),
-    // tinted with the map's colour there, laid out flat a tile every two cells.
-    const style = piece.walls ?? WALL_STYLE;
-    const roof = style === "earth" || style === "wood" || style === "rubble" ? style : "stone";
-    const tile = VIEW_CELL * 2;
-    const roofUv = new Float32Array(position.count * 2);
-    for (let i = 0; i < position.count; i++) {
-      roofUv[i * 2] = position.getX(i) / tile;
-      roofUv[i * 2 + 1] = position.getY(i) / tile;
-    }
     const roofGeometry = geometry.clone();
-    roofGeometry.setAttribute("uv", new THREE.BufferAttribute(roofUv, 2));
-    const roofMaterial = this.pieceMaterial(piece.height, false, rgb.map((v) => v * 0.85) as [number, number, number], true);
-    roofMaterial.map = patternTexture(roof);
+    roofGeometry.setAttribute("uv", new THREE.BufferAttribute(built.roofUv, 2));
+    const roofMaterial = this.pieceMaterial(piece.height, false, built.roofColor, true);
+    roofMaterial.map = patternTexture(built.roof as "stone" | "rubble" | "earth" | "wood");
     const top = new THREE.Mesh(roofGeometry, roofMaterial);
-    top.position.z = z;
+    top.position.z = built.z;
     this.terrainGroup.add(top);
-    this.keepSurface(geometry, z);
-
-    if (piece.card) {
-      // A relief's own picture (see relief/vistazo.ts): its corners where it has them, its picture from the map.
-      const positions = new Float32Array(piece.card.length * 3);
-      const uvs = new Float32Array(piece.card.length * 2);
-      piece.card.forEach(([x, y, h, mx, my], i) => {
-        positions.set([x * u, y * u, h * k], i * 3);
-        uvs.set(this.texture ? this.uvAt(mx * u, my * u) : [0, 0], i * 2);
-      });
+    this.keepSurface(geometry, built.z);
+    if (built.card) {
       const card = new THREE.BufferGeometry();
-      card.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-      card.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+      card.setAttribute("position", new THREE.BufferAttribute(built.card.position, 3));
+      card.setAttribute("uv", new THREE.BufferAttribute(built.card.uv, 2));
       // Just in front of its walls (they're all kept): drawn toward the eye, not away as the pieces' are
       // (that offset grows with how slanting a face is seen, and put the wall over the picture there).
       const material = this.pieceMaterial(piece.height, true);
@@ -2253,7 +2043,7 @@ export class VistazoView {
       material.polygonOffsetUnits = -1;
       const cardMesh = new THREE.Mesh(card, material);
       // Where on the map each corner's picture is (view units), for it to follow a drag (see moveShapes).
-      cardMesh.userData.cardMap = Float32Array.from(piece.card.flatMap(([, , , mx, my]) => [mx * u, my * u, 0]));
+      cardMesh.userData.cardMap = built.card.map;
       this.terrainGroup.add(cardMesh);
       this.keepSurface(card);
     }
@@ -3281,8 +3071,6 @@ export class VistazoView {
   }
 }
 
-/** The most points the heights grid has (see computeGrid). */
-const MAX_GRID_POINTS = 200_000;
 
 /** The free point's id among the lines' origins (see setPoint). */
 export const FREE_POINT = "rising-ranges/free-point";
@@ -3472,42 +3260,6 @@ function grained<M extends THREE.MeshBasicMaterial>(material: M): M {
   return material;
 }
 
-/**
- * The map's colour at a scene point, blurred: `small` (the map over x0, y0,
- * w × h) drawn again at four pixels a cell (`dpi`: a cell's size) and
- * blurred, read between its pixels (where the map isn't, stone).
- */
-function softSampler(small: HTMLCanvasElement, x0: number, y0: number, w: number, h: number, dpi: number): (x: number, y: number) => [number, number, number] {
-  const per = 4 / dpi;
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(2, Math.ceil(w * per));
-  canvas.height = Math.max(2, Math.ceil(h * per));
-  const context = canvas.getContext("2d", { willReadFrequently: true })!;
-  context.filter = "blur(1.5px)";
-  context.drawImage(small, 0, 0, canvas.width, canvas.height);
-  const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
-  const [cw, ch] = [canvas.width, canvas.height];
-  return (x, y) => {
-    const fx = Math.max(0, Math.min(cw - 1, ((x - x0) / w) * cw - 0.5));
-    const fy = Math.max(0, Math.min(ch - 1, ((y - y0) / h) * ch - 0.5));
-    const [ix, iy] = [Math.floor(fx), Math.floor(fy)];
-    const [jx, jy] = [Math.min(cw - 1, ix + 1), Math.min(ch - 1, iy + 1)];
-    const [tx, ty] = [fx - ix, fy - iy];
-    const out = [0, 0, 0];
-    let weight = 0;
-    // Each corner by how near it is and how much of the map it holds (its alpha).
-    for (const [cx, cy, k] of [[ix, iy, (1 - tx) * (1 - ty)], [jx, iy, tx * (1 - ty)], [ix, jy, (1 - tx) * ty], [jx, jy, tx * ty]]) {
-      const at = (cy * cw + cx) * 4;
-      const a = (data[at + 3] / 255) * k;
-      out[0] += data[at] * a;
-      out[1] += data[at + 1] * a;
-      out[2] += data[at + 2] * a;
-      weight += a;
-    }
-    return weight > 1e-6 ? [out[0] / weight, out[1] / weight, out[2] / weight] : STONE;
-  };
-}
-
 /** Whether a scene point is within `reach` of an outline's sides (holes' too). */
 function nearOutline(multi: MultiPolygon, x: number, y: number, reach: number): boolean {
   for (const ring of multi.flat()) {
@@ -3535,6 +3287,16 @@ const VIDEO_TEXTURE_LIGHT = 1536;
  * uv: 0 to 1 across the box, up from its bottom). Turned, scaled, flipped:
  * the map's own transform undone, then over its size.
  */
+/** A surface's arrays as a three.js geometry (see surfaces.ts). */
+function geometryOf(surface: Surface): THREE.BufferGeometry {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(surface.position, 3));
+  if (surface.index) {
+    geometry.setIndex(new THREE.BufferAttribute(surface.index, 1));
+  }
+  return geometry;
+}
+
 function videoTexture(video: HTMLVideoElement, map: MapImage, box: Texture): THREE.VideoTexture {
   const texture = new THREE.VideoTexture(video);
   texture.generateMipmaps = false;
@@ -3857,4 +3619,3 @@ const NO_FOG = (() => {
 
 
 /** The walls' look where their shape has none of its own (see buildWalls). */
-const WALL_STYLE: WallStyle = "blend";

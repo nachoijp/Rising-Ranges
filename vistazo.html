@@ -7,10 +7,10 @@
     <title>Rising Ranges — 3D Glance</title>
     <style>
       /* Till the page is put together (its look, icons and texts: main.ts marks it "ready"), a spinner
-         in its place, not its pieces settling. Shown anyway after 2.5 s, should that never come. */
+         in its place, not its pieces settling. Shown anyway after 10 s, should that never come (a slow machine takes some seconds: not before). */
       html:not(.ready) body {
         visibility: hidden;
-        animation: rr-show 0s 2.5s forwards;
+        animation: rr-show 0s 10s forwards;
       }
       /* Its pieces, hidden but not yet laid out by its stylesheet, overflow the page: no scrollbar for them. */
       html:not(.ready) {
@@ -28,7 +28,7 @@
         border: 3px solid rgba(187, 153, 255, 0.25);
         border-top-color: #bb99ff;
         border-radius: 50%;
-        animation: rr-spin 0.8s linear infinite, rr-hide 0s 2.5s forwards;
+        animation: rr-spin 0.8s linear infinite, rr-hide 0s 10s forwards;
       }
       html.ready body {
         animation: rr-in 0.12s ease-out;
@@ -55,7 +55,7 @@
       }
       @media (prefers-reduced-motion: reduce) {
         html:not(.ready)::before {
-          animation: rr-hide 0s 2.5s forwards;
+          animation: rr-hide 0s 10s forwards;
         }
         html.ready body {
           animation: none;

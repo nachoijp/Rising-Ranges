@@ -1,0 +1,72 @@
+import type { VistazoScene } from "../scene";
+import type { MapColors } from "./mapColors";
+import { heightGrid, type HeightGrid } from "./heightGrid";
+import { pieceBuffers, type FineSurfaces, type PieceBuffers, type UvBox } from "./surfaces";
+import type { Wall } from "./types";
+import { wallBuffers, type WallBuffers } from "./wallBuffers";
+import { wallShadowBuffers } from "./wallShadows";
+import { computeWalls } from "./walls";
+
+// The terrain's meshes as numbers, all of them for a scene (see VistazoView.build, which makes the
+// meshes): worked out on the page, or away from it (see terrainWorker) so that it isn't held up.
+
+/** What the terrain is worked out with besides the scene: view units per scene px and per height unit, the options' shading and level lines, where the map's picture lies (its texture's box, none without one; the uvs' box, the scene's then), its colours. */
+export type TerrainContext = {
+  u: number;
+  k: number;
+  shade: number;
+  levels: boolean;
+  relief: number;
+  texture: UvBox | null;
+  uvBox: UvBox;
+  colors: MapColors | null;
+};
+
+/** A scene's terrain worked out: its heights grid, walls, the walls' faces and the shadows at their feet, and each piece's top (as the scene's pieces, in order). */
+export type TerrainBuffers = {
+  grid: HeightGrid;
+  walls: Wall[];
+  wallSets: WallBuffers[];
+  /** None: no walls, or no shading; not worked out (undefined): drawn lightly, a drag (see VistazoView.setLite). */
+  shadows?: { positions: Float32Array; colors: Float32Array } | null;
+  pieces: PieceBuffers[];
+};
+
+/** The terrain of a scene, the lowest level it reaches being `base`; `walls`: those already worked out for it, kept; `lite`: without the walls' shadows. */
+export function computeTerrain(scene: VistazoScene, base: number, c: TerrainContext, fine: FineSurfaces, walls?: Wall[], lite = false): TerrainBuffers {
+  const grid = heightGrid(scene.bounds, scene.dpi, scene.heightAt);
+  const list = walls ?? computeWalls(scene, base);
+  fine.begin();
+  return {
+    grid,
+    walls: list,
+    wallSets: wallBuffers(list, { u: c.u, k: c.k, shade: c.shade, levels: c.levels, box: c.texture, colors: c.colors }),
+    ...(lite ? {} : { shadows: wallShadowBuffers(list, scene.heightAt, { u: c.u, k: c.k, relief: c.relief }) }),
+    pieces: scene.pieces.map((piece) => pieceBuffers(piece, { u: c.u, k: c.k, uvBox: c.uvBox, texture: c.texture, colors: c.colors, fine })),
+  };
+}
+
+/** The arrays a terrain's numbers hold (to hand them to the page without copying them). */
+export function terrainTransfers(t: TerrainBuffers): ArrayBuffer[] {
+  const buffers = new Set<ArrayBuffer>([t.grid.cells.buffer as ArrayBuffer]);
+  for (const set of t.wallSets) {
+    [set.positions, set.colors, set.uvs, set.levels].forEach((a) => buffers.add(a.buffer as ArrayBuffer));
+  }
+  if (t.shadows) {
+    buffers.add(t.shadows.positions.buffer as ArrayBuffer);
+    buffers.add(t.shadows.colors.buffer as ArrayBuffer);
+  }
+  for (const piece of t.pieces) {
+    buffers.add(piece.surface.position.buffer as ArrayBuffer);
+    if (piece.kind === "top") {
+      buffers.add(piece.uv.buffer as ArrayBuffer);
+    } else {
+      buffers.add(piece.roofUv.buffer as ArrayBuffer);
+      if (piece.card) {
+        [piece.card.position, piece.card.uv, piece.card.map].forEach((a) => buffers.add(a.buffer as ArrayBuffer));
+      }
+    }
+    // A fine surface's triangles are shared with its cache (kept there): copied, not handed over.
+  }
+  return [...buffers];
+}

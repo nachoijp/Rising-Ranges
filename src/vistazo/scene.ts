@@ -1,4 +1,5 @@
 import { isImage, type GridScale, type GridType, type Image, type Item } from "@owlbear-rodeo/sdk";
+import type { SceneRecipe } from "./terrainJob";
 import type { MultiPolygon, Pair } from "polygon-clipping";
 import polygonClipping from "../terrain/clip";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
@@ -190,6 +191,8 @@ export const bridgeHighest = (bridge: Bridge) => (bridge.surface ? Math.max(brid
 export type Sight = { key: string; clear: (world: MultiPolygon) => MultiPolygon | null };
 
 export type VistazoScene = Terrain & {
+  /** What it was built from, for the terrain's worker to build the same scene (see terrainJob); none: worked out on the page. */
+  recipe?: SceneRecipe;
   dpi: number;
   scale: GridScale;
   /** The grid is square: its cells can be drawn on the ground. */
