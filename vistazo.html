@@ -12,6 +12,10 @@
         visibility: hidden;
         animation: rr-show 0s 2.5s forwards;
       }
+      /* Its pieces, hidden but not yet laid out by its stylesheet, overflow the page: no scrollbar for them. */
+      html:not(.ready) {
+        overflow: hidden;
+      }
       html:not(.ready)::before {
         content: "";
         position: fixed;

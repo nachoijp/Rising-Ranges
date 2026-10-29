@@ -152,8 +152,11 @@ export type TokenView = {
   marks?: { ring: THREE.Mesh | null; stem: THREE.Line | null };
   /** Its base among the others of its size (see BaseBatch), a token's or a standing prop's, off the terrain. */
   seat?: BaseSeat;
-  /** Its base painted on the terrain under it instead (scene px; see VistazoView.paintBases): `ring`, a token's light ring round it. */
-  painted?: { x: number; y: number; r: number; ring: boolean };
+  /**
+   * Its base painted on the terrain under it instead (scene px; see VistazoView.paintBases): `ring`, a
+   * token's light ring round it; `z`, the ground it stands on (view units: a slab's top or not).
+   */
+  painted?: { x: number; y: number; r: number; ring: boolean; z: number };
   title?: HTMLElement;
   detail?: HTMLElement;
   screen: { x: number; y: number };

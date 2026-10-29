@@ -49,9 +49,8 @@ THREE.ColorManagement.enabled = false;
 // three.js draws a double-sided one twice, its shader looked up again each time, every frame.
 
 
-/** The painted bases' picture (see paintBases): pixels a cell, and the most a side (as a texture holds). */
-const BASES_PER_CELL = 48;
-const BASES_MAX = 4096;
+/** The most bases painted on the terrain (see paintBases, BASE_GLSL). */
+const BASES = 64;
 
 export class VistazoView {
   private readonly canvas: HTMLCanvasElement;
@@ -95,6 +94,14 @@ export class VistazoView {
   private videoFrame = 0;
   /** The frame last drawn in (its time, see drawSoon). */
   private drawnAt = -1;
+  /**
+   * Opening (see firstDraw): drawn once yet, and its shaders still being compiled (in the background:
+   * nothing drawn till they are, or drawing would wait for them).
+   */
+  private drawnOnce = false;
+  private compiling = false;
+  /** This build is the map's arrival: what can wait, a moment later as at the opening (see firstDraw). */
+  private deferExtras = false;
   /**
    * Materials taken off (see clear), let go once the picture's drawn with the new ones: a shader no
    * material uses any more is deleted, and built again (slowly) for the next that does.
@@ -182,10 +189,17 @@ export class VistazoView {
   private builds = 0;
   /** The next scene's build is a brush's let go (see settleNext). */
   private settling = false;
-  /** The bases painted on the terrain (see paintBases): their picture, its texture, the copies of the terrain's tops it's laid on. */
-  private baseCanvas: HTMLCanvasElement | null = null;
-  private baseTexture: THREE.CanvasTexture | null = null;
-  private readonly baseGroup = new THREE.Group();
+  /**
+   * The bases painted on the terrain (see paintBases): worked out at each pixel of its tops (see based),
+   * each one where it is, its radius (view units; negative: no ring) and the ground it stands on; how
+   * many; how far from that ground a slab's top still shows it.
+   */
+  private readonly baseUniforms = {
+    uBases: { value: Array.from({ length: BASES }, () => new THREE.Vector4()) },
+    uBaseCount: { value: 0 },
+    uBaseReach: { value: VIEW_CELL },
+  };
+  private baseCount = 0;
   /** A painted base moved (see moveTokens): painted again once they all are. */
   private basesMoved = false;
   /** The relief editor's terrain brush, where it'd paint (see setBrushRing). */
@@ -223,7 +237,7 @@ export class VistazoView {
     this.renderer = renderer;
     this.glCamera.matrixAutoUpdate = false;
     this.movingGroup.matrixAutoUpdate = false;
-    this.world.add(this.terrainGroup, this.underGroup, this.movingGroup, this.pickGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup, this.baseGroup, this.fogGroup, this.weatherGroup, this.cloudShadowGroup, this.underBridgeGroup, this.waterGroup, this.templateGroup);
+    this.world.add(this.terrainGroup, this.underGroup, this.movingGroup, this.pickGroup, this.edgeGroup, this.tokenGroup, this.ringGroup, this.fillGroup, this.fogGroup, this.weatherGroup, this.cloudShadowGroup, this.underBridgeGroup, this.waterGroup, this.templateGroup);
     this.overlay = document.createElement("div");
     this.overlay.className = "ov";
     this.lines = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -1088,84 +1102,18 @@ export class VistazoView {
   }
 
   /**
-   * The bases of the tokens (and props) on the terrain, painted on it as the Banda rings are: on a picture
-   * of the scene laid on copies of the terrain's tops (see baseCopy), so each follows the ground under
-   * it, bumps and all. Painted again as they move, nothing built again.
+   * The bases of the tokens (and props) on the terrain, painted on it as the Banda tint is: at each
+   * pixel of its tops (see based), so each follows the ground under it, bumps and all. Moved, only
+   * these numbers change: nothing built again, no picture sent again.
    */
   private paintBases() {
-    const scene = this.scene;
-    if (!scene) {
-      return;
-    }
-    const { x0, y0, x1, y1 } = scene.bounds;
-    const [w, h] = [x1 - x0 || 1, y1 - y0 || 1];
-    const scale = Math.min(BASES_PER_CELL / scene.dpi, BASES_MAX / Math.max(w, h));
-    const [cw, ch] = [Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale))];
-    if (!this.baseCanvas) {
-      this.baseCanvas = document.createElement("canvas");
-    }
-    const canvas = this.baseCanvas;
-    if (canvas.width !== cw || canvas.height !== ch) {
-      [canvas.width, canvas.height] = [cw, ch];
-      this.baseTexture?.dispose();
-      this.baseTexture = null;
-    }
-    const c = canvas.getContext("2d")!;
-    c.clearRect(0, 0, cw, ch);
-    for (const view of this.tokenViews) {
-      const base = view.painted;
-      if (!base) {
-        continue;
-      }
-      const [cx, cy, r] = [(base.x - x0) * scale, (base.y - y0) * scale, base.r * scale];
-      c.beginPath();
-      c.arc(cx, cy, r, 0, Math.PI * 2);
-      c.fillStyle = "rgba(0,0,0,0.35)";
-      c.fill();
-      if (base.ring) {
-        // As thick as a flat base's ring (2 view units).
-        c.lineWidth = Math.max(1, (2 / this.u) * scale);
-        c.beginPath();
-        c.arc(cx, cy, r - c.lineWidth / 2, 0, Math.PI * 2);
-        c.strokeStyle = "rgba(255,255,255,0.85)";
-        c.stroke();
-      }
-    }
-    if (!this.baseTexture) {
-      this.baseTexture = new THREE.CanvasTexture(canvas);
-      // Every copy's, every build's: not let go with one (see isShared).
-      this.baseTexture.userData.shared = true;
-      for (const copy of this.baseGroup.children as THREE.Mesh[]) {
-        (copy.material as THREE.MeshBasicMaterial).map = this.baseTexture;
-        (copy.material as THREE.MeshBasicMaterial).needsUpdate = true;
-      }
-    }
-    this.baseTexture.needsUpdate = true;
+    const u = this.u;
+    const list = this.tokenViews.flatMap((view) => (view.painted ? [view.painted] : [])).slice(0, BASES);
+    list.forEach((base, i) => this.baseUniforms.uBases.value[i].set(base.x * u, base.y * u, base.r * u * (base.ring ? 1 : -1), base.z));
+    this.baseCount = list.length;
+    this.baseUniforms.uBaseReach.value = this.k / 2;
     this.basesMoved = false;
     this.requestApply();
-  }
-
-  /** A copy of a terrain top for the painted bases (as fogCopy is for the fog): the scene's picture of them laid from above. */
-  private baseCopy(geometry: THREE.BufferGeometry, z: number) {
-    if (this.lite) {
-      return;
-    }
-    const { x0, y0, x1, y1 } = this.scene!.bounds;
-    const position = geometry.getAttribute("position") as THREE.BufferAttribute;
-    const uv = new Float32Array(position.count * 2);
-    for (let i = 0; i < position.count; i++) {
-      uv[i * 2] = (position.getX(i) / this.u - x0) / (x1 - x0 || 1);
-      uv[i * 2 + 1] = 1 - (position.getY(i) / this.u - y0) / (y1 - y0 || 1);
-    }
-    const copy = geometry.clone();
-    copy.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
-    const mesh = new THREE.Mesh(
-      copy,
-      new THREE.MeshBasicMaterial({ map: this.baseTexture, transparent: true, forceSinglePass: true, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
-    );
-    mesh.position.z = z;
-    mesh.renderOrder = 3;
-    this.baseGroup.add(mesh);
   }
 
   /** The heights grid within a region (scene px) worked out again. */
@@ -1287,7 +1235,10 @@ export class VistazoView {
           })
       )
     )
-      .then((images) => {
+      .then(async (images) => {
+        // In steps, the page let go between them (each is long on a slow machine): another map's
+        // meanwhile, this one's dropped.
+        const pause = () => new Promise((resolve) => setTimeout(resolve));
         if (key !== this.colorsFor) {
           return;
         }
@@ -1302,16 +1253,27 @@ export class VistazoView {
           return data[at + 3] === 0 ? STONE : [data[at], data[at + 1], data[at + 2]];
         };
         this.softColors = softSampler(small.canvas, x0, y0, w, h, scene.dpi);
+        await pause();
+        if (key !== this.colorsFor) {
+          return;
+        }
         // A video map played: a smaller texture, drawn again every frame.
         const played = this.options.videoMaps && scene.maps.some((map) => map.video);
         const cap = played ? (this.options.quality === "high" ? VIDEO_TEXTURE_MAX : VIDEO_TEXTURE_LIGHT) : TEXTURE_MAX;
         const most = Math.min(cap, this.renderer?.capabilities.maxTextureSize ?? TEXTURE_MAX);
         const big = draw(images, Math.min(1, most / Math.max(w, h)));
+        await pause();
+        if (key !== this.colorsFor) {
+          return;
+        }
         this.texture = { canvas: big.canvas, x0, y0, w, h };
         this.mapMedia = { images, maps: scene.maps };
         this.fillCache.clear();
         this.useTexture();
+        // The water, the walls' shadows and what's under bridges (its fill, from this map) a moment later.
+        this.deferExtras = true;
         this.build();
+        this.deferExtras = false;
         this.playMaps();
       })
       .catch((error) => {
@@ -1476,7 +1438,8 @@ export class VistazoView {
     return uv;
   }
 
-  private pieceMaterial(height: number, textured: boolean, fill?: [number, number, number]): THREE.MeshBasicMaterial {
+  /** A top's or wall's material; `top`: the bases are painted on it (see based; a slab's, "deck"). */
+  private pieceMaterial(height: number, textured: boolean, fill?: [number, number, number], top: boolean | "deck" = false): THREE.MeshBasicMaterial {
     const span = this.maxH - this.minH || 1;
     // Higher ground a little lighter: up to ±25% from the lowest to the highest.
     const lit = 1 + this.options.relief * 0.5 * ((height - this.minH) / span - 0.5);
@@ -1497,6 +1460,9 @@ export class VistazoView {
     material.userData.mapTextured = textured;
     if (textured) {
       gridded(material, this.gridUniforms);
+    }
+    if (top) {
+      based(material, this.baseUniforms, top === "deck");
     }
     this.pieceMaterials.push(material);
     return material;
@@ -1788,7 +1754,6 @@ export class VistazoView {
     this.movingGroup.matrix.identity();
     this.clear(this.edgeGroup);
     this.clear(this.fillGroup);
-    this.clear(this.baseGroup);
     this.clear(this.fogGroup);
     this.pieceMaterials = [];
     this.k = VIEW_CELL * this.options.heightScale;
@@ -1814,20 +1779,29 @@ export class VistazoView {
       }
     });
     time("3d.build.slabs", () => this.computeSlabs());
-    time("3d.build.water", () => this.buildWater());
+    // Opening: the water, the walls' shadows and what's under bridges a moment later (see firstDraw).
+    const first = (!this.drawnOnce || this.deferExtras) && !this.lite;
+    if (first) {
+      this.clear(this.waterGroup);
+      this.clear(this.underBridgeGroup);
+    } else {
+      time("3d.build.water", () => this.buildWater());
+    }
     // Their heights follow the height scale.
     time("3d.build.templates", () => this.buildTemplates());
 
     time("3d.build.walls", () => this.buildWalls());
 
     // Not while something's being dragged (drawn lightly): the shadows at the walls' feet come back as it's let go.
-    if (!this.lite) {
+    if (!this.lite && !first) {
       time("3d.build.wallShadows", () => this.buildWallShadows());
     }
     this.fogTexture?.dispose();
     this.fogTexture = null;
     time("3d.build.fog", () => this.drawFog());
-    time("3d.build.underBridges", () => this.buildUnderBridges());
+    if (!first) {
+      time("3d.build.underBridges", () => this.buildUnderBridges());
+    }
     time("3d.build.tokens", () => this.buildTokens());
     time("3d.build.reach", () => this.buildReach());
     // The terrain's built again: so are the cloud shadows on it.
@@ -1835,9 +1809,45 @@ export class VistazoView {
     time("3d.build.weather", () => this.updateWeather());
     this.highlight(this.picked.shapes);
     // Its size (it reads the page's layout, which costs): not while something's being dragged, it hasn't changed.
-    if (!this.lite) {
+    if (first) {
+      this.firstDraw();
+    } else if (!this.lite) {
       time("3d.measure", () => this.measure());
     }
+  }
+
+  /**
+   * Opening, the terrain built: its shaders compiled in the background (the page not stuck waiting for
+   * them), then drawn; then the rest (water, the walls' shadows, what's under bridges), compiled and
+   * drawn too. Built again meanwhile: that build goes on from there instead.
+   */
+  private firstDraw() {
+    const at = this.builds;
+    // A moment at most (a lost context never answers): drawn then all the same, compiling as it draws.
+    const compile = () =>
+      Promise.race([this.renderer ? this.renderer.compileAsync(this.world, this.glCamera).catch(() => {}) : Promise.resolve(), new Promise((resolve) => setTimeout(resolve, 3000))]);
+    this.compiling = true;
+    void compile().then(() => {
+      if (this.builds !== at) {
+        return;
+      }
+      this.compiling = false;
+      this.drawnOnce = true;
+      time("3d.measure", () => this.measure());
+      setTimeout(() => {
+        if (this.builds !== at || !this.scene) {
+          return;
+        }
+        time("3d.build.water", () => this.buildWater());
+        time("3d.build.wallShadows", () => this.buildWallShadows());
+        time("3d.build.underBridges", () => this.buildUnderBridges());
+        this.compiling = true;
+        void compile().then(() => {
+          this.compiling = false;
+          this.requestApply();
+        });
+      });
+    });
   }
 
   /**
@@ -2033,12 +2043,12 @@ export class VistazoView {
       }
       position.needsUpdate = true;
     }
-    const deck = new THREE.Mesh(top, this.pieceMaterial(bridge.top, true));
+    // The bases of those on it painted on it, not those under it (see based).
+    const deck = new THREE.Mesh(top, this.pieceMaterial(bridge.top, true, undefined, "deck"));
     deck.position.z = sloped ? 0 : bridge.top * k;
     this.terrainGroup.add(deck);
     this.fillCopy(top, deck.position.z);
     this.fogCopy(top, deck.position.z);
-    this.baseCopy(top, deck.position.z);
 
     const style = bridge.walls ?? WALL_STYLE;
     const kind = style === "rubble" || style === "earth" || style === "wood" ? style : "stone";
@@ -2197,7 +2207,7 @@ export class VistazoView {
     const position = geometry.getAttribute("position") as THREE.BufferAttribute;
     if (!piece.stand) {
       geometry.setAttribute("uv", new THREE.BufferAttribute(this.uvs(position.array, position.count), 2));
-      const mesh = new THREE.Mesh(geometry, this.pieceMaterial(piece.height, true));
+      const mesh = new THREE.Mesh(geometry, this.pieceMaterial(piece.height, true, undefined, true));
       if (piece.surface) {
         // A ramp: each corner at its own height (a plane: the triangles stay flat).
         for (let i = 0; i < position.count; i++) {
@@ -2213,7 +2223,6 @@ export class VistazoView {
       this.terrainGroup.add(mesh);
       this.fillCopy(geometry, piece.surface ? 0 : z);
       this.fogCopy(geometry, piece.surface ? 0 : z);
-      this.baseCopy(geometry, piece.surface ? 0 : z);
       return;
     }
     // Standing: a block (its top plain stone, its sides walls) with the
@@ -2243,13 +2252,12 @@ export class VistazoView {
     }
     const roofGeometry = geometry.clone();
     roofGeometry.setAttribute("uv", new THREE.BufferAttribute(roofUv, 2));
-    const roofMaterial = this.pieceMaterial(piece.height, false, rgb.map((v) => v * 0.85) as [number, number, number]);
+    const roofMaterial = this.pieceMaterial(piece.height, false, rgb.map((v) => v * 0.85) as [number, number, number], true);
     roofMaterial.map = patternTexture(roof);
     const top = new THREE.Mesh(roofGeometry, roofMaterial);
     top.position.z = z;
     this.terrainGroup.add(top);
     this.fogCopy(geometry, z);
-    this.baseCopy(geometry, z);
 
     if (piece.card) {
       // A relief's own picture (see relief/vistazo.ts): its corners where it has them, its picture from the map.
@@ -2372,7 +2380,7 @@ export class VistazoView {
           // A dark base on the ground under it, as a token's.
           // As big as its footprint (80% of it, as a token's).
           if (this.onTerrain(prop.x, prop.y, zFloor)) {
-            painted = { x: prop.x, y: prop.y, r: prop.radius * 0.8, ring: false };
+            painted = { x: prop.x, y: prop.y, r: prop.radius * 0.8, ring: false, z: zFloor };
           } else {
             seat = propBases.add(prop.radius * u * 0.8, prop.x * u, prop.y * u, zFloor + 1);
           }
@@ -2425,7 +2433,7 @@ export class VistazoView {
       const r = token.radius * u * 0.8;
       // Its base on the ground under it, and a dashed line up (or down) to it.
       // On the terrain: painted on it (see paintBases); off it (a slab's top, in the air): a flat one.
-      const painted = this.onTerrain(token.x, token.y, zFloor) ? { x: token.x, y: token.y, r: token.radius * 0.8, ring: true } : undefined;
+      const painted = this.onTerrain(token.x, token.y, zFloor) ? { x: token.x, y: token.y, r: token.radius * 0.8, ring: true, z: zFloor } : undefined;
       const seat = painted ? undefined : tokenBases.add(r, token.x * u, token.y * u, zFloor + 1);
       let stem: THREE.Line | null = null;
       if (raised(token)) {
@@ -2879,7 +2887,7 @@ export class VistazoView {
       moveBase(view.seat, prop.x * u, prop.y * u, zFloor + 1);
     }
     if (view.painted) {
-      [view.painted.x, view.painted.y] = [prop.x, prop.y];
+      [view.painted.x, view.painted.y, view.painted.z] = [prop.x, prop.y, zFloor];
       this.basesMoved = true;
     }
     const stem = view.marks?.stem;
@@ -2959,7 +2967,7 @@ export class VistazoView {
         moveBase(view.seat, token.x * u, token.y * u, zFloor + 1);
       }
       if (view.painted) {
-        [view.painted.x, view.painted.y] = [token.x, token.y];
+        [view.painted.x, view.painted.y, view.painted.z] = [token.x, token.y, zFloor];
         this.basesMoved = true;
       }
       const stem = view.marks?.stem;
@@ -3051,7 +3059,7 @@ export class VistazoView {
   }
 
   private render() {
-    if (this.renderer && this.scene && this.width > 0 && this.height > 0) {
+    if (this.renderer && this.scene && this.width > 0 && this.height > 0 && !this.compiling) {
       time("3d.render", () => this.renderer!.render(this.world, this.glCamera));
       this.drawnAt = Number(document.timeline.currentTime ?? -1);
       for (const material of this.retired.splice(0)) {
@@ -3094,7 +3102,7 @@ export class VistazoView {
     }
     this.edgeGroup.visible = this.options.edges;
     // The bases painted on the terrain go with the tokens (and the props), as the flat ones do.
-    this.baseGroup.visible = this.options.tokens || this.propsMode !== "none";
+    this.baseUniforms.uBaseCount.value = this.options.tokens || this.propsMode !== "none" ? this.baseCount : 0;
     this.tokenGroup.visible = this.options.tokens || this.propsMode !== "none";
     for (const child of this.tokenGroup.children) {
       // A prop's pieces stay with the props option; the tokens' bases and lines go with the tokens.
@@ -3594,6 +3602,60 @@ function gridded(material: THREE.MeshBasicMaterial, uniforms: Record<string, { v
   };
   material.customProgramCacheKey = () => "rising-ranges/gridded";
 }
+
+/**
+ * The tokens' (and props') bases painted on a top of the terrain, worked out at each pixel from where
+ * it is (view units): within a base's radius, darker (35%); its last two units (two pixels at least),
+ * a light ring (a token's). On a slab's top (`deck`), only those standing on it, not those under it
+ * (the terrain's own tops don't lie over one another: on them, wherever it is, steep ground too).
+ * Over what's drawn there, the grid too, as the picture of them laid over it was. With gridded's (or
+ * any) changes to the shader, kept.
+ */
+function based(material: THREE.MeshBasicMaterial, uniforms: Record<string, { value: unknown }>, deck: boolean) {
+  const before = material.onBeforeCompile.bind(material);
+  const key = material.customProgramCacheKey.bind(material);
+  material.onBeforeCompile = (shader, renderer) => {
+    before(shader, renderer);
+    Object.assign(shader.uniforms, uniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying vec3 vBaseAt;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvBaseAt = (modelMatrix * vec4(position, 1.0)).xyz;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", `#include <common>\nvarying vec3 vBaseAt;\n${deck ? "#define BASE_DECK\n" : ""}${BASE_GLSL}`)
+      .replace("#include <opaque_fragment>", "outgoingLight = paintBases(outgoingLight, vBaseAt);\n#include <opaque_fragment>");
+  };
+  material.customProgramCacheKey = () => `${key()}+rising-ranges/based${deck ? "-deck" : ""}`;
+}
+
+const BASE_GLSL = /* glsl */ `
+  uniform vec4 uBases[${BASES}];
+  uniform int uBaseCount;
+  uniform float uBaseReach;
+  vec3 paintBases(vec3 color, vec3 at) {
+    // Half a pixel either side of each edge (smooth at any zoom), worked out once: every pixel of the
+    // tops asks, so each base far from it costs a subtraction and a comparison only.
+    float aa = max(length(fwidth(at.xy)), 1e-4) * 0.5;
+    for (int i = 0; i < ${BASES}; i++) {
+      if (i >= uBaseCount) break;
+      vec4 b = uBases[i];
+      vec2 off = at.xy - b.xy;
+      float r = abs(b.z);
+      if (dot(off, off) > (r + aa) * (r + aa)) continue;
+      #ifdef BASE_DECK
+        if (abs(at.z - b.w) > uBaseReach) continue;
+      #endif
+      float d = length(off);
+      float inside = 1.0 - smoothstep(r - aa, r + aa, d);
+      color *= 1.0 - 0.35 * inside;
+      if (b.z > 0.0) {
+        // Two units wide, and two pixels at least (seen from afar: not broken into dots).
+        float w = max(2.0, 4.0 * aa);
+        color = mix(color, vec3(1.0), 0.85 * inside * smoothstep(r - w - aa, r - w + aa, d));
+      }
+    }
+    return color;
+  }
+`;
 
 const GRID_GLSL = /* glsl */ `
   uniform float uGridKind;
