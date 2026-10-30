@@ -58,6 +58,9 @@ THREE.ColorManagement.enabled = false;
 
 
 
+/** The ground's level (view units, a hair under it): what's under it is cut away (see apply's map's edge). */
+const GROUND_CLIP = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0.5);
+
 export class VistazoView {
   private readonly canvas: HTMLCanvasElement;
   private readonly renderer: THREE.WebGLRenderer | null;
@@ -294,6 +297,8 @@ export class VistazoView {
       renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: true });
       renderer.setPixelRatio(Math.min((QUALITY[options.quality] ?? QUALITY.high).pixels, window.devicePixelRatio || 1));
       renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+      // The map's edge's walls cut at the ground (see apply).
+      renderer.localClippingEnabled = true;
     } catch (error) {
       console.error("Rising Ranges: Vistazo couldn't start WebGL", error);
     }
@@ -2916,7 +2921,17 @@ export class VistazoView {
       material.opacity = this.options.xray ? 0.45 : 1;
       material.depthWrite = !this.options.xray;
     }
-    this.edgeGroup.visible = this.options.edges;
+    // The map's edge's walls off: only what's under the ground (the map's cut, its board) left out; what
+    // stands over it there (a shape cut at the edge) is the terrain's own side, drawn whatever (not left
+    // open). Cut where it's drawn, the walls whole: their shading as it is.
+    const clipping = this.options.edges ? null : GROUND_CLIP;
+    this.edgeGroup.traverse((object) => {
+      const material = (object as THREE.Mesh).material as THREE.Material | undefined;
+      if (material && (material.clippingPlanes?.[0] ?? null) !== clipping) {
+        material.clippingPlanes = clipping ? [clipping] : null;
+        material.needsUpdate = true;
+      }
+    });
     // The bases painted on the terrain go with the tokens (and the props), as the flat ones do.
     this.baseUniforms.uBaseCount.value = this.options.tokens || this.propsMode !== "none" ? this.baseCount : 0;
     this.tokenGroup.visible = this.options.tokens || this.propsMode !== "none";
