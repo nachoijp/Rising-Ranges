@@ -56,7 +56,11 @@ export function reliefTerrain(
   const bounds: Pt[][][] = within ?? [[closed(rect)]];
   const box = within ? bbox(within.flatMap((polygon) => polygon[0])) : null;
   const near = (b: { x0: number; y0: number; x1: number; y1: number }) => !box || (b.x0 <= box.x1 && b.x1 >= box.x0 && b.y0 <= box.y1 && b.y1 >= box.y0);
-  const visible = (x: number, y: number) => !clear || inScene(x, y, clear);
+  // On the clear area's very edge counts as in it: a shape cut at the map's edge has its corners there (the
+  // clear area's edge too), and asked exactly on it, "outside" would draw them on the ground (its top sunk).
+  const NEAR = 0.01;
+  const visible = (x: number, y: number) =>
+    !clear || inScene(x, y, clear) || inScene(x + NEAR, y, clear) || inScene(x - NEAR, y, clear) || inScene(x, y + NEAR, clear) || inScene(x, y - NEAR, clear);
   const heightAt = (x: number, y: number): number | undefined => {
     const [cx, cy] = sceneToCell(anchor, dpi, x, y);
     if (cx < 0 || cy < 0 || cx > w || cy > h) {
