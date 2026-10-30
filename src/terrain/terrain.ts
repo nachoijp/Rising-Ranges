@@ -1,6 +1,4 @@
 import { Command, isCurve, isPath, isShape, type Curve, type Item, type Vector2 } from "@owlbear-rodeo/sdk";
-import type { Pair, Polygon } from "polygon-clipping";
-import polygonClipping from "./clip";
 import { getPluginId } from "../util/getPluginId";
 
 // The old terrain zones: Owlbear shapes on the Map layer tagged with a
@@ -11,7 +9,7 @@ import { getPluginId } from "../util/getPluginId";
 // the smallest wins (two of the same size: the higher); a ramp rises across
 // its own box from the ground just past its low edge. A cloth isn't read
 // (it has no counterpart). Also some outlines and heights the rest uses
-// (terrainAt, itemOutline, growRings, frameOf).
+// (terrainAt, itemOutline, frameOf).
 
 const METADATA_KEY = getPluginId("terrain");
 
@@ -624,37 +622,3 @@ export function getTerrainWater(item: Item): number | undefined {
   return typeof stored === "number" && Number.isFinite(stored) && stored > 0 ? stored : undefined;
 }
 
-/** Outlines grown by `reach` on every side (each side widened to a band, joined), as outer rings. */
-export function growRings(rings: [number, number][][], reach: number): [number, number][][] {
-  const parts: Polygon[] = rings.map((ring) => [ring as Pair[]]);
-  for (const ring of rings) {
-    // Each side's normal, `reach` long (none for a side of no length).
-    const normals = ring.map(([ax, ay], i): Pair | null => {
-      const [bx, by] = ring[(i + 1) % ring.length];
-      const length = Math.hypot(bx - ax, by - ay);
-      return length < 1e-9 ? null : [(-(by - ay) / length) * reach, ((bx - ax) / length) * reach];
-    });
-    for (let i = 0; i < ring.length; i++) {
-      const n = normals[i];
-      if (!n) {
-        continue;
-      }
-      const [ax, ay] = ring[i];
-      const [bx, by] = ring[(i + 1) % ring.length];
-      // The side as a band; at its end, a corner cut straight across to the next side's band (a band past
-      // its ends would stick out of a sharp corner as a spike).
-      parts.push([[[ax + n[0], ay + n[1]], [bx + n[0], by + n[1]], [bx - n[0], by - n[1]], [ax - n[0], ay - n[1]]]]);
-      const next = normals[(i + 1) % ring.length];
-      if (next) {
-        parts.push([[[bx, by], [bx + n[0], by + n[1]], [bx + next[0], by + next[1]]]]);
-        parts.push([[[bx, by], [bx - n[0], by - n[1]], [bx - next[0], by - next[1]]]]);
-      }
-    }
-  }
-  try {
-    const grown = polygonClipping.union(parts[0], ...parts.slice(1));
-    return grown.map((polygon) => polygon[0] as [number, number][]);
-  } catch {
-    return rings;
-  }
-}

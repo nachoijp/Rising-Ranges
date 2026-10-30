@@ -1,7 +1,6 @@
 import * as THREE from "three";
 import polygonClipping from "../../terrain/clip";
 import type { MultiPolygon } from "polygon-clipping";
-import { growRings } from "../../terrain/terrain";
 import { inShape, type Piece, type VistazoScene } from "../scene";
 import { WATER_FRAGMENT, WATER_VERTEX } from "./shaders";
 import type { Texture } from "./types";
@@ -93,11 +92,22 @@ export function waterReachData(scene: VistazoScene, piece: Piece & { water: numb
   return { data: reached, x0: gx0, y0: gy0, step, w: gw, h: gh };
 }
 
-/** What a water's surface covers: its zone and two cells round it, on the map (the mask cuts it to its reach). */
+/**
+ * What a water's surface covers: its reach's grid (its zone's box and two cells round it, see
+ * waterReachData), on the map; the mask cuts it to where it reaches. A box, not its outline grown: that
+ * took seconds on an outline of many points (and could go round for ever on a tiny one).
+ */
 export function waterShape(scene: VistazoScene, piece: Piece): MultiPolygon {
+  const xs = piece.shape.flatMap((polygon) => polygon[0].map((p) => p[0]));
+  const ys = piece.shape.flatMap((polygon) => polygon[0].map((p) => p[1]));
+  const margin = scene.dpi * 2;
+  const [x0, y0, x1, y1] = [Math.min(...xs) - margin, Math.min(...ys) - margin, Math.max(...xs) + margin, Math.max(...ys) + margin];
+  if (![x0, y0, x1, y1].every(Number.isFinite)) {
+    return piece.shape;
+  }
+  const box: MultiPolygon = [[[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]]];
   try {
-    const grown = growRings(piece.shape.map((polygon) => polygon[0] as [number, number][]), scene.dpi * 2).map((ring) => [ring]);
-    return polygonClipping.intersection(polygonClipping.union(piece.shape, ...grown), scene.world);
+    return polygonClipping.intersection(box, scene.world);
   } catch {
     // Its zone alone, then.
     return piece.shape;
