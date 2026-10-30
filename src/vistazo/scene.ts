@@ -167,7 +167,12 @@ type Terrain = {
   bridges: Bridge[];
   /** Outlines (scene px) of what keeps its look under slabs: their fill isn't painted there. */
   unfilled?: MultiPolygon[];
+  /** Each map image's (with a relief) first shape's number in the scene (Piece.si, Bridge.si): its own shape i is that + i. */
+  firstShape: Record<string, number>;
 };
+
+/** How far apart each image's shapes are numbered in the scene (see Terrain.firstShape): more than any relief has. */
+const SHAPES_APART = 100000;
 
 /** A bridge or balcony drawn: its outline (scene px), top and underside (grid units), its wall style. */
 /**
@@ -344,6 +349,7 @@ export function buildScene(
     terrainOff: terrain.terrainOff,
     bridges: terrain.bridges,
     unfilled: terrain.unfilled,
+    firstShape: terrain.firstShape,
     dpi,
     scale,
     squareGrid: gridType === "SQUARE",
@@ -407,6 +413,22 @@ function buildTerrain(
   const withRelief = terrainOff ? [] : mapItems.filter((item) => reliefs.has(item.id));
   const clear = sight ? sight.clear(world) : null;
   const parts = withRelief.map((item) => time("scene.reliefTerrain", () => reliefTerrain(reliefs.get(item.id)!, anchorOf(item), dpi, clear, surfaced)));
+  // Each image's shapes numbered apart (the first's as they are): two images' shape 4 aren't the same one.
+  const firstShape: Record<string, number> = {};
+  parts.forEach((part, k) => {
+    const at = k * SHAPES_APART;
+    firstShape[withRelief[k].id] = at;
+    for (const piece of part.pieces) {
+      if (piece.si !== undefined) {
+        piece.si += at;
+      }
+    }
+    for (const bridge of part.bridges) {
+      if (bridge.si !== undefined) {
+        bridge.si += at;
+      }
+    }
+  });
   const pieces: Piece[] = parts.flatMap((part) => part.pieces);
   // The map round the reliefs: plain ground.
   try {
@@ -496,5 +518,6 @@ function buildTerrain(
     terrainOff,
     bridges: parts.flatMap((part) => part.bridges),
     unfilled: parts.flatMap((part) => part.unfilled),
+    firstShape,
   };
 }

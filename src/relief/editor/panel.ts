@@ -115,6 +115,7 @@ export const GENERAL_KEYS: [TranslationKey, TranslationKey][] = [
   ["relief.key.redo", "relief.key.redoDo"],
   ["relief.key.delete", "relief.key.deleteDo"],
   ["relief.key.duplicate", "relief.key.duplicateDo"],
+  ["relief.key.copy", "relief.key.copyDo"],
   ["relief.key.rename", "relief.key.renameDo"],
   ["relief.key.layers", "relief.key.layersDo"],
   ["relief.key.zx", "relief.key.zxDo"],

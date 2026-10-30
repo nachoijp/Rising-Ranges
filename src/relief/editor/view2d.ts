@@ -13,6 +13,9 @@ import { time } from "../../timing";
 // vertices and height points, water, wall pictures, and what's being drawn.
 // Wheel: zoom on the pointer; right or middle button: move the map.
 
+/** The closest the map's zoomed in: screen px a cell. */
+const MAX_ZOOM = 600;
+
 /** A height's tint: blue low, through green, to red high. */
 export const tint = (h: number, alpha: number) => `hsla(${200 - h * 34}, 75%, 50%, ${alpha})`;
 
@@ -220,7 +223,7 @@ export class MapView {
       touches.set(event.pointerId, [sx, sy]);
       if (pinch && touches.size === 2) {
         const [mx, my] = midOf();
-        this.scale = Math.min(200, Math.max(4, (pinch.scale * spread()) / pinch.d));
+        this.scale = Math.min(MAX_ZOOM, Math.max(4, (pinch.scale * spread()) / pinch.d));
         this.ox = mx - pinch.world.x * this.scale;
         this.oy = my - pinch.world.y * this.scale;
         this.redraw();
@@ -313,7 +316,7 @@ export class MapView {
         event.preventDefault();
         const [sx, sy] = local(event);
         const before = this.toWorld(sx, sy);
-        this.scale = Math.min(200, Math.max(4, this.scale * Math.exp(-event.deltaY * 0.0015)));
+        this.scale = Math.min(MAX_ZOOM, Math.max(4, this.scale * Math.exp(-event.deltaY * 0.0015)));
         this.ox = sx - before.x * this.scale;
         this.oy = sy - before.y * this.scale;
         this.redraw();

@@ -2252,7 +2252,9 @@ async function start() {
         const soft = !!moving && moving.shapes.some((si) => (relief.data.shapes[si]?.soft ?? 0) > 0);
         if (lite && moving && !soft && map && scene && (dragging || builtWith === `${reliefs.key}${reliefs.surfaced}`)) {
           const anchor = anchorOf(map);
-          const moved = time("vistazo.moveShapes", () => view.moveShapes(moving.shapes, sceneMap(anchor, dpi, moving.map)));
+          // Its shapes as the scene numbers them (see VistazoScene.firstShape).
+          const at = scene.firstShape[image] ?? 0;
+          const moved = time("vistazo.moveShapes", () => view.moveShapes(moving.shapes.map((si) => si + at), sceneMap(anchor, dpi, moving.map)));
           if (moved === "started") {
             dragging = true;
             time("vistazo.fillUnder", () => view.fillUnder(underShapes(relief, anchor, dpi, moving)));
@@ -2291,7 +2293,14 @@ async function start() {
         soon(!lite ? 0 : view.terrainAway ? 40 : 150);
       },
       scene: () => ({ items, dpi }),
-      onPick: (shapes) => view.highlight(shapes, getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#bb99ff"),
+      // The edited image's shapes, as the scene numbers them (see VistazoScene.firstShape): not another image's of the same number.
+      onPick: (shapes) => {
+        const at = (session && scene?.firstShape[session.imageId]) ?? 0;
+        view.highlight(
+          shapes.map((si) => si + at),
+          getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#bb99ff"
+        );
+      },
       onDone: leaveEdit,
     }, images.some((image) => image.id === asked) ? asked! : undefined);
   }

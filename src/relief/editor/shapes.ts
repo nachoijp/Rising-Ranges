@@ -1,8 +1,9 @@
 import clip from "../../terrain/clip";
-import { area, bbox, centroid, closed, inRing, open } from "../geom";
+import { emptyRelief, fromStored, toStored, type StoredRelief } from "../codec";
+import { area, bbox, centroid, closed, inRing, inShape, open } from "../geom";
 import { compose, quarter, type Layer, type SlabLayer } from "../relief";
 import { corners, standDepth, standSide } from "../stand";
-import type { Pt, Ramp, ReliefData, Shape, ShapeKind, Skin } from "../types";
+import type { HeightPoint, Pt, Ramp, ReliefData, Shape, ShapeKind, Skin, Vert } from "../types";
 import type { ReliefEditor } from "./editor";
 import { pickedGroup } from "./groups";
 
@@ -720,7 +721,10 @@ export function quadOf(ed: ReliefEditor, si: number): Pt[] {
   return own.length === 4 ? own : turnedBox(ring);
 }
 
-/** A copy of the picked shape, a cell aside, picked instead: its own vertices, arrow and relief (moved with it), not kin. */
+/** How far aside a copy's made (cells, right and down): near, not over it. */
+const COPY_ASIDE = 0.25;
+
+/** A copy of the picked shape, a little aside (COPY_ASIDE), picked instead: its own vertices, arrow and relief (moved with it), not kin. */
 export function duplicate(ed: ReliefEditor) {
   if (ed.sel?.kind !== "shape") {
     return;
@@ -733,20 +737,75 @@ export function duplicate(ed: ReliefEditor) {
     loop.map((i) => {
       if (!moved.has(i)) {
         moved.set(i, data.verts.length);
-        data.verts.push({ ...data.verts[i], x: data.verts[i].x + 1, y: data.verts[i].y + 1 });
+        data.verts.push({ ...data.verts[i], x: data.verts[i].x + COPY_ASIDE, y: data.verts[i].y + COPY_ASIDE });
       }
       return moved.get(i)!;
     });
   const copy = copyOf(s, copyLoop(s.ring), s.holes?.map(copyLoop));
   copy.kin = undefined;
   if (s.ramp) {
-    copy.ramp = { ...s.ramp, a: [s.ramp.a[0] + 1, s.ramp.a[1] + 1], b: [s.ramp.b[0] + 1, s.ramp.b[1] + 1] };
+    copy.ramp = { ...s.ramp, a: [s.ramp.a[0] + COPY_ASIDE, s.ramp.a[1] + COPY_ASIDE], b: [s.ramp.b[0] + COPY_ASIDE, s.ramp.b[1] + COPY_ASIDE] };
   }
   if (s.detail) {
-    copy.detail = { m: compose([1, 0, 0, 1, 1, 1], s.detail.m), v: new Map(s.detail.v) };
+    copy.detail = { m: compose([1, 0, 0, 1, COPY_ASIDE, COPY_ASIDE], s.detail.m), v: new Map(s.detail.v) };
   }
   data.shapes.push(copy);
   ed.sel = { kind: "shape", i: data.shapes.length - 1 };
+}
+
+/**
+ * The picked shapes as a relief of their own (as it's kept: see codec), for pasting (see paste): their
+ * vertices, and the height points inside them (an inclined one's); not their groups, nor cut together
+ * with what they were. Null with no shape picked.
+ */
+export function copyShapes(ed: ReliefEditor): StoredRelief | null {
+  if (ed.sel?.kind !== "shape") {
+    return null;
+  }
+  const data = ed.data;
+  const picked = [ed.sel.i, ...(ed.sel.more ?? [])].filter((i) => data.shapes[i]).sort((a, b) => a - b);
+  const verts: Vert[] = [];
+  const at = new Map<number, number>();
+  const own = (loop: number[]) =>
+    loop.map((i) => {
+      if (!at.has(i)) {
+        at.set(i, verts.length);
+        verts.push({ ...data.verts[i] });
+      }
+      return at.get(i)!;
+    });
+  const shapes = picked.map((i) => {
+    const s = data.shapes[i];
+    const copy = copyOf(s, own(s.ring), s.holes?.map(own));
+    copy.kin = undefined;
+    copy.group = undefined;
+    copy.locked = undefined;
+    copy.hidden = undefined;
+    return copy;
+  });
+  const outline = (loop: number[]): Pt[] => loop.map((i) => [data.verts[i].x, data.verts[i].y]);
+  const points: HeightPoint[] = data.points.filter((p) => picked.some((i) => inShape(p.x, p.y, outline(data.shapes[i].ring), (data.shapes[i].holes ?? []).map(outline))));
+  return toStored({ ...emptyRelief(data.w, data.h), verts, shapes, points: points.map((p) => ({ ...p })) });
+}
+
+/** Shapes copied (see copyShapes) added over the rest, where they were (cells), picked. False if there's nothing to paste. */
+export function paste(ed: ReliefEditor, stored: StoredRelief): boolean {
+  const read = fromStored(stored);
+  if (!read || read.shapes.length === 0) {
+    return false;
+  }
+  ed.pushUndo();
+  const data = ed.data;
+  const from = data.verts.length;
+  data.verts.push(...read.verts);
+  const first = data.shapes.length;
+  for (const s of read.shapes) {
+    data.shapes.push({ ...s, ring: s.ring.map((i) => i + from), holes: s.holes?.map((loop) => loop.map((i) => i + from)) });
+  }
+  data.points.push(...read.points);
+  const added = read.shapes.map((_, k) => first + k);
+  ed.sel = { kind: "shape", i: added[added.length - 1], ...(added.length > 1 ? { more: added.slice(0, -1) } : {}) };
+  return true;
 }
 
 /** Two layers' places swapped (the one picked stays picked). */

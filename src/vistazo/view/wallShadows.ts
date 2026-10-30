@@ -41,11 +41,26 @@ export function wallShadowBuffers(
     // Walls facing apart (a thin wall's two sides): its own way.
     return length < 0.5 ? [wall.nx, wall.ny] : [sx / length, sy / length];
   };
+  // In an inner bend a strip's far edge is shorter than its wall, and gone at some reach: tighter than
+  // the shadow's (a small shape's notch), the strips there cross over one another and show as thin dark
+  // spikes. They reach only almost that far there; at each end the least of the strips meeting there
+  // (the next one's far corner the same: no light gap between them).
+  const ends = new Map<string, number>();
+  for (const wall of inside) {
+    const [na, nb] = [out(wall.ax, wall.ay, wall), out(wall.bx, wall.by, wall)];
+    const [ex, ey] = [(wall.bx - wall.ax) * u, (wall.by - wall.ay) * u];
+    const closing = (nb[0] - na[0]) * ex + (nb[1] - na[1]) * ey;
+    const r = closing < 0 ? Math.min(reach, (-(ex * ex + ey * ey) / closing) * 0.9) : reach;
+    for (const at of [key(wall.ax, wall.ay), key(wall.bx, wall.by)]) {
+      ends.set(at, Math.min(ends.get(at) ?? reach, r));
+    }
+  }
   inside.forEach((wall, i) => {
     const [ax, ay, bx, by] = [wall.ax * u, wall.ay * u, wall.bx * u, wall.by * u];
     const [nax, nay] = out(wall.ax, wall.ay, wall);
     const [nbx, nby] = out(wall.bx, wall.by, wall);
-    const [cx, cy, dx, dy] = [ax + nax * reach, ay + nay * reach, bx + nbx * reach, by + nby * reach];
+    const [ra, rb] = [ends.get(key(wall.ax, wall.ay)) ?? reach, ends.get(key(wall.bx, wall.by)) ?? reach];
+    const [cx, cy, dx, dy] = [ax + nax * ra, ay + nay * ra, bx + nbx * rb, by + nby * rb];
     const za = wall.b0 * k + 0.4;
     const zb = wall.b1 * k + 0.4;
     // Its far edge down on the ground there where that falls away (a slope: level with the

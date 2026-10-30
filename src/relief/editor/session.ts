@@ -1,6 +1,6 @@
 import type { Image, Item } from "@owlbear-rodeo/sdk";
 import { anchorOf, reliefSize } from "../anchor";
-import { emptyRelief, fromStored, toStored } from "../codec";
+import { emptyRelief, fromStored, toStored, type StoredRelief } from "../codec";
 import type { Box } from "../geom";
 import { Relief } from "../relief";
 import { backupsOf, keepBackup } from "../backups";
@@ -33,7 +33,7 @@ import {
   type T,
 } from "./panel";
 import { groupPicked, nameGroups, ungroup } from "./groups";
-import { duplicate, nameShapes, setType, swap } from "./shapes";
+import { copyShapes, duplicate, nameShapes, paste, setType, swap } from "./shapes";
 import { installSplit } from "./split";
 import { MapView } from "./view2d";
 import { time } from "../../timing";
@@ -47,6 +47,8 @@ import { time } from "../../timing";
 
 const SETTINGS_KEY = "rising-ranges/relief-editor/settings";
 const FOLDS_KEY = "rising-ranges/relief-editor/folds";
+/** Shapes copied (Ctrl+C), kept on this device: pasted on another image too, or the next time. */
+const CLIP_KEY = "rising-ranges/relief-editor/clipboard";
 /** How long after the last change the relief is saved (ms): it goes to every client, not at every stroke. */
 const SAVE_AFTER = 2000;
 /** The picture's size for the map view (px across): enough to trace on. */
@@ -183,7 +185,11 @@ const sizeOf = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)} M
  * `before`: the images changed earlier in this editing (another picked in the dropdown, theirs saved),
  * each as it was when editing began (null: none), for the X to put back too.
  */
-export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "", before = new Map<string, string | null>()): EditSession {
+/**
+ * The editor on a map image. `into`: the session object to fill (another image picked: the one the Vistazo
+ * holds, so its keys, pointer and redraws reach this one, not the one left).
+ */
+export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "", before = new Map<string, string | null>(), into?: EditSession): EditSession {
   const { t, root } = o;
   const image = o.images.find((i) => i.id === imageId) ?? o.images[0];
   const [w, h] = reliefSize(anchorOf(image));
@@ -604,6 +610,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
           redo();
         },
       },
+      { icon: "duplicate", label: t("relief.menu.copy"), key: "Ctrl+C", run: copy },
       { icon: "rename", label: t("relief.menu.rename"), key: "F2", run: () => setTimeout(focusName, 0) },
       "-",
       {
@@ -893,8 +900,35 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       before.set(image.id, original);
     }
     session.stop();
-    Object.assign(session, startEditing(o, next, before));
+    startEditing(o, next, before, session);
+    // The choice's list went with the editor it was in: the keys to the new one's map (else they'd go
+    // nowhere it hears, to the browser).
+    o.map.focus({ preventScroll: true });
   };
+
+  // Copy and paste: the picked shapes kept on this device (see copyShapes), added where they were.
+  function copy() {
+    const copied = copyShapes(editor);
+    if (copied) {
+      keepJson(CLIP_KEY, copied);
+      notice(t(copied.shapes.length > 1 ? "relief.copied" : "relief.copiedOne"));
+    }
+  }
+  function pasteCopied(): boolean {
+    let stored: StoredRelief | null = null;
+    try {
+      stored = JSON.parse(localStorage.getItem(CLIP_KEY) ?? "null") as StoredRelief | null;
+    } catch {
+      return false;
+    }
+    if (!stored || !paste(editor, stored)) {
+      return false;
+    }
+    editor.changed();
+    editor.host.showProps();
+    editor.host.redraw();
+    return true;
+  }
 
   // The keys, all of them (the "?").
   function toggleHelp() {
@@ -907,7 +941,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   panel();
   o.onRelief(image.id, editor.relief, false);
 
-  session = {
+  session = Object.assign(into ?? ({} as EditSession), {
     imageId: image.id,
     brush: {
       active: () => editor.isBrush(),
@@ -947,6 +981,13 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       }
       if (ctrl && event.code === "KeyZ") {
         editor.undo();
+        return true;
+      }
+      if (ctrl && event.code === "KeyC" && !event.shiftKey && editor.sel?.kind === "shape") {
+        copy();
+        return true;
+      }
+      if (ctrl && event.code === "KeyV" && pasteCopied()) {
         return true;
       }
       const sel = editor.sel;
@@ -1015,6 +1056,6 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       map.dispose();
       pieces.remove();
     },
-  };
+  } satisfies EditSession);
   return session;
 }
