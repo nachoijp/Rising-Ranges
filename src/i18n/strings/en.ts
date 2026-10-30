@@ -539,6 +539,7 @@ const en: Record<TranslationKey, string> = {
   "vistazo.less": "Less",
   "vistazo.more": "More",
   "relief.noMaps": "There's no image on the Map layer to edit a relief for.",
+  "relief.newerVersion": "This map's relief was made by a newer version of Rising Ranges: update it to edit it.",
   "relief.oldZones": "This scene has terrain in the old format, which isn't measured anymore. Bring it in from the 3D Glance: Edit relief → ⋯ → Bring zones.",
   "relief.import": "Import",
   "relief.zones": "Bring zones",

@@ -392,7 +392,7 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
  * answered and every one of them has come (they follow the index, in parts:
  * before that, an editor would start from nothing).
  */
-export function watchReliefs(onRelief: (image: string, data: ReliefData | null) => void, onIndex?: (images: string[]) => void): () => void {
+export function watchReliefs(onRelief: (image: string, data: ReliefData | null, unreadable?: boolean) => void, onIndex?: (images: string[]) => void): () => void {
   let known = false;
   /** The images of the index not come yet. */
   let waiting: Set<string> | null = null;
@@ -418,7 +418,9 @@ export function watchReliefs(onRelief: (image: string, data: ReliefData | null) 
         } else {
           have.delete(image);
         }
-        onRelief(image, text ? fromStored(JSON.parse(text)) : null);
+        const data = text ? fromStored(JSON.parse(text)) : null;
+        // There, but not one this version can read (a newer one's): told so, not as none.
+        onRelief(image, data, !!text && !data);
       }
       waiting?.delete(image);
       complete();

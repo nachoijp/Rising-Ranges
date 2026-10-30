@@ -2131,10 +2131,18 @@ async function start() {
   // The reliefs kept on this device (the relief editor's), from the background page: where there's one,
   // its map image's terrain is the relief's (see relief/vistazo.ts).
   let reliefVersion = 0;
+  /** Map images whose relief this version can't read (a newer one's): not edited here (it'd start from nothing and save over it). */
+  const unreadableReliefs = new Set<string>();
   /** The background has answered: the reliefs kept here are all known (editing can't start before, or it'd start from nothing). */
   let reliefsKnown = false;
   watchReliefs(
-    (image, data) => {
+    (image, data, unreadable) => {
+      if (unreadable) {
+        unreadableReliefs.add(image);
+        console.warn("Rising Ranges: a map image's relief was made by a newer version of the extension: it's left as it is, not edited here");
+      } else {
+        unreadableReliefs.delete(image);
+      }
       // The one being edited is the editor's: what comes back is its own save.
       if (session?.imageId === image) {
         return;
@@ -2212,10 +2220,10 @@ async function start() {
         .finally(() => $("reliefEdit").classList.remove("waiting"));
       return;
     }
-    const images = mapImages();
+    const images = mapImages().filter((image) => !unreadableReliefs.has(image.id));
     if (images.length === 0) {
       // Nothing to edit: said, and back where it was opened from (the panel), not left on an empty screen.
-      void OBR.notification.show(t("relief.noMaps"), "WARNING");
+      void OBR.notification.show(t(unreadableReliefs.size > 0 ? "relief.newerVersion" : "relief.noMaps"), "WARNING");
       if (backToPanel) {
         leaveFull();
       }

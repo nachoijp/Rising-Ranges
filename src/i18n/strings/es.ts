@@ -534,6 +534,7 @@ const es = {
   "vistazo.less": "Menos",
   "vistazo.more": "Más",
   "relief.noMaps": "No hay ninguna imagen en la capa Mapa para editar su relieve.",
+  "relief.newerVersion": "El relieve de este mapa se hizo con una versión más nueva de Rising Ranges: actualizala para editarlo.",
   "relief.oldZones": "Esta escena tiene terreno del formato anterior, que ya no se mide. Traelo desde el Vistazo 3D: Editar relieve → ⋯ → Traer zonas.",
   "relief.import": "Importar",
   "relief.zones": "Traer zonas",
