@@ -53,6 +53,8 @@ export type Shape = {
   ramp?: Ramp;
   /** A soft edge: its height fades into what's round it over this width (cells). */
   soft?: number;
+  /** Which of its outlines the soft edge is on: its outer one, its holes' (none: all). The others, a wall. */
+  softOn?: "outline" | "holes";
   slab?: number;
   /**
    * What a slab has under it in 3D, in place of its drawing on the map: the

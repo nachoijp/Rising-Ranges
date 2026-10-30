@@ -43,6 +43,8 @@ export type Layer = {
   ring: Pt[];
   holes: Pt[][];
   loops: Pt[][];
+  /** Which of its loops (as `loops`: its outline, then its holes) its soft edge is on. */
+  softLoops: boolean[];
   box: Box;
   /** Its box with its soft edge round it. */
   outer: Box;
@@ -159,9 +161,9 @@ export class Relief {
         continue;
       }
       if (layer.soft > 0 && inBox(layer.outer, x, y)) {
-        // Its edge's nearest point: round it, or in a hole.
-        const near = nearestOnLoops(layer.loops, x, y);
-        if (near.d < layer.soft) {
+        // Its edge's nearest point: round it, or in a hole (on a soft one of its outlines).
+        const near = softEdge(layer, x, y);
+        if (near && near.d < layer.soft) {
           // Its edge's height, fading over the width into what's there.
           const u = 1 - near.d / layer.soft;
           h += (this.edgeHeight(layer, near.x, near.y) - h) * u * u * (3 - 2 * u);
@@ -188,8 +190,8 @@ export class Relief {
       // On its outline is its edge, not under it (a neighbour's corner there, a hair either side of it
       // as it's worked out: some taken in, some left at what's under, would show as teeth along it).
       const inside = covers(layer, x, y);
-      const edge = nearestOnLoops(layer.loops, x, y);
-      if (inside && edge.d > ON_EDGE) {
+      const edge = softEdge(layer, x, y);
+      if (!edge || (inside && edge.d > ON_EDGE)) {
         continue;
       }
       if (edge.d < layer.soft) {
@@ -318,6 +320,7 @@ export class Relief {
           ring,
           holes,
           loops,
+          softLoops: loops.map((_, k) => (k === 0 ? s.softOn !== "holes" : s.softOn !== "outline")),
           box,
           outer: { x0: box.x0 - soft, y0: box.y0 - soft, x1: box.x1 + soft, y1: box.y1 + soft },
           soft,
@@ -564,6 +567,23 @@ export function nearestOnRing(ring: Pt[], x: number, y: number): { x: number; y:
     }
   }
   return { x: bestX, y: bestY, d: Math.hypot(bestX - x, bestY - y) };
+}
+
+/**
+ * A layer's soft edge's nearest point to (x, y): its outlines' nearest, if that one's soft (see
+ * Shape.softOn); none if a hard one's nearer (a thin shape's other side: not faded through it).
+ */
+export function softEdge(layer: Layer, x: number, y: number): { x: number; y: number; d: number } | null {
+  let best: { x: number; y: number; d: number } | null = null;
+  let soft = false;
+  layer.loops.forEach((loop, k) => {
+    const near = nearestOnRing(loop, x, y);
+    if (!best || near.d < best.d) {
+      best = near;
+      soft = layer.softLoops[k];
+    }
+  });
+  return soft ? best : null;
 }
 
 /** The point nearest to (x, y) on any of some outlines, and how far it is. */

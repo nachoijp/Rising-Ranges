@@ -393,7 +393,7 @@ export class MapView {
     ctx.lineJoin = "round";
     for (const layer of r.layers) {
       if (layer.soft > 0) {
-        this.path(layer.loops);
+        this.path(layer.loops.filter((_, k) => layer.softLoops[k]));
         ctx.strokeStyle = C.halo;
         ctx.lineWidth = layer.soft * 2 * this.scale;
         ctx.stroke();

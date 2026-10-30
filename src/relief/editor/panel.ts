@@ -1098,6 +1098,8 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
     `<span class="l"></span><label class="check" ${tip(t("relief.shape.keepLook"), t("relief.shape.keepLookHint"))}><input type="checkbox" data-k="keepLook" ${s.keepLook ? "checked" : ""} /> ${esc(t("relief.shape.keepLook"))}</label>`,
     s.slab || s.stand ? "" : `<span class="l" ${tip(t("relief.shape.water"), t("relief.shape.waterHint"))}>${esc(t("relief.shape.water"))}</span><span class="line">${stepper(numField("water", t("relief.shape.water"), 0, 20), "water", 0.25, t)}</span>`,
     s.slab || s.stand ? "" : `<span class="l" ${tip(t("relief.shape.edge"), t("relief.shape.edgeHint"))}>${esc(t("relief.shape.edge"))}</span>${edgeSlider(t, "soft")}`,
+    // With holes: which of its outlines the soft edge is on (the others, a wall).
+    s.slab || s.stand || !s.holes?.length ? "" : `<span class="l" ${tip(t("relief.shape.softOn"), t("relief.shape.softOnHint"))}>${esc(t("relief.shape.softOn"))}</span><select class="field" data-k="softOn" aria-label="${esc(t("relief.shape.softOn"))}">${(["", "outline", "holes"] as const).map((v) => `<option value="${v}" ${(s.softOn ?? "") === v ? "selected" : ""}>${esc(t(`relief.softOn.${v || "all"}` as TranslationKey))}</option>`).join("")}</select>`,
   ].join("");
   el.innerHTML = `
     <div class="head"><button type="button" class="chev${folded.body ? " closed" : ""}" data-fold="body" ${tip(t(folded.body ? "relief.unfold" : "relief.fold"))}>${icon("expand")}</button><input class="name" data-k="name" maxlength="${NAME_MAX}" autocomplete="off" value="${esc(s.name ?? "")}" placeholder="${esc(t("relief.shape.name", { n: si + 1 }))}" ${tip(t("relief.shape.nameHint"), "", "F2")} />${deleteButton(t)}</div>
@@ -1115,7 +1117,6 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
         <button type="button" class="shead" data-fold="look" aria-expanded="${!folded.look}"><span class="chev${folded.look ? " closed" : ""}">${icon("expand")}</span>${esc(t("relief.look"))}</button>
         <div class="rows" ${folded.look ? "hidden" : ""}>${look}</div>
       </div>` : ""}
-      ${s.holes?.length ? `<p class="muted small">${esc(s.holes.length === 1 ? t("relief.shape.hole") : t("relief.shape.holes", { n: s.holes.length }))}</p>` : ""}
     </div>`;
   const redo = () => {
     ed.changed();
@@ -1187,6 +1188,14 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
       ed.softened(si, Math.max(before, v));
     };
     soft.onchange = () => ed.changed();
+  }
+  const softOn = el.querySelector<HTMLSelectElement>('[data-k="softOn"]');
+  if (softOn) {
+    softOn.onchange = () => {
+      ed.pushUndo();
+      s.softOn = (softOn.value || undefined) as Shape["softOn"];
+      ed.changed();
+    };
   }
   const wallLook = el.querySelector<HTMLSelectElement>('[data-k="wall"]');
   if (wallLook) {
