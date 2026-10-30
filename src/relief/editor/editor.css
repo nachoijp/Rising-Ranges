@@ -1149,6 +1149,12 @@
 .re-ui.re-tighter .re-help {
   display: none;
 }
+.re-ui.re-tightest [data-k="redo"] {
+  display: none;
+}
+.re-ui.re-tightest .done {
+  padding: 0 6px;
+}
 /* The options in a bar of their own: the rest of the top bar at its right end. */
 .re-ui.re-wrapped .re-top .re-help {
   margin-left: auto;

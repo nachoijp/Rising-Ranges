@@ -317,13 +317,17 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     if (el.parentElement !== top) {
       top.insertBefore(el, $("help"));
     }
-    // The top bar itself, when even its own buttons don't fit: no separators, then the "?" in "⋯".
-    pieces.classList.remove("re-tight", "re-tighter");
+    // The top bar itself, when even its own buttons don't fit: no separators, then the "?" in "⋯",
+    // then redo too (Done never cut off: the X beside it throws the changes away).
+    pieces.classList.remove("re-tight", "re-tighter", "re-tightest");
     const over = () => top.scrollWidth > top.clientWidth + 1;
     if (over()) {
       pieces.classList.add("re-tight");
       if (over()) {
         pieces.classList.add("re-tighter");
+        if (over()) {
+          pieces.classList.add("re-tightest");
+        }
       }
     }
     $("optbar").hidden = true;
@@ -808,6 +812,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
             { icon: "heights", label: map.showHeights ? `${t("relief.heights")} ✓` : t("relief.heights"), run: () => $("heights").click() },
             { icon: "magnet", label: editor.settings.grid ? `${t("relief.grid")} ✓` : t("relief.grid"), run: () => $("grid").click() },
             ...(pieces.classList.contains("re-tighter") ? [{ label: t("relief.shortcuts"), key: "?", run: toggleHelp }] : []),
+            ...(pieces.classList.contains("re-tightest") ? [{ icon: "redo" as const, label: t("relief.redo"), key: "Ctrl+Y", run: () => editor.redo() }] : []),
             "-",
           ]
         : [];
