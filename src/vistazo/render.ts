@@ -1125,6 +1125,12 @@ export class VistazoView {
     } else if (this.scene?.terrainKey === answer.terrainKey) {
       this.useTerrain(answer.terrain, want);
       this.packedWalls = answer.walls;
+    } else {
+      // Still what's wanted, yet built from another scene than the page's (the worker can't make the
+      // same one from what it's sent): asked again, it'd answer the same, for ever. Worked out here.
+      console.warn("Rising Ranges: 3D Glance's terrain worker built another scene, working it out on the page");
+      this.build(true);
+      return;
     }
     this.build();
   }
