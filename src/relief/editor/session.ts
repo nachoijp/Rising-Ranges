@@ -406,6 +406,14 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     clearTimeout(saveTimer);
     saveTimer = setTimeout(saveNow, SAVE_AFTER);
   };
+  // Its window closing (the Vistazo closed, the scene changed) with a change still waiting: sent now, not
+  // lost (the background keeps it only if its map's still in the scene: see startReliefService).
+  const leaving = () => {
+    if (saveTimer) {
+      saveNow();
+    }
+  };
+  window.addEventListener("pagehide", leaving);
   // Only the answer to the last save counts: an older one's (replaced while it was written) isn't told.
   const stopWatching = onSaved((id, save, ok) => {
     if (id === image.id && save === sent) {
@@ -1052,7 +1060,12 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       toolsEnd.disconnect();
       o.onPick?.([]);
       document.removeEventListener("pointerdown", outside, true);
+      window.removeEventListener("pagehide", leaving);
       clearTimeout(toastTimer);
+      clearTimeout(exitArmed);
+      // What was to be drawn of it at the next frame (its panel, its list): not, it's gone.
+      cancelAnimationFrame(frame);
+      cancelAnimationFrame(listFrame);
       map.dispose();
       pieces.remove();
     },

@@ -73,6 +73,15 @@ export class Relief {
   private rasters = new Map<string, Raster>();
   private deriving = false;
   private kin: string | undefined;
+  /** The terrain under it, of the map images below its own (see stack.ts); none for the lowest. */
+  private under: ((x: number, y: number) => number) | null = null;
+  /** What `under` was worked out from (a change, and its shapes are worked out again over the new one). */
+  underKey = "";
+  /**
+   * Nothing on its ground of its own (none painted, no soft edge): there, over another image's relief,
+   * it's that one's (see stack.ts), not 0; only its shapes are its own.
+   */
+  clear = true;
 
   constructor(data: ReliefData) {
     this.data = data;
@@ -86,8 +95,32 @@ export class Relief {
 
   // ---------- Heights ----------
 
-  /** The painted ground, between its points. */
+  /** Whether its ground is the terrain under it (see clear, stack.ts): over another image's relief, none of its own. */
+  get seeThrough(): boolean {
+    return this.clear && this.under !== null;
+  }
+
+  /** The terrain under it from now on (see stack.ts), its shapes worked out again over it if `key` says it changed. */
+  setUnder(under: ((x: number, y: number) => number) | null, key: string) {
+    if (key === this.underKey) {
+      return;
+    }
+    this.under = under;
+    this.underKey = key;
+    this.derive();
+  }
+
+  /** Whether a shape of its own (not a slab) covers a point. */
+  covered(x: number, y: number): boolean {
+    const near = this.deriving || !this.buckets ? this.layers : (this.buckets.get(bucketKey(x, y)) ?? []);
+    return near.some((layer) => covers(layer, x, y));
+  }
+
+  /** The painted ground, between its points (see-through: the terrain under it). */
   relief(x: number, y: number): number {
+    if (this.under && this.clear) {
+      return this.under(x, y);
+    }
     const g = this.data.ground;
     const u = Math.min(this.gw - 1, Math.max(0, x / G));
     const v = Math.min(this.gh - 1, Math.max(0, y / G));
@@ -257,6 +290,7 @@ export class Relief {
   /** Each shape worked out on top of the ones before it (so "over what's under it" means them too). */
   derive() {
     this.version++;
+    this.clear = !this.data.ground.some((v) => v !== 0) && !this.data.shapes.some((s) => (s.soft ?? 0) > 0);
     this.layers = [];
     this.slabLayers = [];
     this.pieces = [];

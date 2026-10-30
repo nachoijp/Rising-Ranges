@@ -16,6 +16,7 @@ import { anchorOf } from "../relief/anchor";
 import type { Relief } from "../relief/relief";
 import type { UnderLook } from "../relief/types";
 import { reliefTerrain } from "../relief/vistazo";
+import { stackReliefs } from "../relief/stack";
 import { time } from "../timing";
 
 // What the Vistazo draws, read from the scene: the map images where they
@@ -412,6 +413,8 @@ function buildTerrain(
   }
   const withRelief = terrainOff ? [] : mapItems.filter((item) => reliefs.has(item.id));
   const clear = sight ? sight.clear(world) : null;
+  // Each over those under it (see stack.ts): a prop's relief stands on the map's.
+  stackReliefs(withRelief.map((item) => ({ id: item.id, relief: reliefs.get(item.id)!, anchor: anchorOf(item) })), dpi);
   const parts = withRelief.map((item) => time("scene.reliefTerrain", () => reliefTerrain(reliefs.get(item.id)!, anchorOf(item), dpi, clear, surfaced)));
   // Each image's shapes numbered apart (the first's as they are): two images' shape 4 aren't the same one.
   const firstShape: Record<string, number> = {};

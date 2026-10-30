@@ -92,6 +92,7 @@ export class MapView {
   private fitted = false;
   private listening = new AbortController();
   private resize: ResizeObserver;
+  private disposed = false;
 
   constructor(canvas: HTMLCanvasElement, editor: ReliefEditor, texts: ViewTexts) {
     this.canvas = canvas;
@@ -113,6 +114,7 @@ export class MapView {
 
   /** Its listeners off the canvas (another view may take it). */
   dispose() {
+    this.disposed = true;
     this.listening.abort();
     this.resize.disconnect();
     cancelAnimationFrame(this.frame);
@@ -138,7 +140,8 @@ export class MapView {
 
   /** Drawn again at the next frame (once, however many times it's asked). */
   redraw() {
-    if (this.frame) {
+    // Let go (another image's view has the canvas): asked by something left over, nothing drawn.
+    if (this.frame || this.disposed) {
       return;
     }
     this.frame = requestAnimationFrame(() => {

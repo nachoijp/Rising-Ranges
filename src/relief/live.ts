@@ -5,6 +5,7 @@ import { mapAnchors, reliefZones } from "./measure";
 import { area, inShape, type Box } from "./geom";
 import { Relief } from "./relief";
 import type { Pt } from "./types";
+import { stackReliefs, type Stacked } from "./stack";
 import { startReliefService } from "./store";
 
 // The background page's reliefs, worked out: one a map image of the room,
@@ -108,11 +109,13 @@ function lie(height: (x: number, y: number) => number, ring: Pt[], holes: Pt[][]
  */
 export function reliefShapes(): (TerrainShape & { follow: string })[] {
   const shapes: (TerrainShape & { follow: string })[] = [];
-  for (const [id, relief] of reliefs) {
-    const anchor = anchors.get(id);
-    if (!anchor) {
-      continue;
-    }
+  // The one on top first, each over those under it (see stack.ts).
+  const stack: Stacked[] = [...anchors].flatMap(([id, anchor]) => {
+    const relief = reliefs.get(id);
+    return relief ? [{ id, relief, anchor }] : [];
+  });
+  stackReliefs(stack, dpi);
+  for (const { id, relief, anchor } of stack.reverse()) {
     const toScene = ([x, y]: Pt): [number, number] => {
       const p = cellToScene(anchor, dpi, x, y);
       return [p.x, p.y];

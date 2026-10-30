@@ -699,17 +699,18 @@ function underBox(ui: HTMLElement): HTMLElement {
     box.className = "re-under glass";
     box.hidden = true;
     ui.append(box);
-    // A press anywhere else, or Esc, closes it.
-    document.addEventListener(
-      "pointerdown",
-      (event) => {
-        const target = event.target as Element | null;
-        if (!box!.hidden && !box!.contains(target) && !target?.closest?.("[data-under]")) {
-          closeUnder(ui);
-        }
-      },
-      true
-    );
+    // A press anywhere else, or Esc, closes it. Its editor gone (another image's taken its place), let go.
+    const outside = (event: PointerEvent) => {
+      if (!ui.isConnected) {
+        document.removeEventListener("pointerdown", outside, true);
+        return;
+      }
+      const target = event.target as Element | null;
+      if (!box!.hidden && !box!.contains(target) && !target?.closest?.("[data-under]")) {
+        closeUnder(ui);
+      }
+    };
+    document.addEventListener("pointerdown", outside, true);
     box.addEventListener("keydown", (event) => {
       if (event.key === "Escape" || event.key === "Enter") {
         event.stopPropagation();

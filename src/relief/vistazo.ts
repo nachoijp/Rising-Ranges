@@ -61,9 +61,11 @@ export function reliefTerrain(
   const NEAR = 0.01;
   const visible = (x: number, y: number) =>
     !clear || inScene(x, y, clear) || inScene(x + NEAR, y, clear) || inScene(x - NEAR, y, clear) || inScene(x, y + NEAR, clear) || inScene(x, y - NEAR, clear);
+  // Over another image's relief with no ground of its own (see stack.ts): only its shapes are its own.
+  const see = relief.seeThrough;
   const heightAt = (x: number, y: number): number | undefined => {
     const [cx, cy] = sceneToCell(anchor, dpi, x, y);
-    if (cx < 0 || cy < 0 || cx > w || cy > h) {
+    if (cx < 0 || cy < 0 || cx > w || cy > h || (see && !relief.covered(cx, cy))) {
       return undefined;
     }
     return visible(x, y) ? relief.evaluate(cx, cy) : 0;
@@ -214,7 +216,7 @@ export function reliefTerrain(
       console.error("Rising Ranges: 3D Glance couldn't cut the relief's ground to the fog", error);
     }
   }
-  if (groundScene.length > 0) {
+  if (groundScene.length > 0 && !see) {
     pieces.unshift({ height: 0, shape: groundScene, surface: plainGround && !clear && !surfaced ? undefined : surfaceOf(null) });
   }
   // Slabs: bridges over the terrain (a slab's top as its middle has it; one that isn't flat, at each point too).
@@ -261,7 +263,17 @@ export function reliefTerrain(
     const [ring, holes] = relief.coordsOf(s);
     return [sceneOf([[closed(ring), ...holes.map(closed)]])];
   });
-  return { pieces, bridges, area, heightAt, unfilled };
+  // See-through: what it has of the scene is its shapes (the ground there's the image's under it).
+  let own = area;
+  if (see) {
+    try {
+      const shapes = above.map((o): Pt[][][] => [o.polygon]);
+      own = shapes.length > 0 ? sceneOf(clip.intersection(bounds, clip.union(shapes[0], ...shapes.slice(1))) as Pt[][][]) : [];
+    } catch (error) {
+      console.error("Rising Ranges: 3D Glance couldn't work out a relief's shapes' outline", error);
+    }
+  }
+  return { pieces, bridges, area: own, heightAt, unfilled };
 }
 
 /** A picture's points in the scene, as the Vistazo has them. */

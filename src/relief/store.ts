@@ -150,6 +150,8 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
 
   // Reading: one pass at a time, of the newest items.
   let latest: Item[] | null = null;
+  /** The scene's items, as last told (what a save may be for: see saved). */
+  let inScene = new Set<string>();
   let reading = false;
   const read = async () => {
     if (reading) {
@@ -225,6 +227,7 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
   };
   const take = (items: Item[]) => {
     latest = items;
+    inScene = new Set(items.map((item) => item.id));
     void read();
   };
 
@@ -311,6 +314,12 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
       answer(image, id, false);
       return;
     }
+    // Its map image not in this scene (a save sent as the scene changed, its editor closing): not written
+    // here, where it'd be a relief of nothing.
+    if (!inScene.has(image)) {
+      answer(image, id, false);
+      return;
+    }
     // A save still waiting is replaced by this newer one (its editor only waits for the answer to its last).
     toWrite.set(image, { text, id });
     void write();
@@ -360,6 +369,7 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
     }
     // Another scene: none of these (the windows told, see watchReliefs' index).
     ready = false;
+    inScene = new Set();
     seen = null;
     mine.clear();
     for (const image of [...texts.keys()]) {
