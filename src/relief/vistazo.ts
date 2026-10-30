@@ -194,12 +194,23 @@ export function reliefTerrain(
     console.error("Rising Ranges: 3D Glance couldn't cut the relief's ground", error);
   }
   const plainGround = relief.data.ground.every((v) => v === 0) && !relief.layers.some((layer) => layer.soft > 0);
-  // Under the fog: each shape's piece cut to what's clear, the ground taking the rest, flat there.
+  // Under the fog: each shape's piece cut to what's clear, the ground taking the rest, flat there. Its own
+  // ground cut to what's clear and the hidden part added (not the map less the pieces cut: the cuts move
+  // their sides a hair, and what's left between them would be slivers of ground at its foot, as teeth).
+  // Nothing hidden (no fog over it): as it is.
   let groundScene = sceneOf(ground);
+  let hidden: MultiPolygon = [];
   if (clear) {
+    try {
+      hidden = clip.difference(area, clear);
+    } catch (error) {
+      console.error("Rising Ranges: 3D Glance couldn't work out what the fog hides of the relief", error);
+    }
+  }
+  if (hidden.length > 0) {
     for (let i = pieces.length - 1; i >= 0; i--) {
       try {
-        const kept = clip.intersection(pieces[i].shape, clear);
+        const kept = clip.intersection(pieces[i].shape, clear!);
         if (kept.length > 0) {
           pieces[i].shape = kept;
         } else {
@@ -210,14 +221,14 @@ export function reliefTerrain(
       }
     }
     try {
-      const taken = pieces.map((piece) => piece.shape);
-      groundScene = taken.length > 0 ? clip.difference(area, ...taken) : area;
+      const seen = groundScene.length > 0 ? clip.intersection(groundScene, clear!) : [];
+      groundScene = seen.length > 0 ? clip.union(seen, hidden) : hidden;
     } catch (error) {
       console.error("Rising Ranges: 3D Glance couldn't cut the relief's ground to the fog", error);
     }
   }
   if (groundScene.length > 0 && !see) {
-    pieces.unshift({ height: 0, shape: groundScene, surface: plainGround && !clear && !surfaced ? undefined : surfaceOf(null) });
+    pieces.unshift({ height: 0, shape: groundScene, surface: plainGround && hidden.length === 0 && !surfaced ? undefined : surfaceOf(null) });
   }
   // Slabs: bridges over the terrain (a slab's top as its middle has it; one that isn't flat, at each point too).
   const bridges: Bridge[] = (within ? [] : relief.slabLayers.filter((layer) => !skip?.has(layer.si))).flatMap((layer) => {
