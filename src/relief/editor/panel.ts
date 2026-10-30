@@ -974,9 +974,9 @@ export function renderProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: n
   }
 }
 
-/** The height row: −½, the number (its measure under it), +½. */
+/** The height row: −¼, the number (its measure under it), +¼. */
 const heightRow = (t: T, value: string, measure: string) =>
-  `<div class="height"><button type="button" class="ib sm" data-step="-0.5" ${tip(t("relief.down"), "", "X")}>${icon("minus")}</button><span class="num">${value}<span class="unit">${esc(measure)}</span></span><button type="button" class="ib sm" data-step="0.5" ${tip(t("relief.up"), "", "Z")}>${icon("plus")}</button></div>`;
+  `<div class="height"><button type="button" class="ib sm" data-step="-0.25" ${tip(t("relief.down"), "", "X")}>${icon("minus")}</button><span class="num">${value}<span class="unit">${esc(measure)}</span></span><button type="button" class="ib sm" data-step="0.25" ${tip(t("relief.up"), "", "Z")}>${icon("plus")}</button></div>`;
 
 function bindSteps(el: HTMLElement, ed: ReliefEditor) {
   for (const button of el.querySelectorAll<HTMLButtonElement>("[data-step]")) {

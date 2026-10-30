@@ -2286,8 +2286,9 @@ async function start() {
         brushed = null;
         reliefs.key = String(++reliefVersion);
         // Its terrain worked out away from the page (see terrainJob): drawn again as often as it can be
-        // during a drag (the worker takes only the last asked), not a few times a second.
-        soon(lite && view.terrainAway ? 40 : 150);
+        // during a drag (the worker takes only the last asked), not a few times a second. A change made
+        // at once (a height, a vertex let go): drawn at once, not after a wait.
+        soon(!lite ? 0 : view.terrainAway ? 40 : 150);
       },
       scene: () => ({ items, dpi }),
       onPick: (shapes) => view.highlight(shapes, getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#bb99ff"),

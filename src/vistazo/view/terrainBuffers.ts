@@ -63,12 +63,14 @@ export function computeTerrain(scene: VistazoScene, base: number, c: TerrainCont
     grid,
     walls: list,
     wallSets: timed("wallSets", () => wallBuffers(list, { u: c.u, k: c.k, shade: c.shade, levels: c.levels, box: c.texture, colors: c.colors })),
-    ...(lite ? {} : { shadows: wallShadowBuffers(list, scene.heightAt, { u: c.u, k: c.k, relief: c.relief }) }),
+    ...(lite ? {} : { shadows: timed("shadows", () => wallShadowBuffers(list, scene.heightAt, { u: c.u, k: c.k, relief: c.relief })) }),
     pieces: timed("pieces", () => scene.pieces.map((piece) => pieceBuffers(piece, { u: c.u, k: c.k, uvBox: c.uvBox, texture: c.texture, colors: c.colors, fine, coarse }))),
-    undersides: scene.bridges.map((bridge) => (bridge.under === "keep" ? null : undersideBuffers(scene, bridge, c.k))),
-    water: scene.pieces
-      .filter((piece): piece is Piece & { water: number } => !!piece.water && !piece.stand)
-      .map((piece) => ({ reach: waterReachData(scene, piece), shape: waterShape(scene, piece), level: piece.height + piece.water })),
+    undersides: timed("undersides", () => scene.bridges.map((bridge) => (bridge.under === "keep" ? null : undersideBuffers(scene, bridge, c.k)))),
+    water: timed("water", () =>
+      scene.pieces
+        .filter((piece): piece is Piece & { water: number } => !!piece.water && !piece.stand)
+        .map((piece) => ({ reach: waterReachData(scene, piece), shape: waterShape(scene, piece), level: piece.height + piece.water }))
+    ),
   };
 }
 

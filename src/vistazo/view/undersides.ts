@@ -9,6 +9,8 @@ import { bridgeTop, inShape, type Bridge, type VistazoScene } from "../scene";
 export const FILL_SIZE = 192;
 /** How far past a bridge's outline its fill reaches (cells): over its drawn edge, which the outline seldom follows exactly. */
 export const FILL_GROW = 0.15;
+/** A bridge's underside's texels for each cell (at most its fill's): a small one (a statue's arm) takes a few, not FILL_SIZE². */
+const UNDER_PER_CELL = 8;
 
 /** The texels a bridge's fill takes (scene px): over its outline's box, `grow` and four texels wider, its longest side FILL_SIZE. */
 export function fillFrame(shape: MultiPolygon, grow: number): { x0: number; y0: number; step: number; cols: number; rows: number } {
@@ -40,7 +42,7 @@ export function nearOutline(multi: MultiPolygon, x: number, y: number, reach: nu
 /**
  * A bridge's underside over its fill's box (see fillFrame), RGBA texels: its height (view units, `k`
  * per height unit; r), and where a shape keeping its look is (g: 1 inside, 0.5 just round it, for its
- * walls). One texel if it's flat with none of those under it; else each.
+ * walls). One texel if it's flat with none of those under it; else UNDER_PER_CELL a cell (its fill's at most).
  */
 export function undersideBuffers(scene: VistazoScene, bridge: Bridge, k: number): { cols: number; rows: number; heights: Float32Array } {
   const frame = fillFrame(bridge.shape, scene.dpi * FILL_GROW);
@@ -54,7 +56,11 @@ export function undersideBuffers(scene: VistazoScene, bridge: Bridge, k: number)
     const [y0, y1] = [Math.min(...ps.map(([, y]) => y)) - reach, Math.max(...ps.map(([, y]) => y)) + reach];
     return x1 >= area.x && x0 <= area.x + area.z && y1 >= area.y && y0 <= area.y + area.w ? [{ multi, x0, x1, y0, y1 }] : [];
   });
-  const [cols, rows] = bridge.surface || keeping.length > 0 ? [frame.cols, frame.rows] : [1, 1];
+  // Over the same box as its fill (read texel by texel: nearest), as many as its size asks.
+  const [cols, rows] =
+    bridge.surface || keeping.length > 0
+      ? [Math.min(frame.cols, Math.max(2, Math.ceil((area.z / scene.dpi) * UNDER_PER_CELL))), Math.min(frame.rows, Math.max(2, Math.ceil((area.w / scene.dpi) * UNDER_PER_CELL)))]
+      : [1, 1];
   const heights = new Float32Array(cols * rows * 4);
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {

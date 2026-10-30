@@ -996,7 +996,7 @@ export class ReliefEditor {
       this.remove();
       return true;
     }
-    const step = e.code === "KeyZ" && !e.ctrl ? 0.5 : e.code === "KeyX" ? -0.5 : 0;
+    const step = e.code === "KeyZ" && !e.ctrl ? 0.25 : e.code === "KeyX" ? -0.25 : 0;
     if (step) {
       this.raise(step);
       return true;
@@ -1004,18 +1004,11 @@ export class ReliefEditor {
     return false;
   }
 
-  /**
-   * What's picked a step higher (or lower): a ramp's two ends, an inclined
-   * shape's corners and height points, vertices, a point. What makes a slope
-   * (all but a flat shape or a ramp) by a quarter: finer, as a slope wants.
-   */
+  /** What's picked a step (a quarter) higher or lower: a shape, a ramp's two ends, an inclined shape's corners and height points, vertices, a point. */
   raise(step: number) {
     const sel = this.sel;
     if (!sel) {
       return;
-    }
-    if (sel.kind !== "shape" || this.data.shapes[sel.i]?.kind === "slope") {
-      step = Math.sign(step) * 0.25;
     }
     this.pushUndo();
     const ramp = sel.kind === "shape" ? this.data.shapes[sel.i].ramp : undefined;
