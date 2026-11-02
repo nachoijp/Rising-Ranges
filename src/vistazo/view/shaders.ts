@@ -53,9 +53,13 @@ export const UNDER_FRAGMENT = /* glsl */ `
     // a shape that keeps its look.
     vec4 under = texture2D(uUnderside, m);
     if (under.g > 0.75 || vAt.z > under.r + 0.01) discard;
-    // Just round it: its walls (upright faces, their slope from the screen's derivatives), not the ground.
+    // Not below another slab under it (that one fills what's under it).
+    if (vAt.z < under.b - 0.01) discard;
+    // Just round it: its walls (upright faces, their slope from the screen's derivatives), not the ground,
+    // nor a steep slope there (a soft edge falling away under it: left unfilled, the map's drawing of
+    // what's above showed on it, stretched into spikes).
     vec3 face = normalize(cross(dFdx(vAt), dFdy(vAt)));
-    if (under.g > 0.25 && abs(face.z) < 0.5) discard;
+    if (under.g > 0.25 && abs(face.z) < 0.15) discard;
     if (uMirror > 0.5) {
       // The map mirrored across each long side (just past it, going out as it goes in), the two blended
       // across its width: each side's own next to it, fading into the other's, so no seam in the middle.
@@ -81,8 +85,10 @@ export const UNDER_FRAGMENT = /* glsl */ `
       return;
     }
     // The map's colours round it, with a blended wall's grain so it isn't a flat smear (walls get theirs
-    // down them). A little darker: in the bridge's shadow.
-    gl_FragColor = vec4(fill.rgb * 0.82 * wallGrain(vAt, uCell), fill.a);
+    // down them). A little darker: in the bridge's shadow. Faded in from its edge (not cut there).
+    float fade = smoothstep(0.0, 0.6, fill.a);
+    if (fade < 0.01) discard;
+    gl_FragColor = vec4(fill.rgb * 0.82 * wallGrain(vAt, uCell), fade);
   }
 `;
 

@@ -42,7 +42,8 @@ export function nearOutline(multi: MultiPolygon, x: number, y: number, reach: nu
 /**
  * A bridge's underside over its fill's box (see fillFrame), RGBA texels: its height (view units, `k`
  * per height unit; r), and where a shape keeping its look is (g: 1 inside, 0.5 just round it, for its
- * walls). One texel if it's flat with none of those under it; else UNDER_PER_CELL a cell (its fill's at most).
+ * walls), and the top of the highest slab under it (b: its fill doesn't go below that). One texel if it's
+ * flat with none of those under it; else UNDER_PER_CELL a cell (its fill's at most).
  */
 export function undersideBuffers(scene: VistazoScene, bridge: Bridge, k: number): { cols: number; rows: number; heights: Float32Array } {
   const frame = fillFrame(bridge.shape, scene.dpi * FILL_GROW);
@@ -57,8 +58,20 @@ export function undersideBuffers(scene: VistazoScene, bridge: Bridge, k: number)
     return x1 >= area.x && x0 <= area.x + area.z && y1 >= area.y && y0 <= area.y + area.w ? [{ multi, x0, x1, y0, y1 }] : [];
   });
   // Over the same box as its fill (read texel by texel: nearest), as many as its size asks.
+  // The slabs under it (their tops below its top: under it, or one it's sunk into) over its box: its
+  // fill stops at them (the ground under them is theirs to fill: a statue on a balcony doesn't paint
+  // under both).
+  const below = scene.bridges.flatMap((other) => {
+    if (other === bridge || other.top >= bridge.top - 0.01) {
+      return [];
+    }
+    const ps = other.shape.flat(2);
+    const [x0, x1] = [Math.min(...ps.map(([x]) => x)), Math.max(...ps.map(([x]) => x))];
+    const [y0, y1] = [Math.min(...ps.map(([, y]) => y)), Math.max(...ps.map(([, y]) => y))];
+    return x1 >= area.x && x0 <= area.x + area.z && y1 >= area.y && y0 <= area.y + area.w ? [{ other, x0, x1, y0, y1 }] : [];
+  });
   const [cols, rows] =
-    bridge.surface || keeping.length > 0
+    bridge.surface || keeping.length > 0 || below.length > 0
       ? [Math.min(frame.cols, Math.max(2, Math.ceil((area.z / scene.dpi) * UNDER_PER_CELL))), Math.min(frame.rows, Math.max(2, Math.ceil((area.w / scene.dpi) * UNDER_PER_CELL)))]
       : [1, 1];
   const heights = new Float32Array(cols * rows * 4);
@@ -69,6 +82,14 @@ export function undersideBuffers(scene: VistazoScene, bridge: Bridge, k: number)
       // Inside: all of it (its top); just round it: only its walls (the ground there gets the fill).
       const near = keeping.filter((e) => x >= e.x0 && x <= e.x1 && y >= e.y0 && y <= e.y1);
       heights[(r * cols + c) * 4 + 1] = near.some((e) => inShape(x, y, e.multi)) ? 1 : near.some((e) => nearOutline(e.multi, x, y, reach)) ? 0.5 : 0;
+      // The top of the highest slab under it there (b): nothing below that is filled; none, far down.
+      let floor = -1e6;
+      for (const e of below) {
+        if (x >= e.x0 && x <= e.x1 && y >= e.y0 && y <= e.y1 && inShape(x, y, e.other.shape)) {
+          floor = Math.max(floor, bridgeTop(e.other, x, y) * k);
+        }
+      }
+      heights[(r * cols + c) * 4 + 2] = floor;
     }
   }
   return { cols, rows, heights };

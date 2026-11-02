@@ -1772,6 +1772,12 @@ export class VistazoView {
       // Its underside's heights over the same box (see undersideBuffers): the terrain's numbers, or now.
       const { cols, rows, heights } = this.terrain?.undersides[b] ?? undersideBuffers(scene, bridge, this.k);
       const underside = new THREE.DataTexture(heights, cols, rows, THREE.RGBAFormat, THREE.FloatType);
+      // Read between its texels (where the card can: else nearest), so the fill's edge against what's
+      // under it is a line, not stairs of texels.
+      if (this.renderer?.extensions.has("OES_texture_float_linear")) {
+        underside.magFilter = THREE.LinearFilter;
+        underside.minFilter = THREE.LinearFilter;
+      }
       underside.needsUpdate = true;
       const material = new THREE.ShaderMaterial({
         vertexShader: UNDER_VERTEX,
