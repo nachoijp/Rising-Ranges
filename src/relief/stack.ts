@@ -9,11 +9,22 @@ import type { Relief } from "./relief";
 /** One map image's relief and where it is, in a stack (the lowest first, as the images lie). */
 export type Stacked = { id: string; relief: Relief; anchor: Anchor };
 
+/** Each Relief object's own number (a relief replaced by another is another, whatever its version). */
+const ids = new WeakMap<Relief, number>();
+let lastId = 0;
+const idOf = (relief: Relief) => {
+  let id = ids.get(relief);
+  if (id === undefined) {
+    ids.set(relief, (id = ++lastId));
+  }
+  return id;
+};
+
 /** Each relief's ground set to the terrain of those under it (the lowest's left as it is). */
 export function stackReliefs(stack: Stacked[], dpi: number) {
   stack.forEach(({ relief, anchor }, i) => {
     const below = stack.slice(0, i);
-    const key = i === 0 ? "" : JSON.stringify([anchor, dpi, below.map((b) => [b.id, b.relief.version, b.anchor])]);
+    const key = i === 0 ? "" : JSON.stringify([anchor, dpi, below.map((b) => [b.id, idOf(b.relief), b.relief.version, b.anchor])]);
     relief.setUnder(i === 0 ? null : (cx, cy) => {
       const p = cellToScene(anchor, dpi, cx, cy);
       return terrainIn(below, dpi, p.x, p.y) ?? 0;

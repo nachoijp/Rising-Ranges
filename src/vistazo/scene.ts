@@ -295,7 +295,13 @@ export function buildScene(
   // Characters, and mounts with them (a horse is a creature too).
   const tokenItems = items.filter((item): item is Image => isImage(item) && (item.layer === "CHARACTER" || item.layer === "MOUNT"));
   const key = terrainKeyOf(items, tokenItems, dpi, terrainOff, sight, `${reliefs.key}${reliefs.surfaced ? "+surfaced" : ""}`);
-  const terrain = previous && previous.terrainKey === key ? previous : buildTerrain(key, items, tokenItems, dpi, terrainOff, sight, reliefs.byImage, !!reliefs.surfaced);
+  const reused = !!previous && previous.terrainKey === key;
+  if (reused && !terrainOff) {
+    // The same terrain, but a relief changed where it is (a brush let go): those over it follow (see stack.ts).
+    const maps = items.filter((item): item is Image => isImage(item) && item.layer === "MAP" && item.visible && reliefs.byImage.has(item.id)).sort((a, b) => a.zIndex - b.zIndex);
+    stackReliefs(maps.map((item) => ({ id: item.id, relief: reliefs.byImage.get(item.id)!, anchor: anchorOf(item) })), dpi);
+  }
+  const terrain = reused ? previous! : buildTerrain(key, items, tokenItems, dpi, terrainOff, sight, reliefs.byImage, !!reliefs.surfaced);
   const { measuredAt } = terrain;
 
   const bandSet = onGrid(bandSetFromMetadata(metadata), gridType);
