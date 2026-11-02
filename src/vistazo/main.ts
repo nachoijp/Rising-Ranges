@@ -427,6 +427,10 @@ function message(text: string) {
   note.hidden = false;
 }
 
+/** How far the 3D view zooms out and in (times the whole map in view). */
+const MIN_ZOOM = 0.35;
+const MAX_ZOOM = 24;
+
 async function start() {
   const [role, metadata, theme] = await Promise.all([OBR.player.getRole(), OBR.scene.getMetadata().catch(() => null), OBR.theme.getTheme()]);
   applyTheme(theme);
@@ -912,7 +916,7 @@ async function start() {
   const pose = (p: Pose) => {
     camera.tilt = clampTilt(p.tilt);
     camera.yaw = wrapYaw(p.yaw);
-    camera.zoom = Math.max(0.35, Math.min(8, p.zoom));
+    camera.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, p.zoom));
     view.apply();
   };
   function cinematic(shot: (typeof SHOTS)[number]) {
@@ -1308,7 +1312,7 @@ async function start() {
     pointers.set(event.pointerId, [event.clientX, event.clientY]);
     if (mode === "pinch" && pinch && pointers.size === 2) {
       const [a, b] = [...pointers.values()];
-      camera.zoom = Math.max(0.35, Math.min(8, (pinch.zoom * Math.hypot(a[0] - b[0], a[1] - b[1])) / pinch.d));
+      camera.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, (pinch.zoom * Math.hypot(a[0] - b[0], a[1] - b[1])) / pinch.d));
       const mid: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
       panBy(mid[0] - pinch.mid[0], mid[1] - pinch.mid[1]);
       pinch.mid = mid;
@@ -1491,7 +1495,7 @@ async function start() {
         return;
       }
       cancelAnimationFrame(frame);
-      camera.zoom = Math.max(0.35, Math.min(8, camera.zoom * Math.exp(-event.deltaY * 0.0015)));
+      camera.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, camera.zoom * Math.exp(-event.deltaY * 0.0015)));
       view.apply();
     },
     { passive: false }
@@ -1566,9 +1570,9 @@ async function start() {
       ArrowRight: () => (camera.yaw = wrapYaw(camera.yaw - 5)),
       ArrowUp: () => (camera.tilt = clampTilt(camera.tilt + 3)),
       ArrowDown: () => (camera.tilt = clampTilt(camera.tilt - 3)),
-      "+": () => (camera.zoom = Math.min(8, camera.zoom * 1.15)),
-      "=": () => (camera.zoom = Math.min(8, camera.zoom * 1.15)),
-      "-": () => (camera.zoom = Math.max(0.35, camera.zoom / 1.15)),
+      "+": () => (camera.zoom = Math.min(MAX_ZOOM, camera.zoom * 1.15)),
+      "=": () => (camera.zoom = Math.min(MAX_ZOOM, camera.zoom * 1.15)),
+      "-": () => (camera.zoom = Math.max(MIN_ZOOM, camera.zoom / 1.15)),
     };
     if (keys[event.key] && !guided) {
       event.preventDefault();
