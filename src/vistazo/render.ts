@@ -1447,8 +1447,8 @@ export class VistazoView {
   }
 
   /** A surface that isn't flat: its outline's triangles cut small (see FineSurfaces), its corners at height 0. */
-  private fineGeometry(piece: Pick<Piece, "shape">): THREE.BufferGeometry {
-    return geometryOf(this.fine.get(piece.shape, this.u));
+  private fineGeometry(piece: Pick<Piece, "shape" | "peaks">): THREE.BufferGeometry {
+    return geometryOf(this.fine.get(piece.shape, this.u, false, piece.peaks));
   }
 
   /** A piece's outline as a flat shape, in view units. */

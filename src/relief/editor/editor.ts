@@ -13,7 +13,10 @@ import {
   layerOf,
   loopsOf,
   paintShape,
+  pointsOf,
+  shapeId,
   prune,
+  prunePoints,
   quadOf,
   removeVertex,
   simplify,
@@ -110,6 +113,8 @@ type Transform = Grab & {
   ramps: { s: Shape; a: Pt; b: Pt }[];
   center: Pt;
   detail?: { s: Shape; m: Affine };
+  /** The moved shapes' height points (see pointsOf), and where they started. */
+  points: { i: number; at: Pt }[];
 };
 
 export class ReliefEditor {
@@ -612,13 +617,22 @@ export class ReliefEditor {
       return true;
     }
     if (mods.clicks === 2 && vi < 0 && pi < 0) {
-      // Inside an inclined shape (the one in focus, if any is): a point with its own height, where its surface is now.
-      const si = this.shapeAt(p.x, p.y);
+      // Inside an inclined shape: a point with its own height, where its surface is now, that shape's. The
+      // one in focus, if it has it there (one under another, picked from the list); else the topmost there
+      // that isn't locked or hidden.
       const focus = this.focusShapes();
-      if (si >= 0 && data.shapes[si].kind === "slope" && (!focus || focus.has(si))) {
+      const has = (si: number) => {
+        const s = data.shapes[si];
+        return !!s && s.kind === "slope" && inShape(p.x, p.y, ...this.relief.coordsOf(s));
+      };
+      const tops = data.shapes.map((_, si) => si).reverse();
+      const si = focus ? (tops.find((i) => focus.has(i) && has(i)) ?? -1) : (tops.find((i) => has(i) && !data.shapes[i].locked && !data.shapes[i].hidden) ?? -1);
+      if (si >= 0) {
         this.xf = null;
         this.pushUndo();
-        data.points.push({ x: p.x, y: p.y, h: quarter(this.heightAt(p.x, p.y) ?? 0) });
+        // Its surface's height there (not what's over it).
+        const layer = layerOf(this, si);
+        data.points.push({ x: p.x, y: p.y, h: quarter(layer ? this.relief.surface(layer, p.x, p.y, true) : (this.heightAt(p.x, p.y) ?? 0)), of: shapeId(data.shapes[si]) });
         this.sel = { kind: "point", i: data.points.length - 1 };
         this.changed();
         this.host.showProps();
@@ -1032,7 +1046,10 @@ export class ReliefEditor {
     }
     this.pushUndo();
     if (sel.kind === "shape") {
-      this.data.shapes.splice(sel.i, 1);
+      // Every shape picked, its height points with it (those no shape left takes: see prunePoints).
+      const gone = new Set([sel.i, ...(sel.more ?? [])]);
+      this.data.shapes = this.data.shapes.filter((_, si) => !gone.has(si));
+      this.sel = null;
     } else if (sel.kind === "point") {
       this.data.points.splice(sel.i, 1);
     } else {
@@ -1053,6 +1070,7 @@ export class ReliefEditor {
       this.data.shapes = this.data.shapes.filter((s) => s.ring.length >= 3);
     }
     prune(this);
+    prunePoints(this);
     this.changed();
     this.host.showProps();
   }
@@ -1097,8 +1115,11 @@ export class ReliefEditor {
       return null;
     }
     const box = bbox(idx.map((i): Pt => [this.data.verts[i].x, this.data.verts[i].y]));
-    const [x0, y0] = this.host.toScreen(box.x0, box.y0);
-    const [x1, y1] = this.host.toScreen(box.x1, box.y1);
+    // A little out from the vertices (px): a handle at a corner isn't over the vertex there.
+    const pad = 10;
+    const [bx0, by0] = this.host.toScreen(box.x0, box.y0);
+    const [bx1, by1] = this.host.toScreen(box.x1, box.y1);
+    const [x0, y0, x1, y1] = [bx0 - pad, by0 - pad, bx1 + pad, by1 + pad];
     const [mx, my] = [(x0 + x1) / 2, (y0 + y1) / 2];
     const list: Handle[] = [
       { id: "nw", sx: x0, sy: y0, ax: box.x1, ay: box.y1, cursor: "nwse-resize" },
@@ -1124,7 +1145,12 @@ export class ReliefEditor {
       return { kind: "rotate", h };
     }
     const handle = h.list.find((q) => Math.abs(sx - q.sx) < 7 && Math.abs(sy - q.sy) < 7);
-    if (handle) {
+    // A vertex there, while picking vertices: the vertex, not the handle.
+    const onVertex =
+      this.tool === "edit" &&
+      this.settings.pickMode !== "shapes" &&
+      [...this.takeable()].some((i) => Math.hypot(this.data.verts[i].x - p.x, this.data.verts[i].y - p.y) < this.host.snapReach());
+    if (handle && !onVertex) {
       return { kind: "scale", h, handle };
     }
     const inside = this.sel?.kind === "shape" ? inShape(p.x, p.y, ...this.relief.coordsOf(this.data.shapes[this.sel.i])) : inBox(h.box, p.x, p.y);
@@ -1180,8 +1206,9 @@ export class ReliefEditor {
       idx,
       ramps: s?.ramp ? [{ s, a: [...s.ramp.a] as Pt, b: [...s.ramp.b] as Pt }] : [],
       center: [(grab.h.box.x0 + grab.h.box.x1) / 2, (grab.h.box.y0 + grab.h.box.y1) / 2],
-      // A shape's painted relief goes with it.
+      // A shape's painted relief goes with it, and its height points.
       detail: s?.detail ? { s, m: s.detail.m } : undefined,
+      points: (this.sel?.kind === "shape" ? pointsOf(this, [this.sel.i, ...(this.sel.more ?? [])]) : []).map((i) => ({ i, at: [this.data.points[i].x, this.data.points[i].y] as Pt })),
     };
     return true;
   }
@@ -1247,6 +1274,9 @@ export class ReliefEditor {
       r.s.ramp!.a = f(...r.a);
       r.s.ramp!.b = f(...r.b);
     }
+    for (const { i, at } of xf.points) {
+      [this.data.points[i].x, this.data.points[i].y] = f(...at);
+    }
     if (xf.detail?.s.detail) {
       const map = affineFrom(xf.start, xf.idx.map((i): Pt => [this.data.verts[i].x, this.data.verts[i].y]));
       if (map) {
@@ -1261,7 +1291,10 @@ export class ReliefEditor {
     for (const i of this.selectedVerts()) {
       [this.data.verts[i].x, this.data.verts[i].y] = f(this.data.verts[i].x, this.data.verts[i].y);
     }
-    for (const i of this.sel?.kind === "verts" ? (this.sel.points ?? []) : []) {
+    // A vertex group's own points, or the picked shapes' (see pointsOf).
+    const sel = this.sel;
+    const points = sel?.kind === "verts" ? (sel.points ?? []) : sel?.kind === "shape" ? pointsOf(this, [sel.i, ...(sel.more ?? [])]) : [];
+    for (const i of points) {
       [this.data.points[i].x, this.data.points[i].y] = f(this.data.points[i].x, this.data.points[i].y);
     }
     const s = this.sel?.kind === "shape" ? this.data.shapes[this.sel.i] : null;

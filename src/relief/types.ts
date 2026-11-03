@@ -9,7 +9,8 @@ export type Pt = [number, number];
 export type Vert = { x: number; y: number; h: number };
 
 /** A height point inside an inclined shape. */
-export type HeightPoint = { x: number; y: number; h: number };
+/** A height point inside an inclined shape; `of`: its shape's id (see Shape.id), when it was given one. */
+export type HeightPoint = { x: number; y: number; h: number; of?: string };
 
 /** A ramp's arrow: from `a` (at `from`) to `b` (at `to`); in steps if `steps` is 2 or more. */
 export type Ramp = { a: Pt; b: Pt; from: number; to: number; steps: number };
@@ -82,6 +83,8 @@ export type Shape = {
   locked?: boolean;
   /** The editor's own: the group it's in (see Group). */
   group?: string;
+  /** Its own id, once a height point is given to it (see HeightPoint.of): the halves of a cut share it. */
+  id?: string;
 };
 
 /**

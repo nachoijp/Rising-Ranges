@@ -69,6 +69,8 @@ export class Relief {
   layers: Layer[] = [];
   slabLayers: SlabLayer[] = [];
   pieces: Piece[] = [];
+  /** Each height point's shape (see pointOwners): the one whose surface it's a corner of; -1, none. */
+  pointOwners: number[] = [];
   /** Bumped by each derive (rasters not used for a while are forgotten). */
   version = 0;
   private buckets: Map<number, Layer[]> | null = null;
@@ -292,6 +294,7 @@ export class Relief {
   /** Each shape worked out on top of the ones before it (so "over what's under it" means them too). */
   derive() {
     this.version++;
+    this.pointOwners = pointOwners(this.data);
     this.clear = !this.data.ground.some((v) => v !== 0) && !this.data.shapes.some((s) => (s.soft ?? 0) > 0);
     this.layers = [];
     this.slabLayers = [];
@@ -434,7 +437,7 @@ export class Relief {
     insertPoints(
       pts,
       tris,
-      this.data.points.filter((p) => inShape(p.x, p.y, ring, holes)).map((p): HPt => [p.x, p.y, p.h])
+      this.data.points.filter((_, k) => this.pointOwners[k] === si).map((p): HPt => [p.x, p.y, p.h])
     );
     // A hair outside (a point on its outline, rounded): its side's height there, not a far corner's.
     return [{ si, ring, holes, box, fn: (x, y) => locate(pts, tris, x, y) ?? nearestOnTris(pts, tris, x, y) ?? nearestH(pts, x, y) }];
@@ -638,4 +641,27 @@ export function detailAt(detail: Detail, x: number, y: number): number {
   const top = at(i, j) + (at(i + 1, j) - at(i, j)) * fu;
   const bottom = at(i, j + 1) + (at(i + 1, j + 1) - at(i, j + 1)) * fu;
   return top + (bottom - top) * fv;
+}
+
+/** Whether a shape's surface takes height points (an inclined one, or a ramp with no arrow yet). */
+export const takesPoints = (s: Shape) => s.kind === "slope" || (s.kind === "ramp" && !s.ramp);
+
+/**
+ * Each height point's shape: the one it was given to (HeightPoint.of: the topmost with that id that has it
+ * inside, a cut's halves sharing it); else the topmost that takes points (see takesPoints) and has it
+ * inside; -1 if none. A point is one shape's alone (a statue's arm over its body: the arm's, unless it was
+ * given to the body), not of every one under it.
+ */
+export function pointOwners(data: ReliefData): number[] {
+  const at = (loop: number[]): Pt[] => loop.map((i) => [data.verts[i].x, data.verts[i].y]);
+  const takers = data.shapes
+    .map((s, si) => ({ s, si }))
+    .filter(({ s }) => takesPoints(s) && s.ring.length >= 3)
+    .map(({ s, si }) => {
+      const ring = at(s.ring);
+      return { si, ring, holes: (s.holes ?? []).map(at), box: bbox(ring) };
+    })
+    .reverse();
+  const has = (t: (typeof takers)[number], p: { x: number; y: number }) => inBox(t.box, p.x, p.y) && inShape(p.x, p.y, t.ring, t.holes);
+  return data.points.map((p) => (p.of ? takers.find((t) => data.shapes[t.si].id === p.of && has(t, p)) : undefined)?.si ?? takers.find((t) => has(t, p))?.si ?? -1);
 }

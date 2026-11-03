@@ -33,7 +33,7 @@ import {
   type T,
 } from "./panel";
 import { groupPicked, nameGroups, ungroup } from "./groups";
-import { copyShapes, duplicate, nameShapes, paste, setType, swap } from "./shapes";
+import { copyShapes, duplicate, nameShapes, paste, prunePoints, setType, swap } from "./shapes";
 import { installSplit } from "./split";
 import { MapView } from "./view2d";
 import { time } from "../../timing";
@@ -529,6 +529,9 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     },
     loadJson<Settings>(SETTINGS_KEY, DEFAULT_SETTINGS)
   );
+  // Height points no shape takes (left by an earlier version, a shape removed then): let go, so a shape
+  // drawn there doesn't take them up (see prunePoints). Kept with its next save.
+  prunePoints(editor);
   const texts = () => ({ rampNoArrow: t("relief.label.rampNoArrow"), inclined: t("relief.label.inclined"), relative: t("relief.label.relative") });
   map = new MapView(o.map, editor, texts());
   // What the keys do in what's being done, on the map while it's being done.

@@ -1,4 +1,4 @@
-import { area, centroid, inShape } from "../geom";
+import { area, centroid } from "../geom";
 import { G, apply, cellOf } from "../relief";
 import { standSide } from "../stand";
 import type { Pt } from "../types";
@@ -533,11 +533,11 @@ export class MapView {
         label(ctx, x + 12, y - 10, fmt(v.h), pickedVerts.has(i));
       }
     });
-    // Height points: those inside an inclined shape shown.
-    const slopes = visible.filter((s) => s.kind === "slope").map((s) => r.coordsOf(s));
+    // Height points: those of a shape shown (see pointOwners: not another's over or under it).
+    const shownIdx = new Set([...shown].filter((si) => data.shapes[si] && !data.shapes[si].hidden));
     data.points.forEach((q, i) => {
       const selected = (sel?.kind === "point" && sel.i === i) || (sel?.kind === "verts" && !!sel.points?.includes(i));
-      if (!selected && !slopes.some(([ring, holes]) => inShape(q.x, q.y, ring, holes))) {
+      if (!selected && !shownIdx.has(r.pointOwners[i])) {
         return;
       }
       const [x, y] = this.toScreen(q.x, q.y);

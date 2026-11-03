@@ -47,9 +47,13 @@ export class FineSurfaces {
     }
   }
 
-  /** The cut surface of an outline (its corners at height 0, to be set; a copy, the triangles shared); `coarse`: to a cell, not half (a drag's). */
-  get(shape: MultiPolygon, u: number, coarse = false): Surface {
-    const key = `${u}|${coarse}|${JSON.stringify(shape)}`;
+  /**
+   * The cut surface of an outline (its corners at height 0, to be set; a copy, the triangles shared);
+   * `coarse`: to a cell, not half (a drag's); `peaks` (scene px): points it must have a corner at, the
+   * triangle each is in split there.
+   */
+  get(shape: MultiPolygon, u: number, coarse = false, peaks?: [number, number][]): Surface {
+    const key = `${u}|${coarse}|${JSON.stringify(shape)}|${peaks ? JSON.stringify(peaks) : ""}`;
     let kept = this.kept.get(key);
     if (!kept) {
       const target = coarse ? VIEW_CELL : VIEW_CELL / 2;
@@ -89,12 +93,47 @@ export class FineSurfaces {
         }
         index[i] = n;
       }
-      kept = { position: Float32Array.from(corners), index, used: 0 };
+      let tris = index;
+      for (const [px, py] of peaks ?? []) {
+        tris = splitAt(corners, tris, px * u, py * u);
+      }
+      kept = { position: Float32Array.from(corners), index: tris, used: 0 };
       this.kept.set(key, kept);
     }
     kept.used = this.builds;
     return { position: kept.position.slice(), index: kept.index };
   }
+}
+
+/** Triangles (indexes into `corners`, x y z each) with the one a point (view units) is in split into three there: a corner of its own (appended). As they were if none has it. */
+function splitAt(corners: number[], tris: Uint32Array, x: number, y: number): Uint32Array {
+  const at = (i: number): [number, number] => [corners[i * 3], corners[i * 3 + 1]];
+  for (let t = 0; t < tris.length; t += 3) {
+    const [a, b, c] = [tris[t], tris[t + 1], tris[t + 2]];
+    const [[ax, ay], [bx, by], [cx, cy]] = [at(a), at(b), at(c)];
+    const d = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
+    if (Math.abs(d) < 1e-12) {
+      continue;
+    }
+    const w1 = ((bx - x) * (cy - y) - (cx - x) * (by - y)) / d;
+    const w2 = ((cx - x) * (ay - y) - (ax - x) * (cy - y)) / d;
+    const w3 = 1 - w1 - w2;
+    if (w1 < -1e-9 || w2 < -1e-9 || w3 < -1e-9) {
+      continue;
+    }
+    // Right on a corner already: nothing to add.
+    if (Math.max(w1, w2, w3) > 1 - 1e-6) {
+      return tris;
+    }
+    const p = corners.length / 3;
+    corners.push(x, y, 0);
+    const out = new Uint32Array(tris.length + 6);
+    out.set(tris.subarray(0, t), 0);
+    out.set([a, b, p, b, c, p, c, a, p], t);
+    out.set(tris.subarray(t + 3), t + 9);
+    return out;
+  }
+  return tris;
 }
 
 /** Texture coordinates for view-unit points `xy` (x, y, z triples), from where the map's picture lies (`box`, scene px). */
@@ -123,7 +162,7 @@ export function pieceBuffers(piece: Piece, c: PieceContext): PieceBuffers {
   const { u, k } = c;
   const z = piece.height * k;
   const fine = !!piece.surface && !(piece.coarse && !piece.fine?.());
-  const surface = fine ? c.fine.get(piece.shape, u, c.coarse) : flatSurface(piece.shape, u);
+  const surface = fine ? c.fine.get(piece.shape, u, c.coarse, piece.peaks) : flatSurface(piece.shape, u);
   const position = surface.position;
   const count = position.length / 3;
   if (!piece.stand) {

@@ -3,7 +3,7 @@ import clip from "../terrain/clip";
 import { frameOf } from "../terrain/terrain";
 import { inShape as inScene, type Bridge, type Piece, type StandEdge } from "../vistazo/scene";
 import { cellToScene, sceneToCell, type Anchor } from "./anchor";
-import { bbox, centroid, closed, inBox, open } from "./geom";
+import { bbox, centroid, closed, inBox, inShape, open } from "./geom";
 import { ReliefMesh } from "./mesh";
 import type { Layer, Piece as ReliefPiece, Relief } from "./relief";
 import type { Pt, Skin } from "./types";
@@ -149,6 +149,14 @@ export function reliefTerrain(
         water: shape.water,
         si: layer.si,
       };
+      // An inclined shape's height points: corners of its surface as drawn (else, between a fine surface's
+      // corners, a point's peak is cut off: drawn lower than it is).
+      if (shape.kind === "slope" || (shape.kind === "ramp" && !shape.ramp)) {
+        const peaks = relief.data.points.filter((p, k) => relief.pointOwners[k] === layer.si && inShape(p.x, p.y, piece.ring, piece.holes)).map((p) => toScene([p.x, p.y]));
+        if (peaks.length > 0) {
+          drawn.peaks = peaks;
+        }
+      }
       if (flatNow && surfaced) {
         // Flat while it's edited: its outline is enough, until something makes its heights vary inside it.
         const si = layer.si;

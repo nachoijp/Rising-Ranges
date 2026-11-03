@@ -18,7 +18,8 @@ export type StoredRelief = {
   h: number;
   verts: [number, number, number][];
   shapes: StoredShape[];
-  points: [number, number, number][];
+  /** x, y, h; and its shape's id, if it has one (an earlier version reads the first three). */
+  points: ([number, number, number] | [number, number, number, string])[];
   ground?: string;
   groups?: Group[];
 };
@@ -42,7 +43,7 @@ export function toStored(data: ReliefData): StoredRelief {
       }
       return out;
     }),
-    points: data.points.map((p) => [r2(p.x), r2(p.y), p.h]),
+    points: data.points.map((p): [number, number, number] | [number, number, number, string] => (p.of ? [r2(p.x), r2(p.y), p.h, p.of] : [r2(p.x), r2(p.y), p.h])),
   };
   if (data.groups?.length) {
     stored.groups = data.groups.map((g) => ({ ...g }));
@@ -75,7 +76,7 @@ export function fromStored(stored: unknown): ReliefData | null {
     }
   }
   const verts: Vert[] = (s.verts ?? []).map(([x, y, h]) => ({ x, y, h }));
-  const points: HeightPoint[] = (s.points ?? []).map(([x, y, h]) => ({ x, y, h }));
+  const points: HeightPoint[] = (s.points ?? []).map(([x, y, h, of]) => (typeof of === "string" ? { x, y, h, of } : { x, y, h }));
   const shapes: Shape[] = (s.shapes ?? []).map((shape) => {
     const { detail, ...rest } = shape;
     return detail ? { ...rest, detail: readDetail(detail) } : { ...rest };

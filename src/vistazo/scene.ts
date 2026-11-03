@@ -56,6 +56,8 @@ export type Piece = {
   fine?: () => boolean;
   /** The relief's shape it's of (its index), for moving it whole while it's dragged (see VistazoView.moveShapes). */
   si?: number;
+  /** Points of its surface its corners must include (scene px): an inclined shape's height points, its peaks and dips, not cut off between a fine surface's corners. */
+  peaks?: [number, number][];
   /**
    * A standing shape's picture, made by the relief: [x, y, height, mapX,
    * mapY] triangles (scene px, grid units, where on the map each corner's

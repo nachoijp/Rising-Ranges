@@ -1,7 +1,7 @@
 import clip from "../../terrain/clip";
 import { emptyRelief, fromStored, toStored, type StoredRelief } from "../codec";
 import { area, bbox, centroid, closed, inRing, inShape, open } from "../geom";
-import { compose, quarter, type Layer, type SlabLayer } from "../relief";
+import { compose, pointOwners, quarter, type Layer, type SlabLayer } from "../relief";
 import { corners, standDepth, standSide } from "../stand";
 import type { HeightPoint, Pt, Ramp, ReliefData, Shape, ShapeKind, Skin, Vert } from "../types";
 import type { ReliefEditor } from "./editor";
@@ -724,6 +724,45 @@ export function quadOf(ed: ReliefEditor, si: number): Pt[] {
 /** How far aside a copy's made (cells, right and down): near, not over it. */
 const COPY_ASIDE = 0.25;
 
+/**
+ * The height points of some shapes (indexes in data.points): those whose shape (see pointOwners) is one
+ * of them. A point is its shape's: it goes, moves and is copied with it.
+ */
+export function pointsOf(ed: ReliefEditor, shapes: number[]): number[] {
+  const owners = pointOwners(ed.data);
+  const of = new Set(shapes);
+  return owners.flatMap((si, i) => (of.has(si) ? [i] : []));
+}
+
+/** A shape's id (see Shape.id), given it now if it has none. */
+export function shapeId(s: Shape): string {
+  s.id ??= Math.random().toString(36).slice(2, 8);
+  return s.id;
+}
+
+/** The height points no shape takes (left by a shape gone or changed): let go (a new shape there doesn't take them up). */
+export function prunePoints(ed: ReliefEditor) {
+  const kept = new Set(pointsOf(ed, ed.data.shapes.map((_, si) => si)));
+  if (kept.size === ed.data.points.length) {
+    return;
+  }
+  // What's picked of them kept pointing at the same ones.
+  const map = new Map<number, number>();
+  ed.data.points = ed.data.points.filter((_, i) => {
+    if (kept.has(i)) {
+      map.set(i, map.size);
+      return true;
+    }
+    return false;
+  });
+  const sel = ed.sel;
+  if (sel?.kind === "point") {
+    ed.sel = map.has(sel.i) ? { kind: "point", i: map.get(sel.i)! } : null;
+  } else if (sel?.kind === "verts" && sel.points) {
+    sel.points = sel.points.filter((i) => map.has(i)).map((i) => map.get(i)!);
+  }
+}
+
 /** A copy of the picked shape, a little aside (COPY_ASIDE), picked instead: its own vertices, arrow and relief (moved with it), not kin. */
 export function duplicate(ed: ReliefEditor) {
   if (ed.sel?.kind !== "shape") {
@@ -748,6 +787,12 @@ export function duplicate(ed: ReliefEditor) {
   }
   if (s.detail) {
     copy.detail = { m: compose([1, 0, 0, 1, COPY_ASIDE, COPY_ASIDE], s.detail.m), v: new Map(s.detail.v) };
+  }
+  // Its height points with it, aside as it is, the copy's own.
+  const own = pointsOf(ed, [ed.sel.i]);
+  copy.id = undefined;
+  for (const i of own) {
+    data.points.push({ ...data.points[i], x: data.points[i].x + COPY_ASIDE, y: data.points[i].y + COPY_ASIDE, of: shapeId(copy) });
   }
   data.shapes.push(copy);
   ed.sel = { kind: "shape", i: data.shapes.length - 1 };
@@ -799,10 +844,16 @@ export function paste(ed: ReliefEditor, stored: StoredRelief): boolean {
   const from = data.verts.length;
   data.verts.push(...read.verts);
   const first = data.shapes.length;
+  // Each pasted shape an id of its own (pasted twice, or over the one copied: not its points'), its points following.
+  const ids = new Map<string, string>();
   for (const s of read.shapes) {
-    data.shapes.push({ ...s, ring: s.ring.map((i) => i + from), holes: s.holes?.map((loop) => loop.map((i) => i + from)) });
+    const copy: Shape = { ...s, ring: s.ring.map((i) => i + from), holes: s.holes?.map((loop) => loop.map((i) => i + from)), id: undefined };
+    if (s.id) {
+      ids.set(s.id, shapeId(copy));
+    }
+    data.shapes.push(copy);
   }
-  data.points.push(...read.points);
+  data.points.push(...read.points.map((p) => (p.of && ids.has(p.of) ? { ...p, of: ids.get(p.of) } : p)));
   const added = read.shapes.map((_, k) => first + k);
   ed.sel = { kind: "shape", i: added[added.length - 1], ...(added.length > 1 ? { more: added.slice(0, -1) } : {}) };
   return true;
