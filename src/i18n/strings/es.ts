@@ -736,6 +736,7 @@ const es = {
   "relief.shape.waterHint": "Qué tan profunda sobre su fondo (0: sin agua). Se derrama sobre el terreno más bajo de alrededor. Solo se ve: la forma se sigue midiendo a su altura.",
   "relief.layerRow": "Clic: elegirla · Ctrl+clic: sumarla · doble clic: nombrarla · arrastrar: moverla",
   "relief.groupRow": "Clic: elegir sus formas · doble clic: renombrarlo · arrastrar: moverlo entero · soltar algo en su mitad de abajo: meterlo",
+  "relief.groupRowShort": "en una carpeta: clic elige sus formas, arrastrarla la mueve entera, soltar algo en su mitad de abajo lo mete",
   "relief.layerUp": "Subir una capa",
   "relief.layerDown": "Bajar una capa",
   "relief.ground": "Suelo",

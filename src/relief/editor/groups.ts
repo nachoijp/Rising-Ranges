@@ -231,7 +231,10 @@ export type ListDrop = { side: "above" | "below"; shape: number } | { side: "abo
  */
 export function moveItem(ed: ReliefEditor, item: ListItem, drop: ListDrop): boolean {
   const data = ed.data;
-  const block = "shape" in item ? [item.shape] : membersOf(data, item.group);
+  // A shape that's one of several picked: all of them (in their order), not it alone.
+  const sel = ed.sel;
+  const picked = sel?.kind === "shape" ? [sel.i, ...(sel.more ?? [])] : [];
+  const block = "shape" in item ? (picked.length > 1 && picked.includes(item.shape) ? [...picked].sort((a, b) => a - b) : [item.shape]) : membersOf(data, item.group);
   const inside = "group" in item ? subtree(data, item.group) : new Set<string>();
   if (block.length === 0 || ("shape" in drop ? block.includes(drop.shape) : inside.has(drop.group))) {
     return false;
@@ -255,7 +258,9 @@ export function moveItem(ed: ReliefEditor, item: ListItem, drop: ListDrop): bool
     reorder(ed, [...rest.slice(0, at), ...moving, ...rest.slice(at)]);
   }
   if ("shape" in item) {
-    moving[0].group = parent;
+    for (const shape of moving) {
+      shape.group = parent;
+    }
   } else {
     groupsOf(data).find((g) => g.id === item.group)!.parent = parent;
   }

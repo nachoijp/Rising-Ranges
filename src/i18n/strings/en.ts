@@ -741,6 +741,7 @@ const en: Record<TranslationKey, string> = {
   "relief.shape.waterHint": "How deep over its floor (0: no water). It spills over the lower ground round it. Only drawn: the shape is still measured at its height.",
   "relief.layerRow": "Click: pick it · Ctrl+click: add it · double click: name it · drag: move it",
   "relief.groupRow": "Click: pick its shapes · double click: rename it · drag: move it whole · let something go on its lower half: put it in",
+  "relief.groupRowShort": "on a folder: click picks its shapes, dragging moves it whole, dropping something on its lower half puts it in",
   "relief.layerUp": "A layer up",
   "relief.layerDown": "A layer down",
   "relief.ground": "Ground",

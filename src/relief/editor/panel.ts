@@ -438,7 +438,11 @@ function bindNumber(el: HTMLElement, ed: ReliefEditor, key: string, get: () => n
   }
   input.value = String(get());
   const step = undoOnce(ed);
-  input.onfocus = step.arm;
+  input.onfocus = () => {
+    step.arm();
+    // All of it picked, ready to be typed over (not a drag across it and into the labels beside).
+    requestAnimationFrame(() => document.activeElement === input && input.select());
+  };
   input.oninput = () => {
     const v = readNumber(input);
     if (v !== null) {
@@ -480,6 +484,9 @@ function bindStepper(el: HTMLElement, ed: ReliefEditor, key: string, get: () => 
     };
   }
 }
+
+/** The thinnest a slab can be (cells). */
+const MIN_SLAB = 0.05;
 
 /** A soft edge's widths (cells), finer where it's narrow: its slider's stops. */
 export const SOFT_STEPS = [0, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8];
@@ -1107,7 +1114,7 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
       <div class="rows">
         ${height}
         <span class="l" ${tip(t("relief.shape.type"), t("relief.shape.typeHint"))}>${esc(t("relief.shape.type"))}</span>${seg("type", [["terrain", "terrain", t("relief.shape.terrain"), t("relief.shape.terrainHint")], ["slab", "slab", t("relief.shape.slab"), t("relief.shape.slabHint")], ["stand", "stand", t("relief.shape.stand"), t("relief.shape.standHint")]], type)}
-        ${s.slab && s.slab > 0 ? `<span class="l">${esc(t("relief.shape.thickness"))}</span><span class="line">${stepper(numField("slab", t("relief.shape.thickness"), 0.25, 20), "slab", 0.25, t)}</span>` : ""}
+        ${s.slab && s.slab > 0 ? `<span class="l">${esc(t("relief.shape.thickness"))}</span><span class="line">${stepper(numField("slab", t("relief.shape.thickness"), MIN_SLAB, 20), "slab", 0.25, t)}</span>` : ""}
         ${s.stand ? `<span class="l" ${tip(t("relief.shape.standsOn"), t("relief.shape.standsOnHint"))}>${esc(t("relief.shape.standsOn"))}</span><select class="field" data-k="stand" aria-label="${esc(t("relief.shape.standsOn"))}">${STAND_EDGES.map((v) => `<option value="${v}" ${s.stand === v ? "selected" : ""}>${esc(t(`relief.stand.${v}` as TranslationKey))}</option>`).join("")}</select>` : ""}
         ${s.stand ? `<span class="l"></span><label class="check" ${tip(t("relief.shape.wrap"), t(quad ? "relief.shape.wrapHint4" : "relief.shape.wrapHint"))}><input type="checkbox" data-k="wrap" ${s.wrap ? "checked" : ""} /> ${esc(t("relief.shape.wrap"))}</label>` : ""}
         ${s.stand ? "" : `<span class="l">${esc(t("relief.shape.surface"))}</span>${seg("kind", [["flat", "flat", t("relief.shape.flat")], ["ramp", "ramp", t("relief.shape.ramp"), t("relief.shape.rampKindHint")], ["slope", "inclined", t("relief.shape.slope"), t("relief.shape.slopeHint")]], s.kind)}`}
@@ -1159,7 +1166,8 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
   });
   bindSteps(el, ed);
   bindNumber(el, ed, "h", () => s.h, (v) => (s.h = v));
-  bindStepper(el, ed, "slab", () => s.slab ?? 0.5, (v) => (s.slab = Math.max(0.25, v)));
+  // Typed, any thickness from MIN_SLAB (a sword's blade); −/+ by a quarter.
+  bindStepper(el, ed, "slab", () => s.slab ?? 0.5, (v) => (s.slab = Math.max(MIN_SLAB, Math.round(v * 100) / 100)));
   bindStepper(el, ed, "water", () => s.water ?? 0, (v) => (s.water = v > 0 ? v : undefined));
   if (s.ramp) {
     const ramp = s.ramp;
@@ -1363,13 +1371,13 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, ui: Shapes
         const hidden = members.every((s) => s.hidden);
         const locked = members.every((s) => s.locked);
         const open = !ui.groupsFolded.has(g.id);
-        return `<div class="item grp${on ? " on" : ""}${hidden ? " off" : ""}" draggable="true" data-g="${esc(g.id)}" ${depth} tabindex="0" role="button" aria-expanded="${open}" aria-pressed="${on}" ${tip(g.name, t("relief.groupRow"))}>
+        return `<div class="item grp${on ? " on" : ""}${hidden ? " off" : ""}" draggable="true" data-g="${esc(g.id)}" ${depth} tabindex="0" role="button" aria-expanded="${open}" aria-pressed="${on}" aria-label="${esc(g.name)}">
           <span class="gchev${open ? "" : " closed"}" data-fold="${esc(g.id)}" ${tip(t(open ? "relief.fold" : "relief.unfold"))}>${icon("expand")}</span>${icon("folder")}<span class="n">${esc(g.name)}</span><span class="h">${members.length}</span>${toggles("g", esc(g.id), hidden, locked)}</div>`;
       }
       const i = row.shape;
       const s = shapes[i];
       const state = i === picked ? "on" : more.includes(i) ? "more" : "";
-      return `<div class="item ${state}${s.hidden ? " off" : ""}" draggable="true" data-i="${i}" ${depth} tabindex="0" role="button" aria-pressed="${chosen.has(i)}" ${tip(nameOf(t, s, i), t("relief.layerRow"))}>
+      return `<div class="item ${state}${s.hidden ? " off" : ""}" draggable="true" data-i="${i}" ${depth} tabindex="0" role="button" aria-pressed="${chosen.has(i)}" aria-label="${esc(nameOf(t, s, i))}">
         ${icon(TYPE_ICONS[typeOf(s)])}<span class="n">${esc(nameOf(t, s, i))}</span><span class="h">${esc(describe(t, s))}</span>${toggles("", String(i), !!s.hidden, !!s.locked)}</div>`;
     })
     .join("");
@@ -1378,7 +1386,8 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, ui: Shapes
   const scrolled = el.querySelector(".lrows")?.scrollTop ?? 0;
   const newlyPicked = String(picked) !== el.dataset.picked;
   el.dataset.picked = String(picked);
-  el.innerHTML = `<button type="button" class="lhead" aria-expanded="${!ui.folded.value}"><span class="chev">${icon("expand")}</span><span class="lt">${esc(t("relief.shapes"))}</span><span class="count">${shapes.length}</span></button>
+  // What its rows do: told once, by a "?" beside its title (not on every row, in the way of picking them).
+  el.innerHTML = `<div class="lheadrow"><button type="button" class="lhead" aria-expanded="${!ui.folded.value}"><span class="chev">${icon("expand")}</span><span class="lt">${esc(t("relief.shapes"))}</span><span class="count">${shapes.length}</span></button><span class="lhelp" tabindex="0" role="note" ${tip(t("relief.shapes"), `${t("relief.layerRow")} — ${t("relief.groupRowShort")}`)}>${icon("info")}</span></div>
     <div class="lrows" ${ui.folded.value ? "hidden" : ""}>${rows}<div class="item ground" data-ground tabindex="0" role="button" ${tip(t("relief.ground"), t("relief.groundHint"))}>${icon("terrain")}<span class="n">${esc(t("relief.ground"))}</span><span class="h">${esc(t("relief.groundBrush"))}</span></div></div>`;
   const scroller = el.querySelector<HTMLElement>(".lrows")!;
   scroller.scrollTop = scrolled;
