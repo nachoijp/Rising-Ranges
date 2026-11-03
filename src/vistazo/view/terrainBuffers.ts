@@ -6,7 +6,7 @@ import type { Wall } from "./types";
 import { wallBuffers, type WallBuffers } from "./wallBuffers";
 import { wallShadowBuffers } from "./wallShadows";
 import { computeWalls } from "./walls";
-import { undersideBuffers } from "./undersides";
+import { fillGroups, undersideBuffers, type FillGroup } from "./undersides";
 import { waterReachData, waterShape, type WaterReachData } from "./water";
 import type { MultiPolygon } from "polygon-clipping";
 import type { Piece } from "../scene";
@@ -34,8 +34,8 @@ export type TerrainBuffers = {
   /** None: no walls, or no shading; not worked out (undefined): drawn lightly, a drag (see VistazoView.setLite). */
   shadows?: { positions: Float32Array; colors: Float32Array } | null;
   pieces: PieceBuffers[];
-  /** Each bridge's underside (as the scene's bridges; none under one that keeps the map: see undersideBuffers). */
-  undersides: ({ cols: number; rows: number; heights: Float32Array } | null)[];
+  /** Each group of slabs filled under as one (see fillGroups): its members, outline and underside (see undersideBuffers). */
+  undersides: (FillGroup & { cols: number; rows: number; heights: Float32Array })[];
   /** Each water's surface: where it reaches, its outline, its level (as the scene's pieces with water, standing ones left out). */
   water: { reach: WaterReachData; shape: MultiPolygon; level: number }[];
 };
@@ -65,7 +65,7 @@ export function computeTerrain(scene: VistazoScene, base: number, c: TerrainCont
     wallSets: timed("wallSets", () => wallBuffers(list, { u: c.u, k: c.k, shade: c.shade, levels: c.levels, box: c.texture, colors: c.colors })),
     ...(lite ? {} : { shadows: timed("shadows", () => wallShadowBuffers(list, scene.heightAt, { u: c.u, k: c.k, relief: c.relief })) }),
     pieces: timed("pieces", () => scene.pieces.map((piece) => pieceBuffers(piece, { u: c.u, k: c.k, uvBox: c.uvBox, texture: c.texture, colors: c.colors, fine, coarse }))),
-    undersides: timed("undersides", () => scene.bridges.map((bridge) => (bridge.under === "keep" ? null : undersideBuffers(scene, bridge, c.k)))),
+    undersides: timed("undersides", () => fillGroups(scene).map((group) => ({ ...group, ...undersideBuffers(scene, group, c.k) }))),
     water: timed("water", () =>
       scene.pieces
         .filter((piece): piece is Piece & { water: number } => !!piece.water && !piece.stand)
@@ -97,9 +97,7 @@ export function terrainTransfers(t: TerrainBuffers): ArrayBuffer[] {
     // A fine surface's triangles are shared with its cache (kept there): copied, not handed over.
   }
   for (const under of t.undersides) {
-    if (under) {
-      buffers.add(under.heights.buffer as ArrayBuffer);
-    }
+    buffers.add(under.heights.buffer as ArrayBuffer);
   }
   for (const water of t.water) {
     buffers.add(water.reach.data.buffer as ArrayBuffer);

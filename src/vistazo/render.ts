@@ -5,7 +5,7 @@ import { wallShadowBuffers } from "./view/wallShadows";
 import { FineSurfaces, pieceBuffers, uvsOver, type PieceBuffers, type Surface } from "./view/surfaces";
 import { computeTerrain, type TerrainBuffers, type TerrainContext } from "./view/terrainBuffers";
 import { BASE_TEX_WIDTH, binBases } from "./view/baseBins";
-import { FILL_GROW, fillFrame, undersideBuffers } from "./view/undersides";
+import { FILL_GROW, fillFrame, fillGroups, undersideBuffers } from "./view/undersides";
 import { TerrainJobs, type TerrainAnswer } from "./terrainJob";
 import { unpackWalls, type PackedWalls } from "./view/wallPack";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
@@ -1748,15 +1748,21 @@ export class VistazoView {
     if (!scene || !texture || !this.mapTexture) {
       return;
     }
-    for (const [b, bridge] of scene.bridges.entries()) {
-      if (bridge.under === "keep") {
+    // Slabs over one another (a statue's body and arms) filled as one, over their outlines' union: no two
+    // copies of the same ground taking turns pixel by pixel (see fillGroups). The terrain's, or now.
+    const groups = this.terrain?.undersides ?? fillGroups(scene).map((group) => ({ ...group, ...undersideBuffers(scene, group, this.k) }));
+    for (const group of groups) {
+      const members = group.members.map((i) => scene.bridges[i]).filter((bridge) => bridge);
+      if (members.length === 0) {
         continue;
       }
+      // A mirroring one is alone in its group: its own frame.
+      const bridge = members[0];
       const { center, along, across, halfAlong, halfAcross } = bridge.frame;
-      const key = JSON.stringify(bridge.shape);
+      const key = JSON.stringify(group.shape);
       let kept = this.fillCache.get(key);
       if (!kept) {
-        const made = bridgeFill(bridge.shape, texture, scene.dpi * FILL_GROW);
+        const made = bridgeFill(group.shape, texture, scene.dpi * FILL_GROW);
         if (!made) {
           continue;
         }
@@ -1769,8 +1775,8 @@ export class VistazoView {
       fill.minFilter = THREE.LinearFilter;
       fill.needsUpdate = true;
       const area = new THREE.Vector4(...kept.box);
-      // Its underside's heights over the same box (see undersideBuffers): the terrain's numbers, or now.
-      const { cols, rows, heights } = this.terrain?.undersides[b] ?? undersideBuffers(scene, bridge, this.k);
+      // Its underside's heights over the same box (see undersideBuffers).
+      const { cols, rows, heights } = group;
       const underside = new THREE.DataTexture(heights, cols, rows, THREE.RGBAFormat, THREE.FloatType);
       // Read between its texels (where the card can: else nearest), so the fill's edge against what's
       // under it is a line, not stairs of texels.
@@ -1797,7 +1803,7 @@ export class VistazoView {
           uTex: { value: new THREE.Vector4(texture.x0, texture.y0, texture.w, texture.h) },
           uFrame: { value: new THREE.Vector4(center.x, center.y, along.x, along.y) },
           uAcross: { value: new THREE.Vector4(across.x, across.y, halfAlong, halfAcross) },
-          uBelow: { value: (bridgeHighest(bridge) - (bridge.top - bridge.bottom)) * this.k },
+          uBelow: { value: Math.max(...members.map((m) => bridgeHighest(m) - (m.top - m.bottom))) * this.k },
           uFill: { value: fill },
           uUnderside: { value: underside },
           uBox: { value: area },
