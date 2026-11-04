@@ -1,4 +1,4 @@
-import OBR, { type GridType, type Image, type InteractionManager, type Theme, type Vector2 } from "@owlbear-rodeo/sdk";
+import OBR, { type GridType, type Image, type InteractionManager, type Item, type Permission, type Theme, type Vector2 } from "@owlbear-rodeo/sdk";
 import { languageFromMetadata, type Language } from "../i18n/language";
 import { translate, type TranslationKey } from "../i18n/translate";
 import { formatDistance } from "../util/flattenGridScale";
@@ -53,7 +53,8 @@ import {
 } from "./panel";
 import { clearOf, fogOver } from "./fog";
 import * as itemActions from "./itemMenu";
-import { MIRROR_CHANNEL, OWN_CHANNEL, REMOTE_DRAG_CHANNEL, RemoteWatch, type Measured, type OwnMessage, type RemoteDrag } from "./remote";
+import { lockedNow, visibleNow } from "../util/attachments";
+import { MIRROR_CHANNEL, OWN_CHANNEL, REMOTE_DRAG_CHANNEL, RemoteWatch, type Fixed, type Measured, type OwnMessage, type RemoteDrag } from "./remote";
 import { dragSender, othersWatching } from "./remoteObr";
 import { DragPath } from "../util/dragPath";
 import { saveDraggedToken } from "../util/saveDrag";
@@ -1234,7 +1235,25 @@ async function start() {
   });
 
   stage.addEventListener("contextmenu", (event) => event.preventDefault());
-  // ---------- The item menu: a right click on a token or a prop (the GM's), as Owlbear's own ----------
+  // Who may do what to an item, as on the map (see background/permission.ts' canUpdateItem): the GM
+  // anything; a player what the room's permissions let them, for its layer (characters only their own,
+  // with "owner only" on).
+  let roomPermissions: Permission[] = await OBR.room.getPermissions().catch(() => []);
+  OBR.room.onPermissionsChange((next) => (roomPermissions = next));
+  const may = (item: Item, action: "CREATE" | "UPDATE" | "DELETE") => {
+    if (isGM) {
+      return true;
+    }
+    const permission = `${item.layer}_${action}` as Permission;
+    if (!roomPermissions.includes(permission)) {
+      return false;
+    }
+    return item.layer !== "CHARACTER" || !roomPermissions.includes("CHARACTER_OWNER_ONLY") || item.createdUserId === OBR.player.id;
+  };
+  const canMove = (item: Item) => may(item, "UPDATE");
+  /** The scene's items by id, for what an attachment takes from its parents (see util/attachments.ts). */
+  const itemsById = () => new Map(items.map((item) => [item.id, item]));
+  // ---------- The item menu: a right click on a token or a prop, as Owlbear's own (what each may: see may) ----------
   let itemMenu: HTMLElement | null = null;
   const closeItemMenu = () => {
     itemMenu?.remove();
@@ -1272,20 +1291,33 @@ async function start() {
       };
       menu.append(el);
     };
-    entry("vistazo.attach", () => setAttaching(id));
-    if (item.attachedTo) {
-      entry("vistazo.detach", () => itemActions.attach(id, null));
-    }
-    entry(item.locked ? "vistazo.unlock" : "vistazo.lock", () => itemActions.setLocked(id, !item.locked));
-    entry(item.visible ? "vistazo.hide" : "vistazo.show", () => itemActions.setVisible(id, !item.visible));
-    // A cell aside, as a token's next spot.
-    entry("vistazo.duplicate", async () => {
-      const copy = await itemActions.duplicate(id, { x: dpi, y: 0 });
-      if (copy) {
-        await OBR.player.select([copy]);
+    // Each as the room's permissions let this player (see may).
+    if (may(item, "UPDATE")) {
+      entry("vistazo.attach", () => setAttaching(id));
+      if (item.attachedTo) {
+        entry("vistazo.detach", () => itemActions.attach(id, null));
       }
-    });
-    entry("vistazo.delete", () => itemActions.remove(id), true);
+      entry(item.locked ? "vistazo.unlock" : "vistazo.lock", () => itemActions.setLocked(id, !item.locked));
+    }
+    // Only the GM's, whatever the permissions (as Owlbear's Hide/Show).
+    if (isGM) {
+      entry(item.visible ? "vistazo.hide" : "vistazo.show", () => itemActions.setVisible(id, !item.visible));
+    }
+    if (may(item, "CREATE")) {
+      // A cell aside, as a token's next spot.
+      entry("vistazo.duplicate", async () => {
+        const copy = await itemActions.duplicate(id, { x: dpi, y: 0 });
+        if (copy) {
+          await OBR.player.select([copy]);
+        }
+      });
+    }
+    if (may(item, "DELETE")) {
+      entry("vistazo.delete", () => itemActions.remove(id), true);
+    }
+    if (!menu.firstElementChild) {
+      return;
+    }
     document.body.append(menu);
     menu.style.left = `${Math.max(6, Math.min(window.innerWidth - menu.offsetWidth - 6, x))}px`;
     menu.style.top = `${Math.max(6, Math.min(window.innerHeight - menu.offsetHeight - 6, y))}px`;
@@ -1364,11 +1396,11 @@ async function start() {
     cancelAnimationFrame(frame);
     const point = stagePoint(event);
     press = pointers.size === 0 && event.button === 0 ? { token: view.tokenAt(event.target) ?? view.propAt(point.x, point.y), x: event.clientX, y: event.clientY } : null;
-    const right = pointers.size === 0 && event.button === 2 && isGM ? (view.tokenAt(event.target) ?? view.propAt(point.x, point.y)) : null;
+    const right = pointers.size === 0 && event.button === 2 ? (view.tokenAt(event.target) ?? view.propAt(point.x, point.y)) : null;
     rightPress = right && scene && [...scene.tokens, ...scene.props].some((p) => p.id === right) ? { token: right, x: event.clientX, y: event.clientY } : null;
     // A left press on an unlocked token or prop, without Shift: ready to move it (from the first few px of drag).
     const pressed = press?.token && !event.shiftKey ? (scene?.tokens.find((t) => t.id === press!.token) ?? scene?.props.find((p) => p.id === press!.token)) : undefined;
-    if (pressed && !pressed.item.locked && isGM) {
+    if (pressed && !lockedNow(itemsById(), pressed.item) && canMove(pressed.item)) {
       const at = stagePoint(event);
       // Dragged over a level at its height when grabbed (see pickPlane), not over whatever's under the cursor.
       const level = pressed.terrain + pressed.own;
@@ -1504,7 +1536,7 @@ async function start() {
           });
           showTokenAt(move.id, position, move.own);
           // To the others' Vistazos too, unless it's hidden.
-          dragSender().move(move.id, position, move.item.visible);
+          dragSender().move(move.id, position, visibleNow(itemsById(), move.item));
         }
         return;
       }
@@ -1849,6 +1881,10 @@ async function start() {
    * else the one someone else began last; null, neither (then the selected token's, see selectedOrigin).
    */
   const measuring = (): Measured | null => {
+    // A Medición fija up: the map shows it, and only it, whatever's dragged or measured meanwhile.
+    if (fixedMedicion) {
+      return { point: fixedMedicion.center, own: fixedMedicion.height, radius: fixedMedicion.radius };
+    }
     if (draggingId) {
       return { tokenId: draggingId };
     }
@@ -1858,12 +1894,22 @@ async function start() {
     if (freePoint) {
       return { point: { x: freePoint.x, y: freePoint.y }, own: freePoint.own };
     }
+    if (remoteMeasured && "point" in remoteMeasured && remotePoint) {
+      return { point: remotePoint.shown, own: remoteMeasured.own };
+    }
     return remoteMeasured;
   };
   /** What someone else measures from (see remote.ts and selectedOrigin), or null. */
   let remoteMeasured: Measured | null = null;
   /** This client's own Medición on the map, while it's up: what it measures from (see remote.ts' OWN_CHANNEL). */
   let ownMedicion: Measured | null = null;
+  /** The Medición fija on this screen's map (see remote.ts' OWN_CHANNEL), while it's up. */
+  let fixedMedicion: Fixed | null = null;
+  /**
+   * Someone else's free point, as it's shown: eased toward where it was last heard of, as their drags
+   * are (a few messages a second come); on a hex grid, from cell to cell, as their screen has it.
+   */
+  let remotePoint: { target: Vector2; shown: Vector2 } | null = null;
   /**
    * Tokens someone else is dragging (see remote.ts): where they're heading (the last heard), where
    * they're shown (eased toward it: a few messages a second come), whether they're seen here (see
@@ -1880,7 +1926,7 @@ async function start() {
     if (measured && scene) {
       const origin =
         "point" in measured
-          ? pointOrigin({ ...measured.point, own: measured.own ?? 0 })
+          ? pointOrigin({ ...measured.point, own: measured.own ?? 0 }, measured.radius)
           : (scene.tokens.find((token) => token.id === measured.tokenId) ?? scene.props.find((prop) => prop.id === measured.tokenId));
       if (origin) {
         return origin;
@@ -1894,10 +1940,11 @@ async function start() {
     return scene.tokens.find((token) => token.id === selection[0]) ?? (withProps ? scene.props.find((prop) => prop.id === selection[0]) : undefined);
   };
   /**
-   * The free point (or another, someone else's) as an origin, a token's size (one cell), at the
-   * ground there plus its own height: the item the distance math reads is made up.
+   * The free point (or another, someone else's, or a Medición fija's) as an origin, a token's size (one
+   * cell; `radius`, grid units: a bigger one's), at the ground there plus its own height: the item the
+   * distance math reads is made up.
    */
-  const pointOrigin = (point = freePoint) => {
+  const pointOrigin = (point = freePoint, radius = 0) => {
     if (!scene || !point) {
       return undefined;
     }
@@ -1908,7 +1955,8 @@ async function start() {
       name: "",
       position: { x: point.x, y: point.y },
       rotation: 0,
-      scale: { x: 1, y: 1 },
+      // A cell across (measured as from a point), or a Medición fija's token's size, left where it was.
+      scale: { x: Math.max(1, radius * 2), y: Math.max(1, radius * 2) },
       image: { width: dpi, height: dpi, url: "", mime: "image/png" },
       grid: { dpi, offset: { x: dpi / 2, y: dpi / 2 } },
       metadata: {},
@@ -2070,7 +2118,7 @@ async function start() {
     }
     let list = followers.get(tokenId);
     if (!list) {
-      const under = itemActions.attachedUnder(items, tokenId);
+      const under = itemActions.attachedUnder(items, tokenId, "POSITION");
       list = [...scene.tokens, ...scene.props].filter((t) => under.has(t.id)).map((t) => t.id);
       followers.set(tokenId, list);
     }
@@ -2128,7 +2176,7 @@ async function start() {
   /** Whether a token someone else drags is seen here at a point: not hidden (but by a GM), nor under the fog in the player view. */
   const remoteSeen = (id: string, at: Vector2) => {
     const item = items.find((i) => i.id === id);
-    if (!item || (!item.visible && (!isGM || options.playerView))) {
+    if (!item || (!visibleNow(itemsById(), item) && (!isGM || options.playerView))) {
       return false;
     }
     if (!options.playerView || !lastFog) {
@@ -2178,12 +2226,25 @@ async function start() {
     }
     if (changed) {
       view.setScene(scene);
+    }
+    // Someone else's free point, eased too.
+    let pointMoved = false;
+    if (remotePoint) {
+      const { target, shown } = remotePoint;
+      const [dx, dy] = [target.x - shown.x, target.y - shown.y];
+      if (dx !== 0 || dy !== 0) {
+        remotePoint.shown = Math.hypot(dx, dy) < 0.5 ? { ...target } : { x: shown.x + dx * ease, y: shown.y + dy * ease };
+        pointMoved = true;
+        showPointMarker();
+      }
+    }
+    if (changed || pointMoved) {
       showDistances();
     }
     if (rebuild) {
       later();
     }
-    if (remoteLive.size > 0) {
+    if (remoteLive.size > 0 || pointMoved) {
       remoteFrame = requestAnimationFrame(stepRemote);
     }
   };
@@ -2205,7 +2266,7 @@ async function start() {
     if (!from) {
       return moved;
     }
-    for (const follower of itemActions.attachedUnder(items, id)) {
+    for (const follower of itemActions.attachedUnder(items, id, "POSITION")) {
       const item = items.find((i) => i.id === follower);
       if (item?.type === "IMAGE") {
         moved.push([follower, { x: item.position.x + position.x - from.x, y: item.position.y + position.y - from.y }]);
@@ -2215,7 +2276,20 @@ async function start() {
   };
   const remoteWatch = new RemoteWatch(
     (what) => {
+      const was = remoteMeasured;
       remoteMeasured = what;
+      if (what && "point" in what) {
+        // Moved: eased there (not on a hex grid: from cell to cell, as on their screen). Put down: there at once.
+        const hex = isHexShape(onGrid(bandSetFromMetadata(sceneMetadata), gridType).shape);
+        if (remotePoint && was && "point" in was && !hex) {
+          remotePoint.target = { ...what.point };
+          runRemote();
+        } else {
+          remotePoint = { target: { ...what.point }, shown: { ...what.point } };
+        }
+      } else {
+        remotePoint = null;
+      }
       showPointMarker();
       showDistances();
     },
@@ -2778,6 +2852,10 @@ async function start() {
     const message = event.data as OwnMessage | null;
     if (message?.type === "own") {
       ownMedicion = message.measured;
+      showPointMarker();
+      showDistances();
+    } else if (message?.type === "fixed") {
+      fixedMedicion = message.fixed;
       showPointMarker();
       showDistances();
     }

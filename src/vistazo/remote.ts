@@ -21,11 +21,14 @@ export const REMOTE_DRAG_CHANNEL = getPluginId("vistazo/remoteDrag");
 /** The Medición's mirror (see measureMirror.ts): listened to here, never sent. */
 export const MIRROR_CHANNEL = getPluginId("measureMirror");
 /**
- * This client's own Medición (the map's), told its Vistazo, on this client only: what it measures from
- * while it's up (null: it's over); and the Vistazo's hello, opened meanwhile, answered with it.
+ * From this client's map to its Vistazo, on this client only: what its own Medición measures from while
+ * it's up (null: it's over); the Medición fija shown on this screen (the room's, or this GM's secret
+ * one; null: none); and the Vistazo's hello, opened meanwhile, answered with both.
  */
 export const OWN_CHANNEL = getPluginId("vistazo/ownMedicion");
-export type OwnMessage = { type: "own"; measured: Measured | null } | { type: "hello" };
+/** A Medición fija: where it measures from (px), the Origen's height over its ground and radius (grid units, 0: a point). */
+export type Fixed = { center: Vector2; height: number; radius: number };
+export type OwnMessage = { type: "own"; measured: Measured | null } | { type: "fixed"; fixed: Fixed | null } | { type: "hello" };
 /** In a player's metadata: whether their Vistazo is open (the drags are only sent to be seen). */
 export const WATCHING_KEY = getPluginId("vistazo/watching");
 
@@ -231,8 +234,11 @@ export class DragSender {
   }
 }
 
-/** What someone's measuring from: a token, or a point (scene px; `own`, its height over the ground). */
-export type Measured = { tokenId: string } | { point: Vector2; own?: number };
+/**
+ * What someone's measuring from: a token, or a point (scene px; `own`, its height over the ground;
+ * `radius`, grid units, a token's that was there when a Medición fija was left: none, a cell's).
+ */
+export type Measured = { tokenId: string } | { point: Vector2; own?: number; radius?: number };
 
 /** The mirror's messages, as far as they're read here (see measureMirror.ts; anything else, ignored). */
 type Mirror = { type?: unknown; sessionId?: unknown; origin?: { center?: Vector2 }; originTokenId?: unknown };

@@ -68,6 +68,7 @@ import {
   letterToCode,
   type GlobalSettings,
 } from "../settings/globalSettings";
+import { visibleNow } from "../util/attachments";
 
 // The Medición tool: drag from a point, or from a token to move it, and see
 // rings around the Origen, a Lectura on every other token, and the Origen's
@@ -190,6 +191,21 @@ let pendingLecturaPosition: Vector2 | null = null;
 let lecturaRefreshScheduled = false;
 
 /** A Medición from a point: the rings, gradient, Lecturas and height label all follow the pointer. */
+/**
+ * A Medición from a point: where its Origen is now (it follows the pointer), and its height, to this
+ * client's Vistazo and the others' (theirs as a free point, see vistazo/remote.ts). From a token: nothing
+ * (its drag goes out as one).
+ */
+function tellFreeOrigin() {
+  if (downTarget) {
+    return;
+  }
+  tellOwnMedicion({ point: { x: activeCenter.x, y: activeCenter.y }, own: originHeight });
+  if (!secretMedicion) {
+    dragSender().point({ x: activeCenter.x, y: activeCenter.y, own: originHeight });
+  }
+}
+
 function scheduleRefresh(pointerPosition: Vector2) {
   pendingPointerPosition = pointerPosition;
   if (refreshScheduled) {
@@ -204,6 +220,7 @@ function scheduleRefresh(pointerPosition: Vector2) {
     activeCenter = onCell(pendingPointerPosition, activeDpi);
     activeLecturaCenter = activeCenter;
     pendingPointerPosition = null;
+    tellFreeOrigin();
     refreshBandPositions();
     refreshLecturas();
     // Over another terrain, the height shown above the fixed ground changes.
@@ -398,6 +415,7 @@ function cleanup() {
   activeTokens = [];
   setMeasuringHere(false);
   tellOwnMedicion(null);
+  dragSender().point(null);
   hiddenTokenIds = new Set();
   secretMedicion = false;
   activeTokenHeights = new Map();
@@ -570,7 +588,7 @@ async function moveDraggedToken(pointer: Vector2) {
     if (downTarget) {
       setDraggedToken(downTarget.id, position);
       // To the others' Vistazos too, unless it's hidden (a secret Medición's).
-      dragSender().move(downTarget.id, position, downTarget.visible && !secretMedicion);
+      dragSender().move(downTarget.id, position, !secretMedicion);
     }
     if (fixedDrag && downTarget) {
       setFixedLive(downTarget.id, { position, height: originHeight });
@@ -647,15 +665,17 @@ function followScene(items: Item[]) {
   if (!measureView || activeTokens.length === 0) {
     return;
   }
+  // Hidden as Owlbear shows it: an attachment of a hidden item too (see util/attachments.ts).
+  const byId = new Map(items.map((item) => [item.id, item]));
   const scene = new Map<string, Image>();
   for (const item of items) {
-    if (isImage(item) && (activeRole === "GM" || item.visible)) {
+    if (isImage(item) && (activeRole === "GM" || visibleNow(byId, item))) {
       scene.set(item.id, item);
     }
   }
   activeTokens = activeTokens.flatMap((token) => scene.get(token.id) ?? []);
   if (activeRole === "GM") {
-    hiddenTokenIds = new Set(activeTokens.filter((token) => !token.visible).map((token) => token.id));
+    hiddenTokenIds = new Set(activeTokens.filter((token) => !visibleNow(byId, token)).map((token) => token.id));
   }
   if (activeAltitudeEnabled && activeBandSet) {
     activeTokenHeights = tokenHeightsFromMarkers(items.filter(isTokenHeightMarker), activeBandSet);
@@ -732,9 +752,8 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
           OBR.scene.grid.getDpi(),
           OBR.scene.grid.getScale(),
           getGridType(),
-          OBR.scene.items.getItems(
-            (item) => isImage(item) && item.layer === "CHARACTER"
-          ),
+          // All of them: whether a token's hidden can depend on what it's attached to.
+          OBR.scene.items.getItems(),
           getAllTokenHeightMarkers(),
           OBR.player.getRole(),
           permissionCheck,
@@ -779,11 +798,13 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
         // A player's client still has hidden tokens (Owlbear just doesn't draw
         // them): measuring them would show their Lecturas.
         activeRole = role;
+        // Hidden as Owlbear shows it: an attachment of a hidden item too (see util/attachments.ts).
+        const byId = new Map(tokensAndTerrain.map((item) => [item.id, item]));
         activeTokens = characterImages.filter(
-          (item) => item.id !== downTarget?.id && (role === "GM" || item.visible)
+          (item) => item.id !== downTarget?.id && (role === "GM" || visibleNow(byId, item))
         );
-        hiddenTokenIds = new Set(activeTokens.filter((item) => !item.visible).map((item) => item.id));
-        secretMedicion = target?.type === "IMAGE" && !target.visible;
+        hiddenTokenIds = new Set(activeTokens.filter((item) => !visibleNow(byId, item)).map((item) => item.id));
+        secretMedicion = target?.type === "IMAGE" && !visibleNow(byId, byId.get(target.id) ?? target);
         activeTokenHeights = tokenHeightsFromMarkers(heightMarkers, bandSet);
         activeTerrainOn = terrainOn(activeSettings, gridType);
         activeTerrain = activeTerrainOn ? terrainNow() : [];
@@ -867,7 +888,11 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
         // Only this one on this screen meanwhile (see showOnly).
         setMeasuringHere(true);
         // And in this client's Vistazo (secret or not: it's this screen's own).
-        tellOwnMedicion(downTarget ? { tokenId: downTarget.id } : { point: { x: activeCenter.x, y: activeCenter.y } });
+        if (downTarget) {
+          tellOwnMedicion({ tokenId: downTarget.id });
+        } else {
+          tellFreeOrigin();
+        }
         // Only now: other clients attach what they draw to the anchor, so it
         // has to exist for them first.
         if (!secretMedicion) {
@@ -942,6 +967,7 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
       if (fixedDragging && downTarget) {
         setFixedLive(downTarget.id, { position: liveTokenPosition ?? downTarget.position, height: next });
       }
+      tellFreeOrigin();
       refreshLecturas();
       refreshHeightLabel();
       // The marker follows too; not awaited, writes are queued.

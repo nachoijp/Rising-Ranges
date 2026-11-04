@@ -348,6 +348,7 @@ body {
 .tok.prop.noshadow video {
   filter: none;
 }
+.tok.prop.flat .lbls,
 .tok.prop.flat .lbl {
   pointer-events: none;
 }
@@ -405,13 +406,47 @@ body {
 .tok .lbl {
   transition: opacity 0.15s;
 }
-.tok .lbl {
-  zoom: var(--label-scale, 1);
+/* Under the picture: the name as Owlbear's map has it, then the height and where it stands (that one
+   sized by the option: --label-scale). */
+.tok .lbls {
   position: absolute;
-  /* Down to the top of what shows of the picture (--gap, set unzoomed: the label is zoomed). */
-  bottom: calc(100% + 3px - var(--gap, 0px) / var(--label-scale, 1));
+  /* From the bottom of its picture's box, as Owlbear's label (centred on it: see .obr-lbl). */
+  top: 100%;
+  /* Over the picture, as Owlbear's label is over the token's. */
+  z-index: 1;
   left: 50%;
   transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.tok .lbls [hidden] {
+  display: none;
+}
+/* Owlbear's own label, as its map draws it (its code: a #3D405199 rounded rect, corners of 20, round
+   its text and padding, centred on the bottom of the picture's box), sized in scene px (--fs, --pad,
+   --h, --sw: see writeLabel) at the picture's scale (--u). */
+.tok .obr-lbl {
+  /* Sized by the labels' option too (--label-scale), from Owlbear's size at its middle. */
+  zoom: var(--label-scale, 1);
+  font-size: calc(var(--fs, 24) * var(--u, 0.5) * 1px);
+  padding: 0 calc(var(--pad, 8) * var(--u, 0.5) * 1px);
+  height: calc(var(--h, 52) * var(--u, 0.5) * 1px);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  margin-top: calc(var(--h, 52) * var(--u, 0.5) * -0.5px);
+  background: #3d405199;
+  border-radius: calc(20 * var(--u, 0.5) * 1px);
+  -webkit-text-stroke: calc(var(--sw, 0) * var(--u, 0.5) * 1px) var(--stroke, transparent);
+  paint-order: stroke fill;
+  white-space: nowrap;
+}
+.tok .lbl {
+  /* The option's size up close; seen from afar, smaller with the token (as its name is), to 40% of it:
+     full size while the name's letters are 16px or more (24 scene px at --u 0.67). */
+  zoom: calc(var(--label-scale, 1) * clamp(0.4, var(--u, 1) * 1.5, 1));
   font: 500 12px/1.15 Roboto, "Segoe UI", system-ui, sans-serif;
   color: #fff;
   background: rgba(12, 18, 16, 0.78);
@@ -440,6 +475,7 @@ body {
 .tok.hidden img {
   opacity: 0.15;
 }
+.tok.hidden .obr-lbl,
 .tok.hidden .lbl {
   opacity: 0.6;
 }

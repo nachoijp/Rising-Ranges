@@ -1,4 +1,5 @@
 import { isImage, type GridScale, type GridType, type Image, type Item } from "@owlbear-rodeo/sdk";
+import { visibleNow } from "../util/attachments";
 import type { SceneRecipe } from "./terrainJob";
 import type { MultiPolygon, Pair } from "polygon-clipping";
 import polygonClipping from "../terrain/clip";
@@ -309,6 +310,8 @@ export function buildScene(
   const bandSet = onGrid(bandSetFromMetadata(metadata), gridType);
   const own = altitude ? tokenHeightsFromMarkers(items.filter(isTokenHeightMarker), bandSet) : new Map<string, number>();
   const heights = new Map<string, number>();
+  // Hidden as Owlbear shows it: an attachment of a hidden item too (unless it's set not to follow its visibility).
+  const byId = new Map(items.map((item) => [item.id, item]));
   const tokens: Token[] = tokenItems.map((item) => {
     const floor = onFloor(item);
     const [x, y] = imageToScene(floor, dpi, floor.image.width / 2, floor.image.height / 2);
@@ -327,7 +330,7 @@ export function buildScene(
       rotation: item.rotation,
       flipX: item.scale.x < 0,
       flipY: item.scale.y < 0,
-      hidden: !item.visible,
+      hidden: !visibleNow(byId, item),
       item,
       base: getVistazoBase(item),
     };
@@ -342,7 +345,7 @@ export function buildScene(
   });
 
   const props: Prop[] = items
-    .filter((item): item is Image => isImage(item) && item.layer === "PROP" && item.visible)
+    .filter((item): item is Image => isImage(item) && item.layer === "PROP" && visibleNow(byId, item))
     .sort((a, b) => a.zIndex - b.zIndex)
     .map((item) => propOf(item, dpi, measuredAt, own.get(item.id) ?? 0));
 

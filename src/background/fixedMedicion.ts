@@ -30,6 +30,8 @@ import {
   type LecturaState,
 } from "../render/lecturaItems";
 import { computeLecturaState, heightLabelText, type LecturaOrigin } from "../render/computeLectura";
+import { tellFixedMedicion } from "../vistazo/remoteObr";
+import { visibleNow } from "../util/attachments";
 
 // The Medición fija: a Medición left in place (Shift held when one is
 // released) so tokens can be moved around a fixed point, until a Shift+click
@@ -329,6 +331,7 @@ async function reconcile() {
   if (!sceneReady) {
     // No scene, no local items to touch (OBR.scene.* would throw).
     syncClearAction(null);
+    tellFixedMedicion(null);
     return;
   }
   if (resync) {
@@ -341,6 +344,8 @@ async function reconcile() {
     }
   }
   const fixed = dpi && gridScale ? current() : null;
+  // This screen's Vistazo shows it too.
+  tellFixedMedicion(fixed);
   // Its maker is gone, so it's ignored everywhere; the GM's client also
   // takes it out of the room. Just the GM's, so they don't all write.
   if (role === "GM" && shared && shared.owner !== myConnectionId && !connected.has(shared.owner)) {
@@ -390,9 +395,11 @@ async function reconcile() {
     const lecturasEnabled = display.lecturaStyle !== "none" || display.lecturaLabel !== "none";
     // A player's client still has hidden tokens (Owlbear just doesn't draw
     // them): measuring them would show their Lecturas.
+    // Hidden as Owlbear shows it: an attachment of a hidden item too (see util/attachments.ts).
+    const byId = new Map(items.map((item) => [item.id, item]));
     const tokens = lecturasEnabled
       ? items.filter(
-          (item): item is Image => isImage(item) && item.layer === "CHARACTER" && (role === "GM" || item.visible)
+          (item): item is Image => isImage(item) && item.layer === "CHARACTER" && (role === "GM" || visibleNow(byId, item))
         )
       : [];
 

@@ -44,6 +44,7 @@ import {
   markerLookFromMetadata,
   type MarkerLook,
 } from "../tokenHeight/markers";
+import { visibleNow } from "../util/attachments";
 
 // What a height marker shows: its icon stack ("icons" and "both" styles)
 // and its "⬆️ 30ft" label ("label", where the icons would be, and "both",
@@ -430,12 +431,15 @@ function computeWanted(): Map<string, Wanted> {
   const now = Date.now();
   const seen = new Set<string>();
   let nextStale = Infinity;
+  // Hidden as Owlbear shows it: an attachment of a hidden item too (see util/attachments.ts).
+  const byId = new Map(items.map((item) => [item.id, item]));
   for (const token of items) {
     // Every token a height can be set on (see createTokenHeightMenu.ts), and
     // any other with a marker (moved to another layer since). A player never
     // sees a hidden token, so neither should its label.
     const marker = isImage(token) ? markers.get(token.id) : undefined;
-    if (!isImage(token) || (token.layer !== "CHARACTER" && !marker) || (role !== "GM" && !token.visible)) {
+    const shown = isImage(token) && visibleNow(byId, token);
+    if (!isImage(token) || (token.layer !== "CHARACTER" && !marker) || (role !== "GM" && !shown)) {
       continue;
     }
     const own = (marker && getTokenHeight(marker, bandSet)) || 0;
@@ -455,7 +459,8 @@ function computeWanted(): Map<string, Wanted> {
     }
     const live = dragged?.tokenId === token.id ? { tokenId: token.id, position: dragged.position } : undefined;
     const held = midDrag || !!live;
-    const placed = live ? { ...token, position: live.position } : token;
+    // Drawn as the token is: faded for the GM when it's hidden, even by what it's attached to.
+    const placed = { ...token, ...(live ? { position: live.position } : {}), visible: shown };
     // Above its own ground, or above the fixed one, the terrain where it is
     // included (see GlobalSettings.groundLevel): then its icons are drawn
     // for that height rather than taken from its marker.

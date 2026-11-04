@@ -15,6 +15,7 @@ import {
 import { buildBandRingItems, buildGradientShaders, reshapeOrigin } from "../render/bandRings";
 import { getStoredTheme } from "../theme/themes";
 import { showPinnedFixedMedicion } from "./fixedMedicion";
+import { visibleNow } from "../util/attachments";
 
 // Shows a Medición's rings, gradient, Lecturas and height label to every
 // client, not just the one measuring, each in that client's own color theme.
@@ -555,11 +556,14 @@ export function startMeasureMirrorReceiver() {
       const tokenIds = Object.keys(message.states);
       // The sender never sends a hidden token's Lectura; a token hidden
       // since is left out here too, unless this is a GM.
+      // All of them: whether a token's hidden can depend on what it's attached to (see util/attachments.ts).
       const [items, role] = await Promise.all([
-        tokenIds.length > 0 ? OBR.scene.items.getItems(tokenIds) : Promise.resolve([]),
+        tokenIds.length > 0 ? OBR.scene.items.getItems() : Promise.resolve([]),
         OBR.player.getRole(),
       ]);
-      const tokens = items.filter((item): item is Image => isImage(item) && (role === "GM" || item.visible));
+      const byId = new Map(items.map((item) => [item.id, item]));
+      const wanted = new Set(tokenIds);
+      const tokens = items.filter((item): item is Image => wanted.has(item.id) && isImage(item) && (role === "GM" || visibleNow(byId, item)));
       const ctx: LecturaContext = { ...message.ctx, theme: getStoredTheme() };
       const view = new LocalMeasureView(ctx);
       sessions.set(connectionId, { sessionId: message.sessionId, view, order: nextOrder++ });
@@ -631,9 +635,10 @@ export function startMeasureMirrorReceiver() {
     if (sessions.size === 0) {
       return;
     }
+    const byId = new Map(items.map((item) => [item.id, item]));
     const tokens = new Map<string, Image>();
     for (const item of items) {
-      if (isImage(item) && (role === "GM" || item.visible)) {
+      if (isImage(item) && (role === "GM" || visibleNow(byId, item))) {
         tokens.set(item.id, item);
       }
     }

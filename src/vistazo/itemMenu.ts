@@ -1,28 +1,15 @@
 import OBR, { type Item } from "@owlbear-rodeo/sdk";
 import { isTokenHeightMarker } from "../tokenHeight/markers";
+import { attachedUnder } from "../util/attachments";
+
+export { attachedUnder };
 
 /**
  * What the Glance's item menu (a right click on a token or a prop) does to the item, as Owlbear's own
  * menu would: through the scene's items, so every view (the map's too) shows it.
  */
 
-/** The items attached to one, and to those, and so on (not itself). */
-export function attachedUnder(items: Item[], id: string): Set<string> {
-  const under = new Set<string>();
-  let grew = true;
-  while (grew) {
-    grew = false;
-    for (const item of items) {
-      if (item.attachedTo && (item.attachedTo === id || under.has(item.attachedTo)) && !under.has(item.id)) {
-        under.add(item.id);
-        grew = true;
-      }
-    }
-  }
-  return under;
-}
-
-/** Whether `child` can be attached to `parent`: another item, not one attached to it (they'd go round). */
+/** Whether `child` can be attached to `parent`: another item, not one attached to it however (they'd go round). */
 export async function canAttach(child: string, parent: string): Promise<boolean> {
   if (child === parent) {
     return false;
@@ -50,12 +37,13 @@ export async function setVisible(id: string, visible: boolean) {
 }
 
 /**
- * A copy of an item, `by` scene px aside, with what's attached to it (copied too, attached to the copy);
- * not its height marker (the marker's own code puts a new one under the copy). The copy's id.
+ * A copy of an item, `by` scene px aside, with what's attached to it (copied too, attached to the copy)
+ * but what's set not to be copied with it (Copy, in its Constraints); not its height marker (the
+ * marker's own code puts a new one under the copy). The copy's id.
  */
 export async function duplicate(id: string, by: { x: number; y: number }): Promise<string | null> {
   const items = await OBR.scene.items.getItems();
-  const under = attachedUnder(items, id);
+  const under = attachedUnder(items, id, "COPY");
   const copied = items.filter((item) => (item.id === id || under.has(item.id)) && !isTokenHeightMarker(item));
   if (!copied.some((item) => item.id === id)) {
     return null;
@@ -76,7 +64,7 @@ export async function duplicate(id: string, by: { x: number; y: number }): Promi
   return ids.get(id)!;
 }
 
-/** Deletes an item, with what's attached to it (as Owlbear's own Delete). */
+/** Deletes an item, with what's attached to it (as Owlbear's own Delete) but what's set not to go with it (Delete, in its Constraints). */
 export async function remove(id: string) {
-  await OBR.scene.items.deleteItems([id, ...attachedUnder(await OBR.scene.items.getItems(), id)]);
+  await OBR.scene.items.deleteItems([id, ...attachedUnder(await OBR.scene.items.getItems(), id, "DELETE")]);
 }

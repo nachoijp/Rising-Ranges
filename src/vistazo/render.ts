@@ -1,3 +1,5 @@
+import type { TextStyle } from "@owlbear-rodeo/sdk";
+import { labelFont } from "./labelFonts";
 import * as THREE from "three";
 import { colorAt, softColorAt, softPixels, type MapColors } from "./view/mapColors";
 import { WALL_STYLE, wallBuffers, type WallBuffers } from "./view/wallBuffers";
@@ -2222,19 +2224,7 @@ export class VistazoView {
         stem.userData.prop = true;
         this.tokenGroup.add(stem);
       }
-      let title: HTMLElement | undefined;
-      let detail: HTMLElement | undefined;
-      if (propLabels) {
-        const label = document.createElement("div");
-        label.className = "lbl";
-        title = document.createElement("span");
-        label.append(title);
-        if (this.options.tokenLabels === "full") {
-          detail = document.createElement("small");
-          label.append(detail);
-        }
-        disc.prepend(label);
-      }
+      const { name, title, detail } = propLabels ? labelsIn(disc, this.options.tokenLabels) : {};
       el.appendChild(disc);
       overlay.appendChild(el);
       const view: TokenView = {
@@ -2248,6 +2238,7 @@ export class VistazoView {
         marks: { ring: null, stem },
         seat,
         painted,
+        name,
         title,
         detail,
         prop: { data: prop, flat, mesh, shadow },
@@ -2276,24 +2267,11 @@ export class VistazoView {
       const disc = document.createElement("div");
       disc.className = "disc";
       const img = mediaElement(token.url, token.video);
-      const shown = this.options.tokenLabels;
-      let title: HTMLElement | undefined;
-      let detail: HTMLElement | undefined;
-      if (shown !== "none") {
-        const label = document.createElement("div");
-        label.className = "lbl";
-        title = document.createElement("span");
-        label.append(title);
-        if (shown === "full") {
-          detail = document.createElement("small");
-          label.append(detail);
-        }
-        disc.append(label);
-      }
+      const { name, title, detail } = this.options.tokenLabels !== "none" ? labelsIn(disc, this.options.tokenLabels) : {};
       disc.append(img);
       el.appendChild(disc);
       overlay.appendChild(el);
-      const view: TokenView = { token, el, disc, img, zTok, screen: { x: 0, y: 0 }, hidden: false, marks: { ring: null, stem }, seat, painted, title, detail };
+      const view: TokenView = { token, el, disc, img, zTok, screen: { x: 0, y: 0 }, hidden: false, marks: { ring: null, stem }, seat, painted, name, title, detail };
       this.writeLabel(view);
       return view;
     });
@@ -2747,11 +2725,33 @@ export class VistazoView {
   private writeLabel(view: TokenView) {
     // A prop's label is on or off by itself; with the tokens' set to none, it says the name.
     const shown = view.prop && this.options.tokenLabels === "none" ? "name" : this.options.tokenLabels;
+    // Its name as Owlbear's map has it: its label's text and style, or nothing without one.
+    if (view.name) {
+      const label = view.token.item.text?.plainText?.trim() ?? "";
+      // Not with the height alone.
+      view.name.hidden = !label || shown === "height" || shown === "heightFull";
+      view.name.textContent = label;
+      // Owlbear's defaults for an image's label, where it has none of its own.
+      const style = { padding: 8, fontFamily: "Roboto", fontSize: 24, fontWeight: 400, fillColor: "#ffffff", fillOpacity: 1, strokeColor: "#ffffff", strokeOpacity: 1, strokeWidth: 0, lineHeight: 1.5, ...(view.token.item.text?.style as Partial<TextStyle> | undefined) };
+      const css = view.name.style;
+      // In scene px, as Owlbear draws them: drawn here at the picture's scale (--u, see placeTokens).
+      css.setProperty("--fs", String(style.fontSize));
+      css.setProperty("--pad", String(style.padding));
+      css.setProperty("--h", String(style.fontSize * style.lineHeight + style.padding * 2));
+      css.setProperty("--sw", String(style.strokeWidth));
+      css.fontFamily = `"${labelFont(style.fontFamily)}", Roboto, sans-serif`;
+      css.fontWeight = String(style.fontWeight);
+      css.lineHeight = String(style.lineHeight);
+      css.color = `color-mix(in srgb, ${style.fillColor} ${style.fillOpacity * 100}%, transparent)`;
+      css.setProperty("--stroke", `color-mix(in srgb, ${style.strokeColor} ${style.strokeOpacity * 100}%, transparent)`);
+    }
+    // Under it, its height and where it stands (none with the names alone).
     if (!view.title) {
       return;
     }
     const text = this.tokenText(view.token);
-    view.title.textContent = shown === "full" ? `${text.name} · ${text.height}` : shown === "height" ? text.height : text.name;
+    view.title.parentElement!.hidden = shown === "name" || !text.height;
+    view.title.textContent = text.height;
     if (view.detail) {
       view.detail.textContent = text.detail;
     }
@@ -2995,7 +2995,8 @@ export class VistazoView {
         top = -d / 2 - (onBase ? shown.y1 : (shown.y0 + shown.y1) / 2);
         gap = Math.max(0, d / 2 + shown.y0);
       }
-      disc.style.cssText = `width:${d}px;height:${d}px;left:${left}px;top:${top}px;--gap:${gap}px`;
+      // Its labels drawn at its picture's scale, as Owlbear's are (--u: screen px a scene px).
+      disc.style.cssText = `width:${d}px;height:${d}px;left:${left}px;top:${top}px;--gap:${gap}px;--u:${d / Math.max(1, token.size)}`;
       // Turned as on the map (not with the camera: that reads oddly on a standing token).
       img.style.transform = `rotate(${token.rotation}deg) scale(${token.flipX ? -1 : 1},${token.flipY ? -1 : 1})`;
       const lift = onBase ? (token.size * u) / 2 : 0;
@@ -3470,6 +3471,29 @@ function layer(material: THREE.MeshBasicMaterial, name: string, uniforms: Record
       .replace("#include <opaque_fragment>", `${body}\n#include <opaque_fragment>`);
   };
   material.customProgramCacheKey = () => `${key()}+rising-ranges/${name}`;
+}
+
+/**
+ * A token's labels, under its picture: its name as Owlbear's map shows it, then (as `shown` has it) its
+ * height and where it stands, in a pill of its own under that.
+ */
+function labelsIn(disc: HTMLElement, shown: string): { name: HTMLElement; title: HTMLElement; detail?: HTMLElement } {
+  const labels = document.createElement("div");
+  labels.className = "lbls";
+  const name = document.createElement("div");
+  name.className = "obr-lbl";
+  const info = document.createElement("div");
+  info.className = "lbl";
+  const title = document.createElement("span");
+  info.append(title);
+  let detail: HTMLElement | undefined;
+  if (shown === "full" || shown === "heightFull") {
+    detail = document.createElement("small");
+    info.append(detail);
+  }
+  labels.append(name, info);
+  disc.prepend(labels);
+  return { name, title, detail };
 }
 
 const BASE_GLSL = /* glsl */ `

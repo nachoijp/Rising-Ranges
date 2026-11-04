@@ -52,6 +52,7 @@ import {
   readPanelSize,
   savePanelSize,
 } from "./panelPopover";
+import { visibleNow } from "../util/attachments";
 
 /** `axonometry`: the grid's rhombus ratio, 0 on a flat grid (see axonometry.ts). */
 type Grid = { dpi: number; scale: GridScale; axonometry: number; type: GridType };
@@ -266,14 +267,16 @@ export function DistancePanel() {
     };
   }, []);
 
-  // A player never gets distances to tokens the GM has hidden.
+  // A player never gets distances to tokens the GM has hidden (or to what's attached to them, see
+  // util/attachments.ts).
+  const byId = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
   const tokens = useMemo(
     () =>
       items
         .filter((item): item is Image => isImage(item) && item.layer === "CHARACTER")
-        .filter((token) => token.visible || (role === "GM" && showHidden))
+        .filter((token) => visibleNow(byId, token) || (role === "GM" && showHidden))
         .sort((a, b) => tokenName(a).localeCompare(tokenName(b))),
-    [items, role, showHidden]
+    [items, byId, role, showHidden]
   );
   const tokensRef = useRef(tokens);
   tokensRef.current = tokens;

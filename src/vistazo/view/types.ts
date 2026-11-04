@@ -29,7 +29,11 @@ export type Options = {
   /** Lines from the selected token to the others, by Banda. */
   distances: boolean;
   /** What a token's label says. */
-  tokenLabels: "full" | "height" | "name" | "none";
+  /**
+   * A token's labels: its name (Owlbear's label), its height, and where it stands ("full": all three;
+   * "nameHeight": no where; "heightFull": no name; "height": the height alone; "name": the name alone).
+   */
+  tokenLabels: "full" | "nameHeight" | "heightFull" | "height" | "name" | "none";
   /** What a distance line says. */
   distanceLabels: "full" | "distance" | "none";
   /** The labels' size, 1 as designed. */
@@ -159,6 +163,9 @@ export type TokenView = {
    * token's light ring round it; `z`, the ground it stands on (view units: a slab's top or not).
    */
   painted?: { x: number; y: number; r: number; ring: boolean; z: number };
+  /** Its label as Owlbear's map shows it (its text, in its style; none, without one). */
+  name?: HTMLElement;
+  /** Its height and where it stands, under that (as the options have it). */
   title?: HTMLElement;
   detail?: HTMLElement;
   screen: { x: number; y: number };
