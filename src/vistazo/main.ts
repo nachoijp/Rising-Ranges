@@ -52,6 +52,9 @@ import {
   savePanelSize as saveSize,
 } from "./panel";
 import { clearOf, fogOver } from "./fog";
+import * as itemActions from "./itemMenu";
+import { MIRROR_CHANNEL, OWN_CHANNEL, REMOTE_DRAG_CHANNEL, RemoteWatch, type Measured, type OwnMessage, type RemoteDrag } from "./remote";
+import { dragSender, othersWatching } from "./remoteObr";
 import { DragPath } from "../util/dragPath";
 import { saveDraggedToken } from "../util/saveDrag";
 import "./vistazo.css";
@@ -447,6 +450,20 @@ async function start() {
   /** Waiting for a click to put the next one down; and a cone or a line being pointed. */
   let placing = false;
   let aiming: Template | null = null;
+  /** An item waiting for a click on the one it's to be attached to (see the item menu). */
+  let attaching: string | null = null;
+  const setAttaching = (id: string | null) => {
+    attaching = id;
+    document.documentElement.classList.toggle("placing", id !== null || placing);
+    document.querySelector(".pick-hint")?.remove();
+    if (id) {
+      const hint = document.createElement("div");
+      hint.className = "pick-hint";
+      hint.setAttribute("role", "status");
+      hint.textContent = t("vistazo.attachPick");
+      $("stage").append(hint);
+    }
+  };
   const setPlacing = (on: boolean) => {
     placing = on;
     document.documentElement.classList.toggle("placing", on);
@@ -550,6 +567,8 @@ async function start() {
     if (event.key === "Escape") {
       if (cancelMove) {
         cancelMove();
+      } else if (attaching) {
+        setAttaching(null);
       } else if (placing || aiming) {
         // Placing a template: Esc stops that.
         aiming = null;
@@ -976,6 +995,8 @@ async function start() {
       if (shot.loop) {
         item.title = t("vistazo.shotLoops");
       }
+      // The one under the pointer is the one in focus: one highlight, the mouse's or the keys'.
+      item.onpointerenter = () => item.focus({ preventScroll: true });
       item.onclick = () => {
         closeShots();
         cinematic(shot);
@@ -1095,7 +1116,7 @@ async function start() {
       const there = !!wait.at && !!item && Math.hypot(item.position.x - wait.at.x, item.position.y - wait.at.y) < 0.5;
       if (there || performance.now() > wait.until) {
         landing.delete(id);
-        live.delete(id);
+        dropLive(id);
         any = true;
       }
     }
@@ -1213,6 +1234,78 @@ async function start() {
   });
 
   stage.addEventListener("contextmenu", (event) => event.preventDefault());
+  // ---------- The item menu: a right click on a token or a prop (the GM's), as Owlbear's own ----------
+  let itemMenu: HTMLElement | null = null;
+  const closeItemMenu = () => {
+    itemMenu?.remove();
+    itemMenu = null;
+  };
+  const openItemMenu = (id: string, x: number, y: number) => {
+    closeItemMenu();
+    const item = (scene?.tokens.find((tk) => tk.id === id) ?? scene?.props.find((p) => p.id === id))?.item;
+    if (!item) {
+      return;
+    }
+    const menu = document.createElement("div");
+    menu.className = "dd-menu";
+    menu.setAttribute("role", "menu");
+    const entry = (key: TranslationKey, run: () => Promise<unknown> | void, danger = false) => {
+      const el = document.createElement("div");
+      el.className = danger ? "dd-item danger" : "dd-item";
+      el.setAttribute("role", "menuitem");
+      el.tabIndex = -1;
+      el.textContent = t(key);
+      el.onpointerenter = () => el.focus({ preventScroll: true });
+      el.onclick = () => {
+        closeItemMenu();
+        void Promise.resolve(run()).catch((error) => console.error("Rising Ranges: 3D Glance couldn't change the item", error));
+      };
+      el.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          el.click();
+        } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          e.preventDefault();
+          const all = [...menu.querySelectorAll<HTMLElement>(".dd-item")];
+          all[(all.indexOf(el) + (e.key === "ArrowDown" ? 1 : all.length - 1)) % all.length].focus();
+        }
+      };
+      menu.append(el);
+    };
+    entry("vistazo.attach", () => setAttaching(id));
+    if (item.attachedTo) {
+      entry("vistazo.detach", () => itemActions.attach(id, null));
+    }
+    entry(item.locked ? "vistazo.unlock" : "vistazo.lock", () => itemActions.setLocked(id, !item.locked));
+    entry(item.visible ? "vistazo.hide" : "vistazo.show", () => itemActions.setVisible(id, !item.visible));
+    // A cell aside, as a token's next spot.
+    entry("vistazo.duplicate", async () => {
+      const copy = await itemActions.duplicate(id, { x: dpi, y: 0 });
+      if (copy) {
+        await OBR.player.select([copy]);
+      }
+    });
+    entry("vistazo.delete", () => itemActions.remove(id), true);
+    document.body.append(menu);
+    menu.style.left = `${Math.max(6, Math.min(window.innerWidth - menu.offsetWidth - 6, x))}px`;
+    menu.style.top = `${Math.max(6, Math.min(window.innerHeight - menu.offsetHeight - 6, y))}px`;
+    itemMenu = menu;
+    (menu.firstElementChild as HTMLElement | null)?.focus();
+  };
+  document.addEventListener("pointerdown", (event) => itemMenu && !itemMenu.contains(event.target as Node) && closeItemMenu(), true);
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key === "Escape" && itemMenu) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        closeItemMenu();
+      }
+    },
+    true
+  );
+  /** A right press on an item: its menu, if let go there (a right drag turns the camera instead). */
+  let rightPress: { token: string; x: number; y: number } | null = null;
   stage.addEventListener("mousedown", (event) => {
     if (event.button === 1) {
       event.preventDefault();
@@ -1222,6 +1315,27 @@ async function start() {
   stage.addEventListener("pointerdown", (event) => {
     // The stage's own buttons (the panel toggle) keep their clicks.
     if ((event.target as Element).closest("button")) {
+      return;
+    }
+    // Attaching an item: this press picks what to (anything else: not attached).
+    if (attaching && event.button === 0) {
+      event.preventDefault();
+      const child = attaching;
+      setAttaching(null);
+      const at = stagePoint(event);
+      const parent = view.tokenAt(event.target) ?? view.propAt(at.x, at.y);
+      if (parent && parent !== child && scene && [...scene.tokens, ...scene.props].some((p) => p.id === parent)) {
+        void itemActions
+          .canAttach(child, parent)
+          .then(async (ok) => {
+            if (ok) {
+              await itemActions.attach(child, parent);
+            } else {
+              await OBR.notification.show(t("vistazo.attachLoop"), "WARNING");
+            }
+          })
+          .catch((error) => console.error("Rising Ranges: 3D Glance couldn't attach the item", error));
+      }
       return;
     }
     // Placing a template: this press puts it down (a cone or a line: from here, pointed by the drag).
@@ -1250,6 +1364,8 @@ async function start() {
     cancelAnimationFrame(frame);
     const point = stagePoint(event);
     press = pointers.size === 0 && event.button === 0 ? { token: view.tokenAt(event.target) ?? view.propAt(point.x, point.y), x: event.clientX, y: event.clientY } : null;
+    const right = pointers.size === 0 && event.button === 2 && isGM ? (view.tokenAt(event.target) ?? view.propAt(point.x, point.y)) : null;
+    rightPress = right && scene && [...scene.tokens, ...scene.props].some((p) => p.id === right) ? { token: right, x: event.clientX, y: event.clientY } : null;
     // A left press on an unlocked token or prop, without Shift: ready to move it (from the first few px of drag).
     const pressed = press?.token && !event.shiftKey ? (scene?.tokens.find((t) => t.id === press!.token) ?? scene?.props.find((p) => p.id === press!.token)) : undefined;
     if (pressed && !pressed.item.locked && isGM) {
@@ -1365,7 +1481,8 @@ async function start() {
             void move.interaction?.then(([, stop]) => stop());
             endMove();
             mode = null;
-            live.delete(move.id);
+            dropLive(move.id);
+            dragSender().end(move.id, null);
             refresh();
           };
         }
@@ -1386,6 +1503,8 @@ async function start() {
             }
           });
           showTokenAt(move.id, position, move.own);
+          // To the others' Vistazos too, unless it's hidden.
+          dragSender().move(move.id, position, move.item.visible);
         }
         return;
       }
@@ -1407,7 +1526,8 @@ async function start() {
       // Cancelled (or never really moved): Owlbear's drag, if it began, ends where it started.
       if (move.started) {
         void move.interaction?.then(([, stop]) => stop());
-        live.delete(move.id);
+        dropLive(move.id);
+        dragSender().end(move.id, null);
         refresh();
       }
       endMove();
@@ -1422,6 +1542,10 @@ async function start() {
         console.error("Rising Ranges: 3D Glance couldn't redraw the templates", error);
       }
     }
+    if (rightPress && event.type === "pointerup" && event.button === 2 && Math.hypot(event.clientX - rightPress.x, event.clientY - rightPress.y) < 5) {
+      openItemMenu(rightPress.token, event.clientX, event.clientY);
+    }
+    rightPress = null;
     // A click on the free point's marker or a template's handle: nothing (no token, no ground).
     if (press?.token === FREE_POINT || press?.token?.startsWith(TEMPLATE_HANDLE)) {
       press = null;
@@ -1719,12 +1843,50 @@ async function start() {
   let selection: string[] = (await OBR.player.getSelection()) ?? [];
   /** The token being dragged (here, or with the Medición tool): its rings stay where the drag began, as on the map. */
   let draggingId: string | null = null;
+  /**
+   * What's measured from, as the map shows one Medición on each screen: this client's own while it
+   * measures (a token it drags, here or with the map's Medición; that Medición; its free point here),
+   * else the one someone else began last; null, neither (then the selected token's, see selectedOrigin).
+   */
+  const measuring = (): Measured | null => {
+    if (draggingId) {
+      return { tokenId: draggingId };
+    }
+    if (ownMedicion) {
+      return ownMedicion;
+    }
+    if (freePoint) {
+      return { point: { x: freePoint.x, y: freePoint.y }, own: freePoint.own };
+    }
+    return remoteMeasured;
+  };
+  /** What someone else measures from (see remote.ts and selectedOrigin), or null. */
+  let remoteMeasured: Measured | null = null;
+  /** This client's own Medición on the map, while it's up: what it measures from (see remote.ts' OWN_CHANNEL). */
+  let ownMedicion: Measured | null = null;
+  /**
+   * Tokens someone else is dragging (see remote.ts): where they're heading (the last heard), where
+   * they're shown (eased toward it: a few messages a second come), whether they're seen here (see
+   * remoteSeen); once dropped (`until`), shown where they were left till the scene has them there.
+   */
+  const remoteLive = new Map<string, { target: Vector2; shown: Vector2; seen: boolean; until?: number }>();
+  /** Whose rings (the reach) are shown: a token dragged keeps them where its drag began. */
+  let reachOf: string | null = null;
   /** The selected token, or prop (with the lines to props on): where the lines and rings go from. */
   const selectedOrigin = () => {
-    // The free point, while there's one (selecting a token takes it away).
-    if (freePoint) {
-      return pointOrigin();
+    // A Medición (this client's, else someone else's: see measuring), unless it's out of sight here
+    // (hidden, under the fog).
+    const measured = measuring();
+    if (measured && scene) {
+      const origin =
+        "point" in measured
+          ? pointOrigin({ ...measured.point, own: measured.own ?? 0 })
+          : (scene.tokens.find((token) => token.id === measured.tokenId) ?? scene.props.find((prop) => prop.id === measured.tokenId));
+      if (origin) {
+        return origin;
+      }
     }
+    // None: the selected one's (only this screen's, as a selection on the map is).
     if (!scene || selection.length !== 1) {
       return undefined;
     }
@@ -1732,19 +1894,19 @@ async function start() {
     return scene.tokens.find((token) => token.id === selection[0]) ?? (withProps ? scene.props.find((prop) => prop.id === selection[0]) : undefined);
   };
   /**
-   * The free point as an origin, a token's size (one cell), at the ground
-   * there plus its own height: the item the distance math reads is made up.
+   * The free point (or another, someone else's) as an origin, a token's size (one cell), at the
+   * ground there plus its own height: the item the distance math reads is made up.
    */
-  const pointOrigin = () => {
-    if (!scene || !freePoint) {
+  const pointOrigin = (point = freePoint) => {
+    if (!scene || !point) {
       return undefined;
     }
-    const terrain = scene.measuredAt(freePoint.x, freePoint.y);
+    const terrain = scene.measuredAt(point.x, point.y);
     const item = {
       id: FREE_POINT,
       type: "IMAGE",
       name: "",
-      position: { x: freePoint.x, y: freePoint.y },
+      position: { x: point.x, y: point.y },
       rotation: 0,
       scale: { x: 1, y: 1 },
       image: { width: dpi, height: dpi, url: "", mime: "image/png" },
@@ -1752,10 +1914,16 @@ async function start() {
       metadata: {},
       text: { plainText: "" },
     } as unknown as Image;
-    return { id: FREE_POINT, x: freePoint.x, y: freePoint.y, terrain, own: freePoint.own, item };
+    return { id: FREE_POINT, x: point.x, y: point.y, terrain, own: point.own, item };
   };
   /** The free point (scene px, and its own height over the ground there), or none. */
   let freePoint: { x: number; y: number; own: number } | null = null;
+  /** The point's marker: of the Medición from a point shown (see measuring), this client's or someone else's. */
+  const showPointMarker = () => {
+    const measured = measuring();
+    const at = measured && "point" in measured ? { ...measured.point, own: measured.own ?? 0 } : null;
+    view.setPoint(at && scene ? { x: at.x, y: at.y, height: scene.measuredAt(at.x, at.y) + at.own } : null);
+  };
   function placePoint(point: { x: number; y: number; own: number } | null) {
     // On a hex grid, as the map's Medición: at its cell's center or, near one, a corner (see snapToOrigin).
     const shape = onGrid(bandSetFromMetadata(sceneMetadata), gridType).shape;
@@ -1767,19 +1935,17 @@ async function start() {
     if (point) {
       activeTemplate = null;
     }
-    if (point && scene) {
-      // A token selected is measured from first: the point takes its place.
-      // Cleared here too, at once: Owlbear tells us a moment later.
-      if (selection.length > 0) {
-        selection = [];
-        view.setSelected([]);
-        void OBR.player.deselect();
-      }
-      view.setPoint({ x: point.x, y: point.y, height: scene.measuredAt(point.x, point.y) + point.own });
-    } else {
-      view.setPoint(null);
+    // A token selected is measured from first: the point takes its place.
+    // Cleared here too, at once: Owlbear tells us a moment later.
+    if (point && scene && selection.length > 0) {
+      selection = [];
+      view.setSelected([]);
+      void OBR.player.deselect();
     }
+    showPointMarker();
     showDistances();
+    // To the others' Vistazos too, as the map's Medición from a point is (see remote.ts).
+    dragSender().point(point);
   }
   clearPoint = () => {
     if (!freePoint) {
@@ -1798,6 +1964,7 @@ async function start() {
     if (!scene || !origin) {
       view.setDistances(null, []);
       view.setReach(null);
+      reachOf = null;
       return;
     }
     const bandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
@@ -1805,7 +1972,7 @@ async function start() {
     // The Bandas' reach around it, measured as a Lectura would (against a standard-sized token);
     // left where it was while it's dragged.
     const radius = getTokenRadius(origin.item, dpi, 0);
-    if (origin.id === draggingId) {
+    if ((origin.id === draggingId || remoteLive.has(origin.id)) && reachOf === origin.id) {
       showLines();
       return;
     }
@@ -1820,6 +1987,7 @@ async function start() {
       cells: isHexShape(bandSet.shape) && hexCenter ? originCellsAt(origin, hexCenter, dpi, bandSet.shape) : [{ x: 0, y: 0 }],
       bands: bandSet.bands.map((band, index) => ({ reach: band.radius + tolerance, color: getColorString(theme.colors[index % theme.colors.length]) })),
     });
+    reachOf = origin.id;
     showLines();
   };
   /** The distance lines from the selected token, where it is now. */
@@ -1863,7 +2031,8 @@ async function start() {
     // A token (or prop) selected: measured from instead of the free point.
     if (selection.length > 0 && freePoint) {
       freePoint = null;
-      view.setPoint(null);
+      showPointMarker();
+      dragSender().point(null);
     }
     showDistances();
   });
@@ -1874,6 +2043,46 @@ async function start() {
    * the scene, which still has them where the drag began), and never hidden by the fog.
    */
   const live = new Map<string, { position: Vector2; own?: number }>();
+  /**
+   * The tokens and props attached to one being dragged (and to those, and so on), by the one dragged:
+   * moved with it as it goes, as Owlbear's map shows them (else they'd jump to it once it's dropped).
+   */
+  const followers = new Map<string, string[]>();
+  /** A token dragged (or landed) shown where the scene has it again, what's attached to it too. */
+  const dropLive = (id: string) => {
+    live.delete(id);
+    for (const follower of followers.get(id) ?? []) {
+      live.delete(follower);
+    }
+    followers.delete(id);
+  };
+  /** A token shown at `position` (and `own` height, if given), what's attached to it as far along (see followers). */
+  const placeLive = (tokenId: string, position: Vector2, own?: number) => {
+    if (!scene) {
+      return;
+    }
+    live.set(tokenId, { position, own });
+    scene = placed(scene, tokenId, position, own);
+    // Where they are, kept in the scene's items till the drop's saved: the dragged one's too.
+    const from = items.find((i) => i.id === tokenId)?.position;
+    if (!from) {
+      return;
+    }
+    let list = followers.get(tokenId);
+    if (!list) {
+      const under = itemActions.attachedUnder(items, tokenId);
+      list = [...scene.tokens, ...scene.props].filter((t) => under.has(t.id)).map((t) => t.id);
+      followers.set(tokenId, list);
+    }
+    for (const id of list) {
+      const at = items.find((i) => i.id === id)?.position;
+      if (at) {
+        const moved = { x: at.x + position.x - from.x, y: at.y + position.y - from.y };
+        live.set(id, { position: moved });
+        scene = placed(scene, id, moved);
+      }
+    }
+  };
   /** `from` with a token moved to `position` (and `own` height). */
   function placed(from: VistazoScene, tokenId: string, position: Vector2, own?: number): VistazoScene {
     const token = from.tokens.find((t) => t.id === tokenId);
@@ -1896,9 +2105,12 @@ async function start() {
     if (!scene?.tokens.some((t) => t.id === tokenId) && !scene?.props.some((p) => p.id === tokenId)) {
       return;
     }
-    draggingId = tokenId;
-    live.set(tokenId, { position, own });
-    scene = placed(scene, tokenId, position, own);
+    // Measured from where it began (its rings stay there), then moved.
+    if (draggingId !== tokenId) {
+      draggingId = tokenId;
+      showDistances();
+    }
+    placeLive(tokenId, position, own);
     // Drawn once a frame at most: a drag sends far more moves than the screen shows.
     if (!showFrame) {
       showFrame = requestAnimationFrame(() => {
@@ -1912,6 +2124,136 @@ async function start() {
   }
   let showFrame = 0;
 
+  // ---------- Someone else's Medición and drags (see remote.ts) ----------
+  /** Whether a token someone else drags is seen here at a point: not hidden (but by a GM), nor under the fog in the player view. */
+  const remoteSeen = (id: string, at: Vector2) => {
+    const item = items.find((i) => i.id === id);
+    if (!item || (!item.visible && (!isGM || options.playerView))) {
+      return false;
+    }
+    if (!options.playerView || !lastFog) {
+      return true;
+    }
+    // Where its picture's middle is (as the scene's fog test), not its position.
+    const drawn = scene && [...scene.tokens, ...scene.props].find((t) => t.id === id);
+    return !lastFog.at(drawn ? drawn.x + at.x - drawn.item.position.x : at.x, drawn ? drawn.y + at.y - drawn.item.position.y : at.y);
+  };
+  let remoteFrame = 0;
+  let remoteTime = 0;
+  /** Each frame while someone else drags: eased toward where they are; seen, or not, as the fog has it; landed. */
+  const stepRemote = (now: number) => {
+    remoteFrame = 0;
+    if (!scene) {
+      return;
+    }
+    const ease = 1 - Math.exp(-Math.min(100, now - (remoteTime || now - 16)) / 60);
+    remoteTime = now;
+    let changed = false;
+    let rebuild = false;
+    for (const [id, entry] of remoteLive) {
+      const item = items.find((i) => i.id === id);
+      if (entry.until !== undefined && (now > entry.until || (item && Math.hypot(item.position.x - entry.target.x, item.position.y - entry.target.y) < 0.5))) {
+        // Landed (the scene has it there now), or waited for long enough: the scene's own place.
+        remoteLive.delete(id);
+        if (item) {
+          scene = placed(scene, id, item.position);
+        }
+        changed = true;
+        rebuild = rebuild || options.playerView;
+        continue;
+      }
+      const [dx, dy] = [entry.target.x - entry.shown.x, entry.target.y - entry.shown.y];
+      if (dx === 0 && dy === 0) {
+        continue;
+      }
+      entry.shown = Math.hypot(dx, dy) < 0.5 ? { ...entry.target } : { x: entry.shown.x + dx * ease, y: entry.shown.y + dy * ease };
+      scene = placed(scene, id, entry.shown);
+      changed = true;
+      // Into the fog, or out of it: the scene built again, to leave it out or put it back.
+      const seen = remoteSeen(id, entry.shown);
+      if (seen !== entry.seen) {
+        entry.seen = seen;
+        rebuild = true;
+      }
+    }
+    if (changed) {
+      view.setScene(scene);
+      showDistances();
+    }
+    if (rebuild) {
+      later();
+    }
+    if (remoteLive.size > 0) {
+      remoteFrame = requestAnimationFrame(stepRemote);
+    }
+  };
+  const runRemote = () => {
+    if (!remoteFrame) {
+      remoteTime = 0;
+      remoteFrame = requestAnimationFrame(stepRemote);
+    }
+  };
+  /**
+   * A token someone else drags to `position` (from `from`, where the scene has it), and the tokens and
+   * props attached to it (and to those): each with where it goes. Only itself if either's unknown.
+   */
+  const remoteFollowing = (id: string, position: Vector2 | null, from: Vector2 | null): [string, Vector2][] => {
+    if (!position) {
+      return [];
+    }
+    const moved: [string, Vector2][] = [[id, position]];
+    if (!from) {
+      return moved;
+    }
+    for (const follower of itemActions.attachedUnder(items, id)) {
+      const item = items.find((i) => i.id === follower);
+      if (item?.type === "IMAGE") {
+        moved.push([follower, { x: item.position.x + position.x - from.x, y: item.position.y + position.y - from.y }]);
+      }
+    }
+    return moved;
+  };
+  const remoteWatch = new RemoteWatch(
+    (what) => {
+      remoteMeasured = what;
+      showPointMarker();
+      showDistances();
+    },
+    (id, position) => {
+      const item = items.find((i) => i.id === id);
+      if (!item) {
+        return;
+      }
+      // What's attached to it as far along, as Owlbear's map moves it (see followers).
+      for (const [follower, offset] of remoteFollowing(id, position, item.position)) {
+        const entry = remoteLive.get(follower);
+        if (entry) {
+          entry.target = offset;
+          entry.until = undefined;
+        } else {
+          const followed = items.find((i) => i.id === follower);
+          if (followed) {
+            const shown = !!scene && [...scene.tokens, ...scene.props].some((t) => t.id === follower);
+            remoteLive.set(follower, { target: offset, shown: { ...followed.position }, seen: shown });
+          }
+        }
+      }
+      runRemote();
+    },
+    (id, at) => {
+      const item = items.find((i) => i.id === id);
+      // Where it was left, till the scene has it there; back where it began, at once. What's attached to it too.
+      for (const [follower, offset] of remoteFollowing(id, at ?? item?.position ?? null, item?.position ?? null)) {
+        const entry = remoteLive.get(follower);
+        if (entry) {
+          entry.target = offset;
+          entry.until = at ? performance.now() + LANDING_MS : 0;
+        }
+      }
+      runRemote();
+    }
+  );
+
   /** A move here released: its position saved (ending Owlbear's drag), then its height marker if it changed. */
   async function finishMove(move: NonNullable<typeof moving>): Promise<Vector2 | null> {
     try {
@@ -1923,9 +2265,8 @@ async function start() {
         // Shown there now (not where it was let go, nor the steps it's saved along: see endMove); the
         // drag's over (it isn't taken for one again: showTokenAt would).
         if (live.has(move.id) && scene) {
-          live.set(move.id, { position: snapped, own: move.own });
-          scene = placed(scene, move.id, snapped, move.own);
-          view.setScene(scene);
+          placeLive(move.id, snapped, move.own);
+          view.setScene(scene!);
         }
         const final = update((token) => {
           token.position = snapped;
@@ -1943,12 +2284,15 @@ async function start() {
           stop();
         }
       }
+      // Saved: the others' Vistazos let it land there (or back where it began, if it wasn't).
+      dragSender().end(move.id, move.position);
       if (move.own !== move.startOwn) {
         await setTokenHeightMarker([{ ...move.item, position: move.position }], move.own);
       }
       return move.position;
     } catch (error) {
       console.error("Rising Ranges: 3D Glance couldn't save the moved token", error);
+      dragSender().end(move.id, null);
       refresh();
       return null;
     }
@@ -2103,6 +2447,10 @@ async function start() {
       heightsOnly = null;
       for (const [id, at] of live) {
         scene = placed(scene, id, at.position, at.own);
+      }
+      // Someone else's drags: not kept from the fog (below), as live's are; where they're shown now.
+      for (const [id, entry] of remoteLive) {
+        scene = placed(scene, id, entry.shown);
       }
       if (options.playerView) {
         // As a player sees it: what's under the fog, and what the GM hides, left out.
@@ -2353,13 +2701,13 @@ async function start() {
       if (!session) {
         return;
       }
-      if (event.key === "Escape" && !(cancelMove || placing || aiming) && !session.pending() && clearPoint()) {
+      if (event.key === "Escape" && !(cancelMove || placing || aiming || attaching) && !session.pending() && clearPoint()) {
         event.preventDefault();
         event.stopImmediatePropagation();
         return;
       }
       const taken = session.key(event);
-      if (!taken && event.key === "Escape" && (cancelMove || placing || aiming)) {
+      if (!taken && event.key === "Escape" && (cancelMove || placing || aiming || attaching)) {
         return;
       }
       if (taken || event.key === "Escape") {
@@ -2422,6 +2770,25 @@ async function start() {
     }
     later();
   });
+  // Someone else's Medición and drags (see remoteWatch): heard from now, with everything they use set up.
+  // Who's watching in a Vistazo, known before this one's first drag (see dragSender).
+  othersWatching();
+  // This client's own Medición on the map; asked for, if one's up already.
+  OBR.broadcast.onMessage(OWN_CHANNEL, (event) => {
+    const message = event.data as OwnMessage | null;
+    if (message?.type === "own") {
+      ownMedicion = message.measured;
+      showPointMarker();
+      showDistances();
+    }
+  });
+  void OBR.broadcast.sendMessage(OWN_CHANNEL, { type: "hello" } satisfies OwnMessage, { destination: "LOCAL" }).catch(() => {});
+  // Closed with a free point up: taken away on the others' screens now, not at their timeout.
+  addEventListener("pagehide", () => dragSender().point(null));
+  OBR.broadcast.onMessage(REMOTE_DRAG_CHANNEL, (event) => remoteWatch.drag(event.connectionId, event.data as RemoteDrag));
+  OBR.broadcast.onMessage(MIRROR_CHANNEL, (event) => remoteWatch.mirror(event.connectionId, event.data as Parameters<RemoteWatch["mirror"]>[1]));
+  OBR.party.onChange((players) => remoteWatch.left(new Set(players.map((player) => player.connectionId))));
+  setInterval(() => remoteWatch.expire(), 1000);
   // A token dragged with the Medición tool, moved here as it goes; the scene catches up once it's dropped.
   OBR.broadcast.onMessage(LIVE_DRAG_CHANNEL, (event) => {
     const { tokenId, position } = event.data as LiveDrag;
@@ -2430,7 +2797,7 @@ async function start() {
     } else if (draggingId === tokenId || live.has(tokenId)) {
       // Dropped: its rings move to where it is (the scene has it there now, or soon).
       draggingId = null;
-      live.delete(tokenId);
+      dropLive(tokenId);
       showDistances();
       later();
     }

@@ -102,25 +102,35 @@ let full = false;
 let closedAt = 0;
 let watching = false;
 
+/** Background script: told when it's shown or not (see isVistazoShown), and once at first. */
+let shownChanged: ((shown: boolean) => void) | null = null;
+
 function setState(state: unknown) {
+  const was = open || full;
   open = state === true;
   full = state === "full";
   if (state === false) {
     closedAt = Date.now();
   }
+  if (was !== (open || full)) {
+    shownChanged?.(open || full);
+  }
 }
 
-/** Background script: keeps the state in step with the page closing or reopening itself. */
-export function watchVistazoPanel() {
+/** Background script: keeps the state in step with the page closing or reopening itself; `onShown`, told when it's shown or not. */
+export function watchVistazoPanel(onShown?: (shown: boolean) => void) {
   if (watching) {
     return;
   }
   watching = true;
+  shownChanged = onShown ?? null;
+  shownChanged?.(open || full);
   OBR.broadcast.onMessage(STATE_CHANNEL, (event) => setState(event.data));
   // A new scene closes the full-screen view too.
   OBR.scene.onReadyChange((ready) => {
-    if (!ready) {
+    if (!ready && full) {
       full = false;
+      shownChanged?.(open);
     }
   });
 }

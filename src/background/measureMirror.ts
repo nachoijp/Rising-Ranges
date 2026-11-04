@@ -53,6 +53,8 @@ type StartMessage = {
   heightLabel: { center: Vector2; text: string } | null;
   /** Missing from senders before 1.2.0, whose rings are visible themselves. */
   origin?: { center: Vector2; radius: number };
+  /** The token measured from, if it's one (the Vistazo measures from it, see vistazo/remote.ts). Missing from senders before 2.0.0. */
+  originTokenId?: string;
 };
 type UpdateMessage = {
   type: "update";

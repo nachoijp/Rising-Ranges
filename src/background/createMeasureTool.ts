@@ -34,6 +34,7 @@ import {
 } from "./originMarkerSync";
 import { clearFixedMedicion, hasFixedMedicion, pinFixedMedicion, setFixedLive } from "./fixedMedicion";
 import { setDraggedToken } from "./heightOverlays";
+import { dragSender, othersWatching, tellOwnMedicion } from "../vistazo/remoteObr";
 import { DragPath } from "../util/dragPath";
 import { saveDraggedToken } from "../util/saveDrag";
 import { sameLecturaState, type LecturaContext, type LecturaState } from "../render/lecturaItems";
@@ -396,6 +397,7 @@ function cleanup() {
   originHeight = 0;
   activeTokens = [];
   setMeasuringHere(false);
+  tellOwnMedicion(null);
   hiddenTokenIds = new Set();
   secretMedicion = false;
   activeTokenHeights = new Map();
@@ -456,6 +458,7 @@ async function releaseMedicion(pin: boolean) {
       );
       if (tokenBefore) {
         setDraggedToken(tokenBefore, null);
+        dragSender().end(tokenBefore, landed);
       }
       return;
     }
@@ -531,6 +534,7 @@ async function releaseMedicion(pin: boolean) {
   }
   if (draggedTokenId) {
     setDraggedToken(draggedTokenId, null);
+    dragSender().end(draggedTokenId, landed);
   }
 }
 
@@ -545,6 +549,7 @@ async function cancelMedicion() {
   }
   if (draggedTokenId) {
     setDraggedToken(draggedTokenId, null);
+    dragSender().end(draggedTokenId, null);
   }
   await restoreOriginMarker(restore);
 }
@@ -564,6 +569,8 @@ async function moveDraggedToken(pointer: Vector2) {
     liveTokenPosition = position;
     if (downTarget) {
       setDraggedToken(downTarget.id, position);
+      // To the others' Vistazos too, unless it's hidden (a secret Medición's).
+      dragSender().move(downTarget.id, position, downTarget.visible && !secretMedicion);
     }
     if (fixedDrag && downTarget) {
       setFixedLive(downTarget.id, { position, height: originHeight });
@@ -662,6 +669,8 @@ let followingScene = false;
 
 export function createMeasureTool(language: Language, settings: GlobalSettings) {
   prefetchGridAxonometry();
+  // Who's watching in a Vistazo, known before the first drag (else its first moves wait for it).
+  othersWatching();
   if (!followingScene) {
     followingScene = true;
     OBR.scene.items.onChange(followScene);
@@ -857,6 +866,8 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
         measureView.start(activeTokens, states, heightLabel);
         // Only this one on this screen meanwhile (see showOnly).
         setMeasuringHere(true);
+        // And in this client's Vistazo (secret or not: it's this screen's own).
+        tellOwnMedicion(downTarget ? { tokenId: downTarget.id } : { point: { x: activeCenter.x, y: activeCenter.y } });
         // Only now: other clients attach what they draw to the anchor, so it
         // has to exist for them first.
         if (!secretMedicion) {
@@ -865,6 +876,7 @@ export function createMeasureTool(language: Language, settings: GlobalSettings) 
             states: sharedStates(states),
             shaders,
             ringId: anchor.id,
+            originTokenId: downTarget?.id,
             heightLabel,
             origin: { center: activeCenter, radius: activeOriginRadius },
           });

@@ -13,6 +13,7 @@ import { startTerrainView } from "./terrainView";
 import { startReliefs } from "../relief/live";
 import { SYNC_CHANNEL, type SyncMessage } from "../vistazo/sync";
 import { isVistazoShown, openVistazoPanel, vistazoClosedAt, watchVistazoPanel } from "../vistazo/panel";
+import { setWatching } from "../vistazo/remoteObr";
 import { globalSettingsFromMetadata, vistazoAccess } from "../settings/globalSettings";
 
 async function waitUntilOBRReady() {
@@ -109,7 +110,8 @@ async function init() {
  * (the camera comes several times a second).
  */
 function watchSyncedView() {
-  watchVistazoPanel();
+  // The others send their drags only while someone watches (see vistazo/remote.ts).
+  watchVistazoPanel(setWatching);
   let role: string | null = null;
   let everyone = false;
   const readAccess = (metadata: Record<string, unknown>) => {

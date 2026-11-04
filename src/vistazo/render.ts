@@ -20,7 +20,7 @@ import { QUALITY, STONE, TEXTURE_MAX, VIEW_CELL, type Camera, type DistanceLine,
 import { isShared, patternTexture } from "./view/patterns";
 import { floorOf, mediaElement, propsKey, propToken, raised, skinAcross, skinPoint, visibleOnScreen } from "./view/helpers";
 import { computeWalls, type Region } from "./view/walls";
-import { BaseBatch, moveBase, type BaseSeat } from "./view/bases";
+import { BaseBatch, moveBase, ringMaterial, type BaseSeat } from "./view/bases";
 import { UNDER_FRAGMENT, UNDER_VERTEX, WALL_GRAIN } from "./view/shaders";
 import { NOISE_2D } from "./glsl";
 import { reachMask, waterMaterial, waterReach, waterShape, type WaterReach } from "./view/water";
@@ -1498,7 +1498,7 @@ export class VistazoView {
       gridded(material, this.gridUniforms);
     }
     if (top) {
-      based(material, this.baseUniforms, top === "deck");
+      based(material, this.baseUniforms, top === "deck" ? "deck" : "top");
     }
     // The Bandas: tinting the tops, their rings on them; the fog over everything.
     tinted(material, this.fillUniforms, !!top);
@@ -1547,7 +1547,9 @@ export class VistazoView {
       if (blend) {
         grained(material);
       }
-      // The Bandas' rings up the walls (no tint), and the fog: a wall would give the hidden terrain away.
+      // The bases, as on the tops (see BASE_WALL); the Bandas' rings up the walls (no tint), and the fog: a
+      // wall would give the hidden terrain away.
+      based(material, this.baseUniforms, "wall");
       tinted(material, this.fillUniforms, false);
       clouded(material, this.cloudUniforms);
       fogged(material, this.fogUniforms);
@@ -2124,7 +2126,7 @@ export class VistazoView {
     const u = this.u;
     const k = this.k;
     const overlay = document.createDocumentFragment();
-    const ring = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, forceSinglePass: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide });
+    const ring = ringMaterial();
     const fill = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, forceSinglePass: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide });
     const dashes = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 6, gapSize: 5, transparent: true, forceSinglePass: true, opacity: 0.9 });
     const stemOf = (at: { x: number; y: number }, zTok: number, zFloor: number) => {
@@ -3408,7 +3410,7 @@ function gridded(material: THREE.MeshBasicMaterial, uniforms: Record<string, { v
 }
 
 /**
- * The tokens' (and props') bases painted on a top of the terrain, worked out at each pixel from where
+ * The tokens' (and props') bases painted on a top or a wall of the terrain (on a wall, see BASE_WALL), worked out at each pixel from where
  * it is (view units): within a base's radius, darker (35%); its last two units (two pixels at least),
  * a light ring (a token's). On a slab's top (`deck`), only those standing on it, not those under it
  * (the terrain's own tops don't lie over one another: on them, wherever it is, steep ground too).
@@ -3422,8 +3424,9 @@ function baseTexture(data: Float32Array, rows: number): THREE.DataTexture {
   return texture;
 }
 
-function based(material: THREE.MeshBasicMaterial, uniforms: Record<string, { value: unknown }>, deck: boolean) {
-  layer(material, `based${deck ? "-deck" : ""}`, uniforms, `${deck ? "#define BASE_DECK\n" : ""}${BASE_GLSL}`, "outgoingLight = paintBases(outgoingLight, vLayerAt);");
+function based(material: THREE.MeshBasicMaterial, uniforms: Record<string, { value: unknown }>, on: "top" | "deck" | "wall") {
+  const define = on === "deck" ? "#define BASE_DECK\n" : on === "wall" ? "#define BASE_WALL\n" : "";
+  layer(material, `based${on === "top" ? "" : `-${on}`}`, uniforms, `${define}${BASE_GLSL}`, "outgoingLight = paintBases(outgoingLight, vLayerAt);");
 }
 
 /**
@@ -3497,13 +3500,21 @@ const BASE_GLSL = /* glsl */ `
       #ifdef BASE_DECK
         if (abs(at.z - b.w) > uBaseReach) continue;
       #endif
+      // On a wall: down from its feet as far as the wall goes (as on the tops under it), up half a cell
+      // at most, fading (not up a tall wall beside it, nor a bridge's sides over it).
+      float lift = 1.0;
+      #ifdef BASE_WALL
+        lift = 1.0 - smoothstep(0.0, uBaseReach, at.z - b.w);
+        if (lift <= 0.0) continue;
+      #endif
       float d = length(off);
-      float inside = 1.0 - smoothstep(r - aa, r + aa, d);
+      float inside = (1.0 - smoothstep(r - aa, r + aa, d)) * lift;
       color *= 1.0 - 0.35 * inside;
       if (b.z > 0.0) {
-        // Two units wide, and two pixels at least (seen from afar: not broken into dots).
-        float w = max(2.0, 4.0 * aa);
-        color = mix(color, vec3(1.0), 0.85 * inside * smoothstep(r - w - aa, r - w + aa, d));
+        // As the measuring rings (see BAND_GLSL): about two pixels wide at any zoom, smooth; just inside
+        // its edge (its middle a pixel in), not spilling out of the base.
+        float px = (r - d) / (2.0 * aa);
+        color = mix(color, vec3(1.0), 0.95 * lift * (1.0 - smoothstep(0.5, 1.5, abs(px - 1.0))));
       }
     }
     return color;

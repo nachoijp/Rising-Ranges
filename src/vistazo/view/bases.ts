@@ -51,7 +51,13 @@ export class BaseBatch {
     }
     if (this.ringed) {
       for (const [r, list] of this.bySize) {
-        make(new THREE.RingGeometry(r - 2, r, 32), ring, list);
+        // The whole disc, the ring drawn on its edge by its material (see ringMaterial): `aEdge`, 0 at the
+        // middle to 1 on the edge.
+        const disc = new THREE.CircleGeometry(r, 32);
+        const edge = new Float32Array(disc.attributes.position.count).fill(1);
+        edge[0] = 0;
+        disc.setAttribute("aEdge", new THREE.BufferAttribute(edge, 1));
+        make(disc, ring, list);
       }
     }
   }
@@ -64,4 +70,25 @@ export function moveBase(seat: BaseSeat, x: number, y: number, z: number) {
     mesh.setMatrixAt(seat.index, place);
     mesh.instanceMatrix.needsUpdate = true;
   }
+}
+
+/**
+ * The flat bases' ring: as the measuring rings and the bases painted on the terrain (see BASE_GLSL),
+ * about two pixels wide at any zoom, just inside the disc's edge (from its geometry's `aEdge`).
+ */
+export function ringMaterial(): THREE.MeshBasicMaterial {
+  const material = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, forceSinglePass: true, depthWrite: false, side: THREE.DoubleSide });
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nattribute float aEdge;\nvarying float vEdge;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvEdge = aEdge;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", "#include <common>\nvarying float vEdge;")
+      .replace(
+        "#include <color_fragment>",
+        "#include <color_fragment>\nfloat px = (1.0 - vEdge) / max(fwidth(vEdge), 1e-6);\ndiffuseColor.a *= 0.95 * (1.0 - smoothstep(0.5, 1.5, abs(px - 1.0)));"
+      );
+  };
+  material.customProgramCacheKey = () => "rising-ranges/base-ring";
+  return material;
 }
