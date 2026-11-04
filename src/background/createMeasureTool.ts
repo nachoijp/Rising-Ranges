@@ -620,16 +620,21 @@ async function startFixedDrag(event: ToolEvent) {
   // measured from the ground meanwhile.
   const ready = (async () => {
     // The terrain comes with the markers: one more round trip would delay the drag.
-    const [canUpdate, sceneMetadata, dpi, gridType, heightMarkers] = await Promise.all([
+    // All the items: whether it's hidden can depend on what it's attached to (see util/attachments.ts).
+    const [canUpdate, sceneMetadata, dpi, gridType, allItems] = await Promise.all([
       canUpdateItem(target),
       OBR.scene.getMetadata(),
       OBR.scene.grid.getDpi(),
       getGridType(),
-      OBR.scene.items.getItems(isTokenHeightMarker),
+      OBR.scene.items.getItems(),
     ]);
     if (generation !== toolDownGeneration || !canUpdate) {
       return;
     }
+    const heightMarkers = allItems.filter(isTokenHeightMarker);
+    // A hidden one's drag stays on this client (the others' Vistazos aren't sent it).
+    const byId = new Map(allItems.map((item) => [item.id, item]));
+    secretMedicion = !visibleNow(byId, byId.get(target.id) ?? target);
     const axonometry = axonometryOf(gridType);
     activeBandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
     activeSettings = globalSettingsFromMetadata(sceneMetadata);

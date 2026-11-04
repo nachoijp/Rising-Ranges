@@ -16,6 +16,7 @@ import { buildBandRingItems, buildGradientShaders, reshapeOrigin } from "../rend
 import { getStoredTheme } from "../theme/themes";
 import { showPinnedFixedMedicion } from "./fixedMedicion";
 import { visibleNow } from "../util/attachments";
+import { isRateLimitError } from "../vistazo/remote";
 
 // Shows a Medición's rings, gradient, Lecturas and height label to every
 // client, not just the one measuring, each in that client's own color theme.
@@ -353,11 +354,6 @@ let sendTimer: ReturnType<typeof setTimeout> | null = null;
 // resent later with click-time states, would leave them showing stale
 // Lecturas with the in-between updates already lost.
 let startConfirmed = false;
-
-function isRateLimitError(error: unknown) {
-  const text = error instanceof Error ? `${error.name} ${error.message}` : JSON.stringify(error);
-  return /rate ?limit|too many/i.test(text ?? "");
-}
 
 function send(message: MirrorMessage, attempt = 0) {
   lastSendTime = Date.now();

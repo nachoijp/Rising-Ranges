@@ -36,7 +36,9 @@ let sender: DragSender | null = null;
 
 /** This page's drags, out to the other clients' Vistazos (see DragSender). */
 export function dragSender(): DragSender {
-  sender ??= new DragSender((message) => OBR.broadcast.sendMessage(REMOTE_DRAG_CHANNEL, message, { destination: "REMOTE" }), othersWatching);
+  // The background page's: the map's Medición's (see RemoteDrag's `medicion`).
+  const medicion = typeof location !== "undefined" && location.pathname.endsWith("background.html");
+  sender ??= new DragSender((message) => OBR.broadcast.sendMessage(REMOTE_DRAG_CHANNEL, message, { destination: "REMOTE" }), othersWatching, () => Date.now(), medicion);
   return sender;
 }
 
@@ -44,8 +46,30 @@ let own: Measured | null = null;
 let fixed: Fixed | null = null;
 let answering = false;
 
-const tellOwn = () => OBR.broadcast.sendMessage(OWN_CHANNEL, { type: "own", measured: own } satisfies OwnMessage, { destination: "LOCAL" }).catch(() => {});
-const tellFixed = () => OBR.broadcast.sendMessage(OWN_CHANNEL, { type: "fixed", fixed } satisfies OwnMessage, { destination: "LOCAL" }).catch(() => {});
+/** How often this client's Vistazo is told (ms, at most), and again after a message lost. */
+const OWN_INTERVAL_MS = 60;
+const OWN_RETRY_MS = 300;
+
+/**
+ * What's up now, told this client's Vistazo: at most every OWN_INTERVAL_MS (a Medición from a point
+ * moves every frame), the latest always last; a message lost (Owlbear's rate limit), told again.
+ */
+function teller(message: () => OwnMessage) {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let last = -Infinity;
+  const send = () => {
+    timer = null;
+    last = Date.now();
+    OBR.broadcast.sendMessage(OWN_CHANNEL, message(), { destination: "LOCAL" }).catch(() => {
+      timer ??= setTimeout(send, OWN_RETRY_MS);
+    });
+  };
+  return () => {
+    timer ??= setTimeout(send, Math.max(0, last + OWN_INTERVAL_MS - Date.now()));
+  };
+}
+const tellOwn = teller(() => ({ type: "own", measured: own }));
+const tellFixed = teller(() => ({ type: "fixed", fixed }));
 
 /** Background script: a Vistazo opened meanwhile asks, and is told what's up. */
 function answer() {
@@ -55,8 +79,8 @@ function answer() {
   answering = true;
   OBR.broadcast.onMessage(OWN_CHANNEL, (event) => {
     if ((event.data as OwnMessage | null)?.type === "hello") {
-      void tellOwn();
-      void tellFixed();
+      tellOwn();
+      tellFixed();
     }
   });
 }
@@ -67,7 +91,7 @@ export function tellFixedMedicion(value: Fixed | null) {
   const next = value && { center: { x: value.center.x, y: value.center.y }, height: value.height, radius: value.radius };
   if (JSON.stringify(next) !== JSON.stringify(fixed)) {
     fixed = next;
-    void tellFixed();
+    tellFixed();
   }
 }
 
@@ -76,6 +100,6 @@ export function tellOwnMedicion(measured: Measured | null) {
   answer();
   if (JSON.stringify(measured) !== JSON.stringify(own)) {
     own = measured;
-    void tellOwn();
+    tellOwn();
   }
 }

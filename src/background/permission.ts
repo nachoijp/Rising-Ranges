@@ -29,6 +29,18 @@ export function getPermissionForItem(item: Item): Permission | undefined {
   }
 }
 
+/**
+ * Whether a player may do `action` to an item, as the room's permissions have it (`has`): its layer's
+ * permission, and with "owner only" on characters, only their own (`playerId`'s). The GM may anything.
+ */
+export function mayDo(item: Item, action: "CREATE" | "UPDATE" | "DELETE", has: (permission: Permission) => boolean, playerId: string): boolean {
+  const permission = `${item.layer}_${action}` as Permission;
+  if (!has(permission)) {
+    return false;
+  }
+  return item.layer !== "CHARACTER" || !has("CHARACTER_OWNER_ONLY") || item.createdUserId === playerId;
+}
+
 export async function canUpdateItem(item: Item) {
   const role = await OBR.player.getRole();
   if (role === "GM") {
@@ -38,12 +50,6 @@ export async function canUpdateItem(item: Item) {
   if (!permission) {
     return false;
   }
-  const hasPermission = await OBR.player.hasPermission(permission);
-  const hasOwnerOnlyPermission =
-    item.layer === "CHARACTER" &&
-    (await OBR.player.hasPermission("CHARACTER_OWNER_ONLY"));
-  if (hasPermission && hasOwnerOnlyPermission) {
-    return item.createdUserId === OBR.player.id;
-  }
-  return hasPermission;
+  const [hasPermission, ownerOnly] = await Promise.all([OBR.player.hasPermission(permission), OBR.player.hasPermission("CHARACTER_OWNER_ONLY")]);
+  return mayDo(item, "UPDATE", (p) => (p === permission ? hasPermission : p === "CHARACTER_OWNER_ONLY" ? ownerOnly : false), OBR.player.id);
 }

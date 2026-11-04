@@ -53,6 +53,7 @@ import {
 } from "./panel";
 import { clearOf, fogOver } from "./fog";
 import * as itemActions from "./itemMenu";
+import { mayDo } from "../background/permission";
 import { lockedNow, visibleNow } from "../util/attachments";
 import { MIRROR_CHANNEL, OWN_CHANNEL, REMOTE_DRAG_CHANNEL, RemoteWatch, type Fixed, type Measured, type OwnMessage, type RemoteDrag } from "./remote";
 import { dragSender, othersWatching } from "./remoteObr";
@@ -1240,19 +1241,17 @@ async function start() {
   // with "owner only" on).
   let roomPermissions: Permission[] = await OBR.room.getPermissions().catch(() => []);
   OBR.room.onPermissionsChange((next) => (roomPermissions = next));
-  const may = (item: Item, action: "CREATE" | "UPDATE" | "DELETE") => {
-    if (isGM) {
-      return true;
-    }
-    const permission = `${item.layer}_${action}` as Permission;
-    if (!roomPermissions.includes(permission)) {
-      return false;
-    }
-    return item.layer !== "CHARACTER" || !roomPermissions.includes("CHARACTER_OWNER_ONLY") || item.createdUserId === OBR.player.id;
-  };
+  const may = (item: Item, action: "CREATE" | "UPDATE" | "DELETE") => isGM || mayDo(item, action, (p) => roomPermissions.includes(p), OBR.player.id);
   const canMove = (item: Item) => may(item, "UPDATE");
   /** The scene's items by id, for what an attachment takes from its parents (see util/attachments.ts). */
-  const itemsById = () => new Map(items.map((item) => [item.id, item]));
+  let byIdOf: { items: typeof items; byId: Map<string, Item> } | null = null;
+  const itemsById = () => {
+    // Worked out once for each list of the scene's items (a drag asks every move).
+    if (byIdOf?.items !== items) {
+      byIdOf = { items, byId: new Map(items.map((item) => [item.id, item])) };
+    }
+    return byIdOf.byId;
+  };
   // ---------- The item menu: a right click on a token or a prop, as Owlbear's own (what each may: see may) ----------
   let itemMenu: HTMLElement | null = null;
   const closeItemMenu = () => {
@@ -1297,10 +1296,13 @@ async function start() {
       if (item.attachedTo) {
         entry("vistazo.detach", () => itemActions.attach(id, null));
       }
-      entry(item.locked ? "vistazo.unlock" : "vistazo.lock", () => itemActions.setLocked(id, !item.locked));
+      // Locked (or hidden) by what it's attached to: nothing to change here (it'd change nothing seen).
+      if (item.locked || !lockedNow(itemsById(), item)) {
+        entry(item.locked ? "vistazo.unlock" : "vistazo.lock", () => itemActions.setLocked(id, !item.locked));
+      }
     }
     // Only the GM's, whatever the permissions (as Owlbear's Hide/Show).
-    if (isGM) {
+    if (isGM && (!item.visible || visibleNow(itemsById(), item))) {
       entry(item.visible ? "vistazo.hide" : "vistazo.show", () => itemActions.setVisible(id, !item.visible));
     }
     if (may(item, "CREATE")) {
@@ -2175,7 +2177,7 @@ async function start() {
   // ---------- Someone else's Medición and drags (see remote.ts) ----------
   /** Whether a token someone else drags is seen here at a point: not hidden (but by a GM), nor under the fog in the player view. */
   const remoteSeen = (id: string, at: Vector2) => {
-    const item = items.find((i) => i.id === id);
+    const item = itemsById().get(id);
     if (!item || (!visibleNow(itemsById(), item) && (!isGM || options.playerView))) {
       return false;
     }
@@ -2199,7 +2201,7 @@ async function start() {
     let changed = false;
     let rebuild = false;
     for (const [id, entry] of remoteLive) {
-      const item = items.find((i) => i.id === id);
+      const item = itemsById().get(id);
       if (entry.until !== undefined && (now > entry.until || (item && Math.hypot(item.position.x - entry.target.x, item.position.y - entry.target.y) < 0.5))) {
         // Landed (the scene has it there now), or waited for long enough: the scene's own place.
         remoteLive.delete(id);
@@ -2258,22 +2260,23 @@ async function start() {
    * A token someone else drags to `position` (from `from`, where the scene has it), and the tokens and
    * props attached to it (and to those): each with where it goes. Only itself if either's unknown.
    */
-  const remoteFollowing = (id: string, position: Vector2 | null, from: Vector2 | null): [string, Vector2][] => {
-    if (!position) {
-      return [];
+  const remoteFollowing = (id: string, position: Vector2, from: Vector2): [string, Vector2][] => {
+    const byId = itemsById();
+    // What's attached to it, found once a drag (see remoteDragged).
+    let followers = remoteDragged.get(id);
+    if (!followers) {
+      followers = new Set([id, ...[...itemActions.attachedUnder(items, id, "POSITION")].filter((f) => byId.get(f)?.type === "IMAGE")]);
+      remoteDragged.set(id, followers);
     }
-    const moved: [string, Vector2][] = [[id, position]];
-    if (!from) {
-      return moved;
-    }
-    for (const follower of itemActions.attachedUnder(items, id, "POSITION")) {
-      const item = items.find((i) => i.id === follower);
-      if (item?.type === "IMAGE") {
-        moved.push([follower, { x: item.position.x + position.x - from.x, y: item.position.y + position.y - from.y }]);
-      }
+    const moved: [string, Vector2][] = [];
+    for (const follower of followers) {
+      const item = follower === id ? undefined : byId.get(follower);
+      moved.push([follower, item ? { x: item.position.x + position.x - from.x, y: item.position.y + position.y - from.y } : position]);
     }
     return moved;
   };
+  /** By token someone else drags: it and what follows it, shown moving (see remoteLive) till its drag ends. */
+  const remoteDragged = new Map<string, Set<string>>();
   const remoteWatch = new RemoteWatch(
     (what) => {
       const was = remoteMeasured;
@@ -2294,7 +2297,7 @@ async function start() {
       showDistances();
     },
     (id, position) => {
-      const item = items.find((i) => i.id === id);
+      const item = itemsById().get(id);
       if (!item) {
         return;
       }
@@ -2305,7 +2308,7 @@ async function start() {
           entry.target = offset;
           entry.until = undefined;
         } else {
-          const followed = items.find((i) => i.id === follower);
+          const followed = itemsById().get(follower);
           if (followed) {
             const shown = !!scene && [...scene.tokens, ...scene.props].some((t) => t.id === follower);
             remoteLive.set(follower, { target: offset, shown: { ...followed.position }, seen: shown });
@@ -2315,15 +2318,19 @@ async function start() {
       runRemote();
     },
     (id, at) => {
-      const item = items.find((i) => i.id === id);
-      // Where it was left, till the scene has it there; back where it began, at once. What's attached to it too.
-      for (const [follower, offset] of remoteFollowing(id, at ?? item?.position ?? null, item?.position ?? null)) {
+      const byId = itemsById();
+      const item = byId.get(id);
+      // Where it was left, till the scene has it there; back where it began, at once. What's attached to
+      // it too: every one shown moving with it, gone or detached since or not (none's left behind).
+      const landing = at && item ? new Map(remoteFollowing(id, at, item.position)) : null;
+      for (const follower of remoteDragged.get(id) ?? [id]) {
         const entry = remoteLive.get(follower);
         if (entry) {
-          entry.target = offset;
-          entry.until = at ? performance.now() + LANDING_MS : 0;
+          entry.target = landing?.get(follower) ?? byId.get(follower)?.position ?? entry.target;
+          entry.until = landing?.has(follower) ? performance.now() + LANDING_MS : 0;
         }
       }
+      remoteDragged.delete(id);
       runRemote();
     }
   );

@@ -36,14 +36,16 @@ export const WATCHING_KEY = getPluginId("vistazo/watching");
 export type RemotePoint = { x: number; y: number; own: number };
 
 /**
- * `drag`: one drag's id (a new one, a new drag: an "end" of another is old news); an end's `at`: where
- * it was left (saved there), or null: back where it began. A point's `id`: one point's (put down, moved,
- * taken away: null).
+ * `drag`: one drag's id (an "end" of another is about that other one); an end's `at`: where it was
+ * left (saved there), or null: back where it began. A point's `id`: one point's (put down, moved,
+ * taken away: null). `from`: the page sending (two on one client, the map's Medición and a Vistazo, are
+ * told apart); `medicion`: what a Medición of the map's sends (its own mirror tells the rest of it).
  */
-export type RemoteDrag =
+export type RemoteDrag = { from?: string; medicion?: boolean } & (
   | { type: "move"; drag: string; tokenId: string; position: Vector2 }
   | { type: "end"; drag: string; tokenId: string; at: Vector2 | null }
-  | { type: "point"; id: string; point: RemotePoint | null };
+  | { type: "point"; id: string; point: RemotePoint | null }
+);
 
 export const DRAG_INTERVAL_MS = 120;
 export const DRAG_BACKOFF_MS = 300;
@@ -67,12 +69,15 @@ type Send = (message: RemoteDrag) => Promise<unknown>;
 const newId = () => Math.random().toString(36).slice(2, 10);
 
 /**
- * This page's drag (one at a time: a new one ends the last) and free point, out to the others, one
- * message at a time. `watched`: whether anyone's watching (asked before each: one who opens their
- * Vistazo meanwhile gets them from then on).
+ * This page's drag and free point, out to the others, one message at a time. `watched`: whether
+ * anyone's watching (asked before each: one who opens their Vistazo meanwhile gets them from then on);
+ * `medicion`: the map's Medición's sender (see RemoteDrag). A drag of another token while one's still
+ * being saved leaves that one to its own end (it's told where it lands, not that it went back).
  */
 export class DragSender {
   private drag: { id: string; tokenId: string; position: Vector2 | null; sent: boolean; moved: number } | null = null;
+  /** Drags let go of for another before they ended: their end still to be told, by token. */
+  private readonly leaving = new Map<string, { id: string; sent: boolean }>();
   private dirty = false;
   private lastDragSent = -Infinity;
   private pt: { id: string; value: RemotePoint; dirty: boolean; sent: boolean; lastSent: number } | null = null;
@@ -80,11 +85,13 @@ export class DragSender {
   private lastSent = -Infinity;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private keepalive: ReturnType<typeof setInterval> | null = null;
+  private readonly from = newId();
 
   constructor(
     private readonly send: Send,
     private readonly watched: () => boolean,
-    private readonly now: () => number = () => Date.now()
+    private readonly now: () => number = () => Date.now(),
+    private readonly medicion = false
   ) {}
 
   /** The token dragged is at `position` now; `shared`: whether it may be seen (not a hidden token). */
@@ -97,8 +104,12 @@ export class DragSender {
       return;
     }
     if (this.drag && this.drag.tokenId !== tokenId) {
-      this.end(this.drag.tokenId);
+      // Another token: the last one's end comes when it's told (see end).
+      this.leaving.set(this.drag.tokenId, { id: this.drag.id, sent: this.drag.sent });
+      this.drag = null;
+      this.dirty = false;
     }
+    this.leaving.delete(tokenId);
     this.drag ??= { id: newId(), tokenId, position: null, sent: false, moved: 0 };
     this.drag.position = { x: position.x, y: position.y };
     this.drag.moved = this.now();
@@ -108,18 +119,19 @@ export class DragSender {
   }
 
   /**
-   * The drag over: dropped, and saved at `at` (the scene has it there); null, back where it began.
+   * A drag over: dropped, and saved at `at` (the scene has it there); null, back where it began.
    * Nothing goes if nothing was sent.
    */
   end(tokenId: string, at: Vector2 | null = null) {
-    const drag = this.drag;
-    if (!drag || drag.tokenId !== tokenId) {
-      return;
+    let drag: { id: string; sent: boolean } | undefined = this.leaving.get(tokenId);
+    this.leaving.delete(tokenId);
+    if (!drag && this.drag?.tokenId === tokenId) {
+      drag = this.drag;
+      this.drag = null;
+      this.dirty = false;
+      this.idle();
     }
-    this.drag = null;
-    this.dirty = false;
-    this.idle();
-    if (drag.sent) {
+    if (drag?.sent) {
       this.out({ type: "end", drag: drag.id, tokenId, at: at && { x: at.x, y: at.y } }, 0);
     }
   }
@@ -211,7 +223,7 @@ export class DragSender {
 
   private out(message: RemoteDrag, attempt: number) {
     this.lastSent = this.now();
-    this.send(message).catch((error) => {
+    this.send({ ...message, from: this.from, ...(this.medicion ? { medicion: true } : {}) }).catch((error) => {
       if (!isRateLimitError(error)) {
         console.warn("Rising Ranges: couldn't send a drag to the other Vistazos", error);
         return;
@@ -244,18 +256,22 @@ export type Measured = { tokenId: string } | { point: Vector2; own?: number; rad
 type Mirror = { type?: unknown; sessionId?: unknown; origin?: { center?: Vector2 }; originTokenId?: unknown };
 
 type Sender = {
+  /** Its client: what it was doing goes when that one leaves (see left). */
+  connection: string;
+  /** What the map's Medición sends (see RemoteDrag), not a Vistazo. */
+  medicion: boolean;
   mirror: { sessionId: number; measured: Measured; order: number } | null;
-  drag: { id: string; tokenId: string; heard: number; order: number } | null;
+  drags: Map<string, { tokenId: string; heard: number; order: number }>;
   point: { id: string; value: RemotePoint; heard: number; order: number } | null;
 };
 
 const finite = (p: { x?: unknown; y?: unknown } | null | undefined): p is Vector2 => !!p && Number.isFinite(p.x) && Number.isFinite(p.y);
 
 /**
- * The others' Mediciones, drags and free points, as they come (`connectionId`: who from), told on as
- * `measured` (what's measured from, the one begun last: one at a time, as the mirror shows them),
- * `moved` (where a token being dragged is) and `dropped` (its drag over: where it was left, null if
- * it's back where it began or its sender's gone).
+ * The others' Mediciones, drags and free points, as they come (`connectionId`: whose client; each
+ * page sending on it apart: see RemoteDrag), told on as `measured` (what's measured from, the one begun
+ * last: one at a time, as the mirror shows them), `moved` (where a token being dragged is) and
+ * `dropped` (its drag over: where it was left, null if it's back where it began or its sender's gone).
  */
 export class RemoteWatch {
   private readonly senders = new Map<string, Sender>();
@@ -269,11 +285,12 @@ export class RemoteWatch {
     private readonly now: () => number = () => performance.now()
   ) {}
 
-  private sender(connectionId: string): Sender {
-    let sender = this.senders.get(connectionId);
+  private sender(connectionId: string, from: string, medicion: boolean): Sender {
+    const key = `${connectionId}|${from}`;
+    let sender = this.senders.get(key);
     if (!sender) {
-      sender = { mirror: null, drag: null, point: null };
-      this.senders.set(connectionId, sender);
+      sender = { connection: connectionId, medicion, mirror: null, drags: new Map(), point: null };
+      this.senders.set(key, sender);
     }
     return sender;
   }
@@ -282,7 +299,7 @@ export class RemoteWatch {
     if (!message || typeof message.sessionId !== "number") {
       return;
     }
-    const sender = this.sender(connectionId);
+    const sender = this.sender(connectionId, "mirror", true);
     if (message.type === "start") {
       const center = message.origin?.center;
       const measured: Measured | null =
@@ -299,17 +316,19 @@ export class RemoteWatch {
     if (!message) {
       return;
     }
+    const sender = this.sender(connectionId, typeof message.from === "string" ? message.from : "", message.medicion === true);
     if (message.type === "point") {
-      this.takePoint(connectionId, message);
+      this.takePoint(sender, message);
       return;
     }
     if (typeof message.drag !== "string" || typeof message.tokenId !== "string") {
       return;
     }
-    const sender = this.sender(connectionId);
     if (message.type === "end") {
-      if (sender.drag?.id === message.drag) {
-        this.drop(sender, finite(message.at) ? { x: message.at.x, y: message.at.y } : null);
+      const drag = sender.drags.get(message.drag);
+      if (drag) {
+        sender.drags.delete(message.drag);
+        this.dropped(drag.tokenId, finite(message.at) ? { x: message.at.x, y: message.at.y } : null);
         this.tell();
       }
       return;
@@ -317,12 +336,13 @@ export class RemoteWatch {
     if (message.type !== "move" || !finite(message.position)) {
       return;
     }
-    if (sender.drag && sender.drag.id !== message.drag) {
-      this.drop(sender);
+    let drag = sender.drags.get(message.drag);
+    const first = !drag;
+    if (!drag) {
+      drag = { tokenId: message.tokenId, heard: 0, order: this.order++ };
+      sender.drags.set(message.drag, drag);
     }
-    const first = !sender.drag;
-    sender.drag ??= { id: message.drag, tokenId: message.tokenId, heard: 0, order: this.order++ };
-    sender.drag.heard = this.now();
+    drag.heard = this.now();
     // Measured from first, where it's still standing (its rings stay there), then moved.
     if (first) {
       this.tell();
@@ -330,11 +350,10 @@ export class RemoteWatch {
     this.moved(message.tokenId, { x: message.position.x, y: message.position.y });
   }
 
-  private takePoint(connectionId: string, message: { id?: unknown; point?: RemotePoint | null }) {
+  private takePoint(sender: Sender, message: { id?: unknown; point?: RemotePoint | null }) {
     if (typeof message.id !== "string") {
       return;
     }
-    const sender = this.sender(connectionId);
     const value = message.point;
     if (!value) {
       if (sender.point?.id === message.id) {
@@ -354,12 +373,19 @@ export class RemoteWatch {
     this.tell();
   }
 
+  private dropAll(sender: Sender) {
+    for (const drag of sender.drags.values()) {
+      this.dropped(drag.tokenId, null);
+    }
+    sender.drags.clear();
+  }
+
   /** Someone left (their messages stop): what they were doing goes. */
   left(connected: Set<string>) {
-    for (const [connectionId, sender] of this.senders) {
-      if (!connected.has(connectionId)) {
-        this.drop(sender);
-        this.senders.delete(connectionId);
+    for (const [key, sender] of this.senders) {
+      if (!connected.has(sender.connection)) {
+        this.dropAll(sender);
+        this.senders.delete(key);
       }
     }
     this.tell();
@@ -370,9 +396,12 @@ export class RemoteWatch {
     const now = this.now();
     let any = false;
     for (const sender of this.senders.values()) {
-      if (sender.drag && now - sender.drag.heard > DRAG_TIMEOUT_MS) {
-        this.drop(sender);
-        any = true;
+      for (const [id, drag] of sender.drags) {
+        if (now - drag.heard > DRAG_TIMEOUT_MS) {
+          sender.drags.delete(id);
+          this.dropped(drag.tokenId, null);
+          any = true;
+        }
       }
       if (sender.point && now - sender.point.heard > POINT_TIMEOUT_MS) {
         sender.point = null;
@@ -384,31 +413,44 @@ export class RemoteWatch {
     }
   }
 
-  private drop(sender: Sender, at: Vector2 | null = null) {
-    const drag = sender.drag;
-    sender.drag = null;
-    if (drag) {
-      this.dropped(drag.tokenId, at);
-    }
-  }
-
   /** What's measured from now: of everyone's Mediciones, drags and free points, the one begun last. */
   current(): Measured | null {
-    let best: { measured: Measured; order: number } | null = null;
+    // Each client's map Medición, as its mirror has it (its drags and moving point are part of it).
+    const mirrors = new Map<string, NonNullable<Sender["mirror"]>>();
     for (const sender of this.senders.values()) {
-      const theirs = [
-        sender.mirror,
-        // A Medición's drag is that Medición's (as old as it); a Vistazo's, one of its own.
-        !sender.mirror && sender.drag && { measured: { tokenId: sender.drag.tokenId }, order: sender.drag.order },
-        sender.point && { measured: { point: { x: sender.point.value.x, y: sender.point.value.y }, own: sender.point.value.own }, order: sender.point.order },
-      ];
-      for (const one of theirs) {
-        if (one && (!best || one.order > best.order)) {
-          best = one;
-        }
+      if (sender.mirror) {
+        mirrors.set(sender.connection, sender.mirror);
       }
     }
-    return best?.measured ?? null;
+    let best: { measured: Measured; order: number } | null = null;
+    const take = (one: { measured: Measured; order: number } | null) => {
+      if (one && (!best || one.order > best.order)) {
+        best = one;
+      }
+    };
+    for (const sender of this.senders.values()) {
+      const mirror = mirrors.get(sender.connection);
+      if (sender.mirror) {
+        // From a point: its moving point says where it is now (below), not where it began.
+        const moving = "point" in sender.mirror.measured && [...this.senders.values()].some((s) => s.connection === sender.connection && s.medicion && s.point);
+        if (!moving) {
+          take(sender.mirror);
+        }
+        continue;
+      }
+      for (const drag of sender.drags.values()) {
+        // A Medición's drag is that Medición's (its mirror's above); a Vistazo's, one of its own.
+        if (!(sender.medicion && mirror)) {
+          take({ measured: { tokenId: drag.tokenId }, order: drag.order });
+        }
+      }
+      if (sender.point) {
+        // A Medición's point, as old as its Medición (its mirror's start).
+        const order = sender.medicion && mirror ? mirror.order : sender.point.order;
+        take({ measured: { point: { x: sender.point.value.x, y: sender.point.value.y }, own: sender.point.value.own }, order });
+      }
+    }
+    return (best as { measured: Measured } | null)?.measured ?? null;
   }
 
   private tell() {
