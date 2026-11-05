@@ -17,6 +17,7 @@ import { shownShape, useGridType } from "./BandShapeButtonGroup";
 import { getStoredTheme } from "../theme/themes";
 import { BandSet, IconShape } from "../engine/types";
 import { useTranslation } from "../i18n/useTranslation";
+import { newBandId } from "../bandSets/library";
 
 /** Enough for any system's distances (Draw Steel has 8); the color themes repeat past 6. */
 const MAX_BANDS = 12;
@@ -47,7 +48,7 @@ export function BandSetEditor({
         {
           name: t("settings.band.newName", { n: bandSet.bands.length + 1 }),
           radius: maxRadius + 1,
-          id: crypto.randomUUID(),
+          id: newBandId(bandSet.bands),
         },
       ],
     });

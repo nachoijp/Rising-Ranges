@@ -8,7 +8,7 @@ import Tabs from "@mui/material/Tabs";
 import Tab from "@mui/material/Tab";
 
 import { getDefaultBandSets, resolveBandSet } from "../bandSets/bandSets";
-import { MAX_RANGES, fitsRoom, onRangesChange, rangesFile, rangesFromFile, saveRanges } from "../bandSets/library";
+import { MAX_RANGES, fitsRoom, onRangesChange, rangesFile, rangesFromFile, saveRanges, newSetId, numberedBands } from "../bandSets/library";
 import { BandSet } from "../engine/types";
 import { BandSetSelector } from "./BandSetSelector";
 import { BandasTab } from "./BandasTab";
@@ -301,9 +301,9 @@ export function Settings() {
   function onDuplicateBandSet() {
     onAddBandSet({
       ...selectedBandSet,
-      id: crypto.randomUUID(),
+      id: newSetId(),
       name: t("settings.bandas.copyName", { name: selectedBandSet.name }),
-      bands: selectedBandSet.bands.map((band) => ({ ...band, id: crypto.randomUUID() })),
+      bands: numberedBands(selectedBandSet.bands),
     });
   }
 

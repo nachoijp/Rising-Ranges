@@ -16,6 +16,7 @@ import CheckRounded from "@mui/icons-material/CheckRounded";
 import EditRounded from "@mui/icons-material/EditRounded";
 import { useTranslation } from "../i18n/useTranslation";
 import { useFittedMenu } from "../util/menuRoom";
+import { newSetId, numberedBands } from "../bandSets/library";
 
 /** Rows of the menu that aren't sets to pick (MUI's Select takes a ListSubheader as such): plain, not sticky. */
 const plainRow = { lineHeight: 1.4, py: 0.5, bgcolor: "transparent", position: "static" } as const;
@@ -66,12 +67,9 @@ export function BandSetSelector({
     }
     const newBandSet = {
       ...selectedBandSet,
-      id: crypto.randomUUID(),
+      id: newSetId(),
       name: t("settings.bandSet.newName", { n: customBandSets.length + 1 }),
-      bands: selectedBandSet.bands.map((band) => ({
-        ...band,
-        id: crypto.randomUUID(),
-      })),
+      bands: numberedBands(selectedBandSet.bands),
     };
     onAdd(newBandSet);
   }
