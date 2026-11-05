@@ -39,7 +39,8 @@ export type IconName =
   | "plus" | "minus" | "pick-shapes" | "pick-points" | "edge-wall" | "edge-soft" | "eyedropper"
   | "visible" | "hidden" | "locked" | "unlocked" | "size" | "strength" | "magnet" | "folder" | "group" | "ungroup" | "camera"
   | "stamp" | "column" | "pit" | "stairs" | "platform" | "wall" | "mound" | "erase"
-  | "grip" | "panel" | "minimize" | "fullscreen" | "fullscreen-exit" | "restore" | "info" | "resize";
+  | "grip" | "panel" | "minimize" | "fullscreen" | "fullscreen-exit" | "restore" | "info" | "resize" | "arrow";
 
-/** An icon, as markup. */
-export const icon = (name: IconName) => `<svg class="ri" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">${ICONS.get(name) ?? ""}</svg>`;
+/** An icon, as markup; turned (degrees, clockwise) if `turn` is given. */
+export const icon = (name: IconName, turn = 0) =>
+  `<svg class="ri" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"${turn ? ` style="transform: rotate(${turn}deg)"` : ""}>${ICONS.get(name) ?? ""}</svg>`;

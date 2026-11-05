@@ -1,5 +1,5 @@
 import type { TranslationKey } from "../../i18n/translate";
-import type { Group, ReliefData, Shape, StandEdge, UnderLook, WallLook } from "../types";
+import type { Group, Pt, ReliefData, Shape, StandEdge, UnderLook, WallLook } from "../types";
 import { corners } from "../stand";
 import { HEIGHT_LIMIT, quarter } from "../relief";
 import { BRUSHES, type BrushKind } from "./brush";
@@ -7,7 +7,7 @@ import type { PickMode, ReliefEditor, RollerMode, ToolId } from "./editor";
 import { icon, type IconName } from "./icons";
 import { ancestors, groupsOf, membersOf, moveItem, pickGroup, toggleGroup, type ListDrop, type ListItem } from "./groups";
 import { PREFABS, type PrefabId } from "./prefabs";
-import { combine, defaultRamp, setKind, setRel, setType, togglePick, type Combine, type ShapeType } from "./shapes";
+import { combine, defaultRamp, rampToward, setKind, setRel, setType, togglePick, type Combine, type ShapeType } from "./shapes";
 
 // The editor's pieces over the map, as Owlbear's own: the tools in a column,
 // the tool's options in the bar at the top, what's picked in a panel at the
@@ -126,6 +126,14 @@ const toolHint = (id: ToolId) => `relief.tool.${id}Hint` as TranslationKey;
 
 /** Text put in HTML as text. */
 export const esc = (text: string) => String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+
+/** The ramp's arrow buttons: which way, its unit vector (y down), the arrow icon's turn, its name. */
+const RAMP_DIRS: [string, Pt, number, TranslationKey][] = [
+  ["up", [0, -1], 0, "relief.shape.dirUp"],
+  ["right", [1, 0], 90, "relief.shape.dirRight"],
+  ["down", [0, 1], 180, "relief.shape.dirDown"],
+  ["left", [-1, 0], 270, "relief.shape.dirLeft"],
+];
 
 const fmt = (h: number) => (Math.round(h * 100) / 100).toString();
 const signed = (h: number) => (h > 0 ? `+${fmt(h)}` : fmt(h));
@@ -680,6 +688,11 @@ function keysHint(ed: ReliefEditor, t: T): string {
       return s.kind === "slope" ? pairs([["relief.key.dblInclined", "relief.key.dblInclinedDo"], ["relief.key.altClick", "relief.key.altClickDo"]]) : focus ? t("relief.key.pointsNeedInclined") : "";
     }
   }
+  // A ramp picked alone: its arrow's ends can be dragged (with any tool).
+  const one = ed.sel?.kind === "shape" && !ed.sel.more?.length ? ed.data.shapes[ed.sel.i] : null;
+  if (one?.kind === "ramp" && one.ramp && !ed.drag && !ed.box) {
+    return t("relief.key.rampArrow");
+  }
   return "";
 }
 
@@ -1084,7 +1097,7 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
     height =
       `<span class="l" ${tip(t("relief.height"), t("relief.shape.rampHint"))}>${esc(t("relief.height"))}</span>${heightRow(t, `${heightField("from", t("relief.height"))}<span class="muted">→</span>${heightField("to", t("relief.height"))}`, `${unit(s.ramp.from)} → ${unit(s.ramp.to)}`)}` +
       `<span class="l" ${tip(t("relief.shape.steps"), t("relief.shape.stepsHint"))}>${esc(t("relief.shape.steps"))}</span><span class="line">${stepper(numField("steps", t("relief.shape.steps"), 0, 50, true), "steps", 1, t)}</span>` +
-      `<span class="l">${esc(t("relief.shape.arrow"))}</span><span class="line"><button type="button" class="ib sm" data-k="flip" ${tip(t("relief.shape.flip"), t("relief.shape.flipHint"))}>${icon("convert")}</button><button type="button" class="field" data-k="rearrow" ${tip(t("relief.shape.rearrow"), t("relief.shape.rearrowHint"))}>${esc(t("relief.shape.rearrow"))}</button></span>`;
+      `<span class="l">${esc(t("relief.shape.arrow"))}</span><span class="line"><span class="seg" role="group" aria-label="${esc(t("relief.shape.arrow"))}">${RAMP_DIRS.map(([d, , turn, label]) => `<button type="button" class="ib sm" data-k="dir" data-d="${d}" aria-label="${esc(t(label))}" ${tip(t(label), t("relief.shape.dirHint"))}>${icon("arrow", turn)}</button>`).join("")}</span><button type="button" class="ib sm" data-k="flip" ${tip(t("relief.shape.flip"), t("relief.shape.flipHint"))}>${icon("convert")}</button><button type="button" class="field" data-k="rearrow" ${tip(t("relief.shape.rearrow"), t("relief.shape.rearrowHint"))}>${esc(t("relief.shape.rearrow"))}</button></span>`;
   } else if (s.kind === "ramp") {
     height = `<span class="l">${esc(t("relief.height"))}</span><span class="line"><span class="warn">${esc(t("relief.shape.noArrow"))}</span><button type="button" class="field" data-k="rearrow">${esc(t("relief.shape.addArrow"))}</button></span>`;
   } else {
@@ -1261,12 +1274,26 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
       redo();
     };
   }
+  // The arrow pointed one way, across the whole shape; its heights stay.
+  for (const button of el.querySelectorAll<HTMLButtonElement>('[data-k="dir"]')) {
+    const dir = RAMP_DIRS.find(([d]) => d === button.dataset.d);
+    if (!dir || !s.ramp) {
+      continue;
+    }
+    const ramp = s.ramp;
+    button.onclick = () => {
+      ed.pushUndo();
+      [ramp.a, ramp.b] = rampToward(ed, s, dir[1]);
+      redo();
+    };
+  }
+  // Flipped: what's high where it was low, and the other way (the arrow stays).
   const flip = el.querySelector<HTMLButtonElement>('[data-k="flip"]');
   if (flip && s.ramp) {
     const ramp = s.ramp;
     flip.onclick = () => {
       ed.pushUndo();
-      [ramp.a, ramp.b, ramp.from, ramp.to] = [ramp.b, ramp.a, ramp.to, ramp.from];
+      [ramp.from, ramp.to] = [ramp.to, ramp.from];
       redo();
     };
   }
@@ -1302,10 +1329,10 @@ const TYPE_ICONS: Record<ShapeType, IconName> = { terrain: "terrain", slab: "sla
 const describe = (t: T, s: Shape) =>
   s.kind === "flat" ? (s.rel ? signed(s.h) : fmt(s.h)) : s.kind === "ramp" && s.ramp ? `${fmt(s.ramp.from)}→${fmt(s.ramp.to)}` : s.kind === "ramp" ? t("relief.label.rampNoArrow") : t("relief.label.inclined");
 
-/** What the shapes' list needs from its page: its own folding, its groups' (ids folded), and the menus. */
+/** What the shapes' list needs from its page: its own folding, its groups' (ids opened: folded unless opened), and the menus. */
 export type ShapesList = {
   folded: { value: boolean };
-  groupsFolded: Set<string>;
+  groupsOpen: Set<string>;
   onMenu: (i: number, x: number, y: number) => void;
   onGroupMenu: (id: string, x: number, y: number) => void;
   focusName: () => void;
@@ -1315,7 +1342,7 @@ export type ShapesList = {
 type Row = { shape: number; depth: number } | { group: Group; depth: number };
 
 /** The list's rows, the top first: each group where its shapes are (they're together: see tidyGroups). */
-function rowsOf(data: ReliefData, folded: Set<string>): Row[] {
+function rowsOf(data: ReliefData, open: Set<string>): Row[] {
   const groups = groupsOf(data);
   const top = new Map<string, number>();
   data.shapes.forEach((s, i) => {
@@ -1334,7 +1361,7 @@ function rowsOf(data: ReliefData, folded: Set<string>): Row[] {
         rows.push({ shape: item.shape, depth });
       } else {
         rows.push({ group: item.group, depth });
-        if (!folded.has(item.group.id)) {
+        if (open.has(item.group.id)) {
           spell(item.group.id, depth + 1);
         }
       }
@@ -1360,7 +1387,7 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, ui: Shapes
   const toggles = (key: string, value: string, hidden: boolean, locked: boolean) =>
     `<button type="button" class="tg${hidden ? " set" : ""}" data-${key}hide="${value}" aria-pressed="${hidden}" ${tip(t(hidden ? "relief.row.show" : "relief.row.hide"), t("relief.row.editorOnly"))}>${icon(hidden ? "hidden" : "visible")}</button>` +
     `<button type="button" class="tg${locked ? " set" : ""}" data-${key}lock="${value}" aria-pressed="${locked}" ${tip(t(locked ? "relief.row.unlock" : "relief.row.lock"), t("relief.row.editorOnly"))}>${icon(locked ? "locked" : "unlocked")}</button>`;
-  const rows = rowsOf(data, ui.groupsFolded)
+  const rows = rowsOf(data, ui.groupsOpen)
     .map((row) => {
       const depth = `style="--depth: ${row.depth}"`;
       if ("group" in row) {
@@ -1370,7 +1397,7 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, ui: Shapes
         const on = free.length > 0 && free.every((i) => chosen.has(i));
         const hidden = members.every((s) => s.hidden);
         const locked = members.every((s) => s.locked);
-        const open = !ui.groupsFolded.has(g.id);
+        const open = ui.groupsOpen.has(g.id);
         return `<div class="item grp${on ? " on" : ""}${hidden ? " off" : ""}" draggable="true" data-g="${esc(g.id)}" ${depth} tabindex="0" role="button" aria-expanded="${open}" aria-pressed="${on}" aria-label="${esc(g.name)}">
           <span class="gchev${open ? "" : " closed"}" data-fold="${esc(g.id)}" ${tip(t(open ? "relief.fold" : "relief.unfold"))}>${icon("expand")}</span>${icon("folder")}<span class="n">${esc(g.name)}</span><span class="h">${members.length}</span>${toggles("g", esc(g.id), hidden, locked)}</div>`;
       }
@@ -1452,8 +1479,8 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, ui: Shapes
   bind("ghide", (id) => groupToggle(id, "hidden"));
   bind("glock", (id) => groupToggle(id, "locked"));
   bind("fold", (id) => {
-    if (!ui.groupsFolded.delete(id)) {
-      ui.groupsFolded.add(id);
+    if (!ui.groupsOpen.delete(id)) {
+      ui.groupsOpen.add(id);
     }
     again();
   });
@@ -1468,7 +1495,7 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, ui: Shapes
   const dropOn = (row: HTMLElement, event: DragEvent): ListDrop => {
     const up = above(row, event);
     if (row.dataset.g) {
-      return { side: up ? "above" : ui.groupsFolded.has(row.dataset.g) ? "below" : "into", group: row.dataset.g };
+      return { side: up ? "above" : !ui.groupsOpen.has(row.dataset.g) ? "below" : "into", group: row.dataset.g };
     }
     return { side: up ? "above" : "below", shape: Number(row.dataset.i) };
   };

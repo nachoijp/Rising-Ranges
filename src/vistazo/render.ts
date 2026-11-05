@@ -14,7 +14,7 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import type { MultiPolygon } from "polygon-clipping";
 import { bridgeHighest, bridgeTop, inShape, pieceHeight, type Bridge, type MapImage, type Piece, type Prop, type Token, type VistazoScene } from "./scene";
 import { isHexShape, ringSteps } from "../engine/hex";
-import type { Fog } from "./fog";
+import { foggedOf, type Fog } from "./fog";
 import { visibleBox } from "./visibleBox";
 import { CLOUD_GLSL, CLOUD_ZONES, buildWeather, cloudNoise, cloudShadowOf, setWeatherTime } from "./weather";
 import { buildTemplate, templateTip, type Template } from "./templates";
@@ -160,6 +160,13 @@ export class VistazoView {
   private weatherFrame = 0;
   /** The player view's fog: its picture (see drawFog), laid on the terrain by its materials (see fogged). */
   private fogTexture: THREE.CanvasTexture | null = null;
+  /** The fog's floor and curtains (see buildFogFloor). */
+  private fogFloor: THREE.Group | null = null;
+  /** Where each light's soft clearing is drawn before it's cut out of the fog (see lightMask). */
+  private fogScratch: HTMLCanvasElement | null = null;
+  /** The fog sharp: what's hidden, no soft edges (see drawFog, fogHidden). */
+  private fogHardCanvas: HTMLCanvasElement | null = null;
+  private fogHardTexture: THREE.CanvasTexture | null = null;
   private fogCanvas: HTMLCanvasElement | null = null;
   /**
    * The player view's fog, laid on the terrain's tops and walls at each pixel (see fogged): its picture
@@ -167,6 +174,7 @@ export class VistazoView {
    */
   private readonly fogUniforms = {
     uFog: { value: NO_FOG as THREE.Texture },
+    uFogHard: { value: NO_FOG as THREE.Texture },
     uFogBox: { value: new THREE.Vector4(0, 0, 1, 1) },
     uFogOn: { value: 0 },
   };
@@ -769,6 +777,7 @@ export class VistazoView {
     this.fogUniforms.uFogOn.value = fog && scene ? 1 : 0;
     this.setLayers({ fog: !!fog && !!scene });
     if (!fog || !scene) {
+      this.dropFogFloor();
       return;
     }
     const { x0, y0, x1, y1 } = scene.bounds;
@@ -795,23 +804,250 @@ export class VistazoView {
     };
     if (fog.filled) {
       context.fillRect(0, 0, cw, ch);
-    } else {
-      context.beginPath();
-      fog.shapes.forEach(trace);
-      context.fill("evenodd");
     }
-    // What the lights reveal, cut out.
+    // Its shapes bottom to top: one covers, a cut one takes away what's under it.
+    for (const { ring, cut } of fog.layers) {
+      context.globalCompositeOperation = cut ? "destination-out" : "source-over";
+      context.beginPath();
+      trace(ring);
+      context.fill("nonzero");
+    }
+    // What the lights reveal, cut out: each as its own soft edge has it (see lightMask).
     context.globalCompositeOperation = "destination-out";
-    context.beginPath();
-    fog.lit.forEach(trace);
-    context.fill("nonzero");
+    for (const area of fog.lit) {
+      const box = this.lightMask(area, x0, y0, px, cw, ch);
+      if (box) {
+        const [bx, by, bw, bh] = box;
+        context.drawImage(this.fogScratch!, bx, by, bw, bh, bx, by, bw, bh);
+      }
+    }
     if (!this.fogTexture) {
       this.fogTexture = new THREE.CanvasTexture(canvas);
     }
     this.fogTexture.needsUpdate = true;
+    // The same, sharp: what's hidden (1) or not (0), the lights' whole reach cut out with no fading. What
+    // isn't drawn goes by it (see fogHidden), so it ends on the fog's very outline, where the curtains
+    // stand (see buildFogFloor); the soft picture only darkens.
+    const hard = this.fogHardCanvas ?? document.createElement("canvas");
+    if (hard.width !== cw || hard.height !== ch) {
+      hard.width = cw;
+      hard.height = ch;
+      this.fogHardTexture?.dispose();
+      this.fogHardTexture = null;
+    }
+    this.fogHardCanvas = hard;
+    const sharp = hard.getContext("2d")!;
+    const outline = (ring: [number, number][]) => {
+      ring.forEach(([x, y], i) => (i === 0 ? sharp.moveTo((x - x0) * px, (y - y0) * px) : sharp.lineTo((x - x0) * px, (y - y0) * px)));
+      sharp.closePath();
+    };
+    sharp.globalCompositeOperation = "source-over";
+    sharp.clearRect(0, 0, cw, ch);
+    sharp.fillStyle = "#ffffff";
+    if (fog.filled) {
+      sharp.fillRect(0, 0, cw, ch);
+    }
+    for (const { ring, cut } of fog.layers) {
+      sharp.globalCompositeOperation = cut ? "destination-out" : "source-over";
+      sharp.beginPath();
+      outline(ring);
+      sharp.fill("nonzero");
+    }
+    sharp.globalCompositeOperation = "destination-out";
+    for (const area of fog.lit) {
+      sharp.beginPath();
+      area.rings.forEach(outline);
+      sharp.fill("evenodd");
+    }
+    if (!this.fogHardTexture) {
+      this.fogHardTexture = new THREE.CanvasTexture(hard);
+    }
+    this.fogHardTexture.needsUpdate = true;
+    this.fogUniforms.uFogHard.value = this.fogHardTexture;
     const u = this.u;
     this.fogUniforms.uFog.value = this.fogTexture;
     this.fogUniforms.uFogBox.value.set(x0 * u, y0 * u, w * u, h * u);
+    time("3d.fog.floor", () => this.buildFogFloor(fog, scene));
+  }
+
+  /**
+   * A light's clearing as a picture on the scratch canvas (see drawFog): within its outline (the walls'
+   * shadows cut out), whole near it, fading out over the last `soft` of its reach, and toward its cone's
+   * sides between its inner and outer angles, as Owlbear's lights are. Returns the box drawn (canvas px).
+   */
+  private lightMask(area: Fog["lit"][number], x0: number, y0: number, px: number, cw: number, ch: number): [number, number, number, number] | null {
+    const { light, rings } = area;
+    const scratch = this.fogScratch ?? (this.fogScratch = document.createElement("canvas"));
+    if (scratch.width !== cw || scratch.height !== ch) {
+      scratch.width = cw;
+      scratch.height = ch;
+    }
+    const [cx, cy, r] = [(light.x - x0) * px, (light.y - y0) * px, Math.max(light.radius * px, 1e-3)];
+    const bx = Math.max(0, Math.floor(cx - r - 2));
+    const by = Math.max(0, Math.floor(cy - r - 2));
+    const bw = Math.min(cw, Math.ceil(cx + r + 2)) - bx;
+    const bh = Math.min(ch, Math.ceil(cy + r + 2)) - by;
+    if (bw <= 0 || bh <= 0) {
+      return null;
+    }
+    const g = scratch.getContext("2d")!;
+    g.save();
+    g.globalCompositeOperation = "source-over";
+    g.clearRect(bx, by, bw, bh);
+    g.beginPath();
+    for (const ring of rings) {
+      ring.forEach(([x, y], i) => (i === 0 ? g.moveTo((x - x0) * px, (y - y0) * px) : g.lineTo((x - x0) * px, (y - y0) * px)));
+      g.closePath();
+    }
+    g.clip("evenodd");
+    // Whole up to (1 − soft) of its reach, then fading out to its edge along a smooth S, as Owlbear's
+    // lights do (they brighten the map near them too, which this doesn't).
+    const whole = Math.min(1 - light.soft, 0.999);
+    const radial = g.createRadialGradient(cx, cy, 0, cx, cy, r);
+    radial.addColorStop(0, "rgba(0,0,0,1)");
+    const STOPS = 12;
+    for (let i = 0; i <= STOPS; i++) {
+      const t = i / STOPS;
+      const fade = 1 - t * t * (3 - 2 * t);
+      radial.addColorStop(whole + (1 - whole) * t, `rgba(0,0,0,${fade.toFixed(4)})`);
+    }
+    g.fillStyle = radial;
+    g.fillRect(bx, by, bw, bh);
+    const cone = light.cone;
+    if (cone && cone.outer > cone.inner) {
+      // Its sides fading: kept as much as a conic picture says, from one side of the cone round to the other.
+      g.globalCompositeOperation = "destination-in";
+      const conic = g.createConicGradient(cone.middle - cone.outer, cx, cy);
+      const span = cone.outer / Math.PI; // the cone's share of a whole turn
+      const edge = (cone.outer - cone.inner) / (2 * Math.PI);
+      conic.addColorStop(0, "rgba(0,0,0,0)");
+      conic.addColorStop(Math.min(edge, span / 2), "rgba(0,0,0,1)");
+      conic.addColorStop(Math.max(span - edge, span / 2), "rgba(0,0,0,1)");
+      conic.addColorStop(Math.min(span, 1), "rgba(0,0,0,0)");
+      if (span < 1) {
+        conic.addColorStop(1, "rgba(0,0,0,0)");
+      }
+      g.fillStyle = conic;
+      g.fillRect(bx, by, bw, bh);
+    }
+    // Never quite all fog within its reach: darkened into the fog by its edge, not painted over (what's
+    // drawn goes by the sharp picture: see fogHidden).
+    g.globalCompositeOperation = "source-over";
+    g.fillStyle = `rgba(0,0,0,${LIT_EDGE})`;
+    g.fillRect(bx, by, bw, bh);
+    g.restore();
+    return [bx, by, bw, bh];
+  }
+
+  /**
+   * What stands in for the terrain under the fog (which isn't drawn there,
+   * see fogged): a flat floor of the fog's colour at height 0, and a curtain
+   * of it along the fog's edge, from 0 to the ground's height on the clear
+   * side, so a plateau cut by the fog shows a side, not its hollow. Worked
+   * out with the fog's picture (a light moving redoes it, not the terrain).
+   */
+  private buildFogFloor(fog: Fog, scene: VistazoScene) {
+    this.dropFogFloor();
+    const u = this.u;
+    const k = this.k;
+    const color = new THREE.Color(fog.color);
+    const group = new THREE.Group();
+    const { x0, y0, x1, y1 } = scene.bounds;
+    const floorMaterial = new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide });
+    // Only where the terrain isn't drawn (a pit by the fog, or under a light's soft edge, shows); the
+    // curtains reach well below it, so at a fog shape's sharp edge (its texels blur it) no gap shows.
+    layer(floorMaterial, "fogfloor", this.fogUniforms, FOG_GLSL, "if (!fogHidden(vLayerAt.xy)) discard;");
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry((x1 - x0) * u, (y1 - y0) * u), floorMaterial);
+    floor.position.set(((x0 + x1) / 2) * u, ((y0 + y1) / 2) * u, 0);
+    group.add(floor);
+    const fogged = foggedOf(fog, scene.world);
+    if (fogged && fogged.length > 0) {
+      const step = scene.dpi * 0.25;
+      const near = scene.dpi * 0.05;
+      // The ground's height just off the edge on its clear side (0 off the map; null: neither side clear).
+      const clearHeight = (x: number, y: number, nx: number, ny: number): number | null => {
+        for (const side of [1, -1]) {
+          const [qx, qy] = [x + nx * near * side, y + ny * near * side];
+          if (!fog.at(qx, qy)) {
+            return scene.heightAt(qx, qy) ?? 0;
+          }
+        }
+        return null;
+      };
+      const positions: number[] = [];
+      const bottom = (Math.min(0, this.minH) - 1) * k;
+      for (const polygon of fogged) {
+        for (const ring of polygon) {
+          for (let i = 0; i < ring.length - 1; i++) {
+            const [ax, ay] = ring[i];
+            const [bx, by] = ring[i + 1];
+            const length = Math.hypot(bx - ax, by - ay);
+            if (length < 1e-6) {
+              continue;
+            }
+            const [nx, ny] = [-(by - ay) / length, (bx - ax) / length];
+            const n = Math.max(1, Math.ceil(length / step));
+            // In steps: each sample's height held up to where the ground's height changes on the way
+            // to the next (found by halving), then straight up or down: a slant between a plateau's
+            // edge and the ground beside it would show as a wedge, a step halfway as a sliver past it.
+            // From well below anything (a skirt: no gap under it at a sharp edge, a pit's side by the fog)
+            // up to the ground's height there, or 0.
+            const quad = (x0: number, y0: number, x1: number, y1: number, h: number | null) => {
+              if (h === null) {
+                return;
+              }
+              const [lo, hi] = [bottom, Math.max(0, h) * k];
+              positions.push(x0 * u, y0 * u, lo, x1 * u, y1 * u, lo, x1 * u, y1 * u, hi, x0 * u, y0 * u, lo, x1 * u, y1 * u, hi, x0 * u, y0 * u, hi);
+            };
+            let last: [number, number, number | null] | null = null;
+            for (let j = 0; j <= n; j++) {
+              const [x, y] = [ax + ((bx - ax) * j) / n, ay + ((by - ay) * j) / n];
+              const h = clearHeight(x, y, nx, ny);
+              if (last) {
+                const [lx, ly, lh] = last;
+                let [t0, t1] = [0, 1];
+                if (h !== null && lh !== null && Math.abs(h - lh) > 1e-3) {
+                  for (let it = 0; it < 7; it++) {
+                    const t = (t0 + t1) / 2;
+                    const mh = clearHeight(lx + (x - lx) * t, ly + (y - ly) * t, nx, ny) ?? 0;
+                    if (Math.abs(mh - lh) <= Math.abs(mh - h)) {
+                      t0 = t;
+                    } else {
+                      t1 = t;
+                    }
+                  }
+                }
+                const t = (t0 + t1) / 2;
+                const [mx, my] = [lx + (x - lx) * t, ly + (y - ly) * t];
+                quad(lx, ly, mx, my, lh);
+                quad(mx, my, x, y, h);
+              }
+              last = [x, y, h];
+            }
+          }
+        }
+      }
+      if (positions.length > 0) {
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
+        group.add(new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide })));
+      }
+    }
+    this.fogFloor = group;
+    this.world.add(group);
+  }
+
+  private dropFogFloor() {
+    if (!this.fogFloor) {
+      return;
+    }
+    this.world.remove(this.fogFloor);
+    this.fogFloor.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      mesh.geometry?.dispose();
+      (mesh.material as THREE.Material | undefined)?.dispose();
+    });
+    this.fogFloor = null;
   }
 
   /** A surface of the terrain (a top, a wall, a standing picture) kept for what's drawn over it (see copiesIn). */
@@ -1231,12 +1467,18 @@ export class VistazoView {
     this.requestApply();
   }
 
-  /** Height (grid units) at a scene point, NaN outside the map. */
+  /**
+   * Height (grid units) at a scene point, NaN outside the map; 0 under the player view's fog (the
+   * terrain's drawn whole, its heights under the fog not shown: see fogged, buildFogFloor).
+   */
   private gridHeight(x: number, y: number): number {
     const { x0, y0, step, w, h, cells } = this.grid;
     const i = Math.round((x - x0) / step);
     const j = Math.round((y - y0) / step);
-    return i < 0 || j < 0 || i >= w || j >= h ? NaN : cells[j * w + i];
+    if (i < 0 || j < 0 || i >= w || j >= h) {
+      return NaN;
+    }
+    return this.fog?.at(x, y) ? 0 : cells[j * w + i];
   }
 
 
@@ -1568,7 +1810,7 @@ export class VistazoView {
       if (levels.length > 0) {
         const lines = new THREE.BufferGeometry();
         lines.setAttribute("position", new THREE.BufferAttribute(levels, 3));
-        const levelLines = new THREE.LineSegments(lines, new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, forceSinglePass: true, opacity: 0.3 }));
+        const levelLines = new THREE.LineSegments(lines, fogCut(new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, forceSinglePass: true, opacity: 0.3 }), this.fogUniforms));
         levelLines.userData.wall = true;
         group.add(levelLines);
       }
@@ -1583,10 +1825,28 @@ export class VistazoView {
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.BufferAttribute(shade.positions, 3));
       geometry.setAttribute("color", new THREE.BufferAttribute(shade.colors, 4));
-      const shadows = new THREE.Mesh(
-        geometry,
-        new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, forceSinglePass: true, depthWrite: false, side: THREE.DoubleSide })
-      );
+      // Each corner's wall foot (a wall's six corners: its foot's two ends a, b; its far edge's d, c of
+      // b, a): a shadow goes with its wall under the fog, though its far edge reaches out of it.
+      const feet = new Float32Array((shade.positions.length / 18) * 12);
+      for (let i = 0; i < feet.length / 12; i++) {
+        const p = shade.positions;
+        const [ax, ay, bx, by] = [p[i * 18], p[i * 18 + 1], p[i * 18 + 3], p[i * 18 + 4]];
+        feet.set([ax, ay, bx, by, bx, by, ax, ay, bx, by, ax, ay], i * 12);
+      }
+      geometry.setAttribute("aFoot", new THREE.BufferAttribute(feet, 2));
+      const material = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, forceSinglePass: true, depthWrite: false, side: THREE.DoubleSide });
+      const uniforms = this.fogUniforms;
+      material.onBeforeCompile = (shader) => {
+        Object.assign(shader.uniforms, uniforms);
+        shader.vertexShader = shader.vertexShader
+          .replace("#include <common>", "#include <common>\nattribute vec2 aFoot;\nvarying vec2 vFoot;")
+          .replace("#include <begin_vertex>", "#include <begin_vertex>\nvFoot = (modelMatrix * vec4(aFoot, 0.0, 1.0)).xy;");
+        shader.fragmentShader = shader.fragmentShader
+          .replace("#include <common>", `#include <common>\nvarying vec2 vFoot;\n${FOG_GLSL}`)
+          .replace("#include <opaque_fragment>", "if (fogHidden(vFoot)) discard;\n#include <opaque_fragment>");
+      };
+      material.customProgramCacheKey = () => "rising-ranges/wall-shadow-fog";
+      const shadows = new THREE.Mesh(geometry, material);
       shadows.renderOrder = 1;
       shadows.userData.wall = true;
       this.terrainGroup.add(shadows);
@@ -1813,6 +2073,7 @@ export class VistazoView {
           uBox: { value: area },
         },
       });
+      fogCutShader(material, this.fogUniforms, "vAt.xy");
       material.addEventListener("dispose", () => {
         fill.dispose();
         underside.dispose();
@@ -1973,7 +2234,7 @@ export class VistazoView {
     under.setAttribute("uv", new THREE.BufferAttribute(underUv, 2));
     const belly = new THREE.Mesh(
       under,
-      new THREE.MeshBasicMaterial({ map: skin ? this.mapTexture : blend || plain ? null : patternTexture(kind), color: skin ? new THREE.Color(0.6, 0.6, 0.6) : tint(0.6), side: THREE.DoubleSide })
+      fogCut(new THREE.MeshBasicMaterial({ map: skin ? this.mapTexture : blend || plain ? null : patternTexture(kind), color: skin ? new THREE.Color(0.6, 0.6, 0.6) : tint(0.6), side: THREE.DoubleSide }), this.fogUniforms)
     );
     if (blend) {
       grained(belly.material as THREE.MeshBasicMaterial);
@@ -2063,13 +2324,16 @@ export class VistazoView {
     this.terrainGroup.add(
       new THREE.Mesh(
         sides,
-        blend
-          ? grained(new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }))
-          : new THREE.MeshBasicMaterial({
-              map: skin || mapped ? this.plainTexture : plain ? null : patternTexture(kind),
-              color: skin || mapped ? new THREE.Color(0.85, 0.85, 0.85) : tint(0.85),
-              side: THREE.DoubleSide,
-            })
+        fogCut(
+          blend
+            ? grained(new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }))
+            : new THREE.MeshBasicMaterial({
+                map: skin || mapped ? this.plainTexture : plain ? null : patternTexture(kind),
+                color: skin || mapped ? new THREE.Color(0.85, 0.85, 0.85) : tint(0.85),
+                side: THREE.DoubleSide,
+              }),
+          this.fogUniforms
+        )
       )
     );
   }
@@ -2550,7 +2814,7 @@ export class VistazoView {
         this.waterCache.set(key, kept);
       }
       kept.used = this.builds;
-      const surface = new THREE.Mesh(this.shapeGeometry(kept.shape), waterMaterial(this.stillTexture ?? this.mapTexture, t, this.u, scene.dpi, kept.reach));
+      const surface = new THREE.Mesh(this.shapeGeometry(kept.shape), fogCutShader(waterMaterial(this.stillTexture ?? this.mapTexture, t, this.u, scene.dpi, kept.reach), this.fogUniforms, "vAt"));
       surface.position.z = level * this.k;
       surface.renderOrder = 4;
       this.waterGroup.add(surface);
@@ -3323,7 +3587,11 @@ function bridgeFill(shape: MultiPolygon, map: Texture, grow: number): BridgeFill
 
 /** A material with a blended wall's grain (see WALL_GRAIN) over its colour, where it is in the view. */
 function grained<M extends THREE.MeshBasicMaterial>(material: M): M {
-  material.onBeforeCompile = (shader) => {
+  // Over what the material's shader had already (the fog's cut, put on before it: see fogCut).
+  const before = material.onBeforeCompile.bind(material);
+  const key = material.customProgramCacheKey.bind(material);
+  material.onBeforeCompile = (shader, renderer) => {
+    before(shader, renderer);
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", "#include <common>\nvarying vec3 vGrainAt;")
       .replace("#include <begin_vertex>", "#include <begin_vertex>\nvGrainAt = (modelMatrix * vec4(position, 1.0)).xyz;");
@@ -3331,7 +3599,7 @@ function grained<M extends THREE.MeshBasicMaterial>(material: M): M {
       .replace("#include <common>", `#include <common>\nvarying vec3 vGrainAt;\n${NOISE_2D}\n${WALL_GRAIN}`)
       .replace("#include <color_fragment>", `#include <color_fragment>\ndiffuseColor.rgb *= wallGrain(vGrainAt, ${VIEW_CELL.toFixed(1)});`);
   };
-  material.customProgramCacheKey = () => "rising-ranges/grained";
+  material.customProgramCacheKey = () => `${key()}+rising-ranges/grained`;
   return material;
 }
 
@@ -3443,9 +3711,26 @@ function clouded(material: THREE.MeshBasicMaterial, uniforms: Record<string, { v
   layer(material, "clouded", uniforms, CLOUD_GLSL, "#ifdef RR_CLOUDS\noutgoingLight = shadeClouds(outgoingLight, vLayerAt.xy);\n#endif");
 }
 
-/** The player view's fog over a top or wall, from its picture laid from above (see drawFog). */
+/**
+ * The player view's fog over a top or wall, from its picture laid from above (see drawFog): under
+ * it, not drawn (the fog's floor and curtains stand in for it, see buildFogFloor: its heights would
+ * give it away); by its edge, tinted.
+ */
 function fogged(material: THREE.MeshBasicMaterial, uniforms: Record<string, { value: unknown }>) {
-  layer(material, "fogged", uniforms, FOG_GLSL, "#ifdef RR_FOG\noutgoingLight = paintFog(outgoingLight, vLayerAt.xy);\n#endif");
+  layer(material, "fogged", uniforms, FOG_GLSL, "#ifdef RR_FOG\nif (fogHidden(vLayerAt.xy)) discard;\noutgoingLight = paintFog(outgoingLight, vLayerAt.xy);\n#endif");
+}
+
+/** Not drawn under the player view's fog (anything else on the terrain: a slab's sides, its belly). */
+function fogCut<M extends THREE.MeshBasicMaterial | THREE.LineBasicMaterial>(material: M, uniforms: Record<string, { value: unknown }>): M {
+  layer(material, "fogcut", uniforms, FOG_GLSL, "if (fogHidden(vLayerAt.xy)) discard;");
+  return material;
+}
+
+/** As fogCut, for a shader of its own: `at`, its pixel's place (view units, a vec2 it has). */
+function fogCutShader(material: THREE.ShaderMaterial, uniforms: Record<string, { value: unknown }>, at: string): THREE.ShaderMaterial {
+  Object.assign(material.uniforms, uniforms);
+  material.fragmentShader = `${FOG_GLSL}\n${material.fragmentShader.replace("void main() {", `void main() {\n    if (fogHidden(${at})) discard;`)}`;
+  return material;
 }
 
 /**
@@ -3454,7 +3739,7 @@ function fogged(material: THREE.MeshBasicMaterial, uniforms: Record<string, { va
  * view units: one for every layer, worked out once a vertex). Over what the material's shader had
  * already (the grid, another layer), in that order.
  */
-function layer(material: THREE.MeshBasicMaterial, name: string, uniforms: Record<string, { value: unknown }>, head: string, body: string) {
+function layer(material: THREE.Material, name: string, uniforms: Record<string, { value: unknown }>, head: string, body: string) {
   const before = material.onBeforeCompile.bind(material);
   const key = material.customProgramCacheKey.bind(material);
   material.onBeforeCompile = (shader, renderer) => {
@@ -3709,8 +3994,16 @@ const BAND_GLSL = /* glsl */ `
 /** The fog's picture over a scene point (view units; see drawFog): its colour, as much as it covers there. */
 const FOG_GLSL = /* glsl */ `
   uniform sampler2D uFog;
+  uniform sampler2D uFogHard;
   uniform vec4 uFogBox;
   uniform float uFogOn;
+  // Whether the fog hides a point (view units): its sharp picture, past half (its outline, where the
+  // curtains stand). A light's soft edge only darkens (see paintFog).
+  bool fogHidden(vec2 at) {
+    if (uFogOn < 0.5) return false;
+    vec2 uv = (at - uFogBox.xy) / uFogBox.zw;
+    return texture2D(uFogHard, vec2(uv.x, 1.0 - uv.y)).a > 0.5;
+  }
   vec3 paintFog(vec3 color, vec2 at) {
     if (uFogOn < 0.5) return color;
     vec2 uv = (at - uFogBox.xy) / uFogBox.zw;
@@ -3718,6 +4011,9 @@ const FOG_GLSL = /* glsl */ `
     return mix(color, fog.rgb, fog.a);
   }
 `;
+
+/** How much a light clears at the very edge of its reach, at least: the fog's tint there is 96%, the terrain still seen. */
+const LIT_EDGE = 0.04;
 
 /** No picture: a clear pixel, for the fog's and the clouds' uniforms till there's one (see fogUniforms, cloudUniforms). */
 const NO_FOG = (() => {

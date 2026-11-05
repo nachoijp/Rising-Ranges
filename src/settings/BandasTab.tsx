@@ -1,3 +1,5 @@
+import { MAX_RANGES } from "../bandSets/library";
+import Tooltip from "@mui/material/Tooltip";
 import { useEffect, useState } from "react";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
@@ -37,6 +39,7 @@ export function BandasTab({
   onChange,
   onDelete,
   onDuplicate,
+  canDuplicate,
 }: {
   bandSet: BandSet;
   defaultIconShape: IconShape;
@@ -49,6 +52,8 @@ export function BandasTab({
   onChange: (bandSet: BandSet) => void;
   onDelete: (bandSet: BandSet) => void;
   onDuplicate: () => void;
+  /** Whether the room has room for one more set (see bandSets/library.ts). */
+  canDuplicate: boolean;
 }) {
   const t = useTranslation();
   return (
@@ -58,9 +63,13 @@ export function BandasTab({
           severity="info"
           icon={false}
           action={
-            <Button color="inherit" size="small" onClick={onDuplicate}>
-              {t("settings.bandas.duplicate")}
-            </Button>
+            <Tooltip title={canDuplicate ? "" : t("settings.bandSet.full", { max: MAX_RANGES })}>
+              <span>
+                <Button color="inherit" size="small" onClick={onDuplicate} disabled={!canDuplicate}>
+                  {t("settings.bandas.duplicate")}
+                </Button>
+              </span>
+            </Tooltip>
           }
         >
           {t("settings.bandas.presetNotice", { name: bandSet.name })}

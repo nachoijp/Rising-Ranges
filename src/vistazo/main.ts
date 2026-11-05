@@ -51,7 +51,7 @@ import {
   readPanelSize as readSize,
   savePanelSize as saveSize,
 } from "./panel";
-import { clearOf, fogOver } from "./fog";
+import { fogOver, stopAtWalls } from "./fog";
 import * as itemActions from "./itemMenu";
 import { mayDo } from "../background/permission";
 import { lockedNow, visibleNow } from "../util/attachments";
@@ -1108,8 +1108,11 @@ async function start() {
    * back later than they're written, some after the last. By token: where it landed, and the wait's end.
    */
   const landing = new Map<string, { at: Vector2 | null; until: number }>();
-  /** How long (ms) a landing is waited for at most (a save that never shows): then the scene's place. */
-  const LANDING_MS = 3000;
+  /**
+   * How long (ms) a landing is waited for at most once it's saved (a save that never shows, or one
+   * Owlbear put elsewhere: a wall in the way), then the scene's place.
+   */
+  const LANDING_MS = 1000;
   /** The tokens whose landing the scene now shows (or waited for long enough): following the scene again. */
   const landed = () => {
     let any = false;
@@ -1525,8 +1528,10 @@ async function start() {
         if (ground) {
           // Following the cursor as it goes, unsnapped: Owlbear stops a drag at the walls of the
           // dynamic fog (its own, or Smoke & Spectre's), and a jump from cell to cell across a
-          // corner would cut through one. Snapped to the grid on release (finishMove).
-          const position = { x: ground.x + move.grab.x, y: ground.y + move.grab.y };
+          // corner would cut through one. Snapped to the grid on release (finishMove). Stopped at
+          // those walls here too, as Owlbear's map does (else it'd go through, its light showing
+          // what's beyond, and go back once dropped).
+          const position = stopAtWalls(move.position, { x: ground.x + move.grab.x, y: ground.y + move.grab.y }, items, localItems, dpi * 0.05);
           move.position = position;
           move.path.add(position, dpi * 0.1);
           void move.interaction?.then(([update]) => {
@@ -2105,6 +2110,37 @@ async function start() {
       live.delete(follower);
     }
     followers.delete(id);
+    // The fog worked out again from the scene (its lights where it has them), even if nothing moved there.
+    fogKey = "";
+  };
+  /**
+   * The fog as the scene has it, the lights on tokens being dragged where those are now (see live):
+   * as Owlbear's map, the fog opens round a token as it's dragged, not once it's dropped.
+   */
+  const fogNow = () => {
+    if (live.size === 0) {
+      return fogOver(fogFilled, items, localItems, fogColor);
+    }
+    const by = new Map<string, Vector2>();
+    for (const [id, at] of live) {
+      const item = items.find((i) => i.id === id);
+      if (item) {
+        by.set(id, { x: at.position.x - item.position.x, y: at.position.y - item.position.y });
+      }
+    }
+    const shifted = (list: Item[]) =>
+      list.map((item) => {
+        const d = item.type === "LIGHT" && item.attachedTo ? by.get(item.attachedTo) : undefined;
+        return d ? { ...item, position: { x: item.position.x + d.x, y: item.position.y + d.y } } : item;
+      });
+    return fogOver(fogFilled, shifted(items), shifted(localItems), fogColor);
+  };
+  /** The fog again with the dragged tokens' lights where they are (the player view's, at most once a frame: see setFog). */
+  const liveFog = () => {
+    if (options.playerView && [...items, ...localItems].some((item) => item.type === "LIGHT" && item.attachedTo && live.has(item.attachedTo))) {
+      lastFog = fogNow();
+      view.setFog(lastFog);
+    }
   };
   /** A token shown at `position` (and `own` height, if given), what's attached to it as far along (see followers). */
   const placeLive = (tokenId: string, position: Vector2, own?: number) => {
@@ -2132,6 +2168,7 @@ async function start() {
         scene = placed(scene, id, moved);
       }
     }
+    liveFog();
   };
   /** `from` with a token moved to `position` (and `own` height). */
   function placed(from: VistazoScene, tokenId: string, position: Vector2, own?: number): VistazoScene {
@@ -2340,8 +2377,11 @@ async function start() {
     try {
       if (move.started && move.interaction) {
         const [update, stop] = await move.interaction;
-        // Snapped to the grid where it's let go, as Owlbear's own move does.
-        const snapped = await OBR.scene.grid.snapPosition(move.position);
+        // Snapped to the grid where it's let go, as Owlbear's own move does; not across a wall (Owlbear
+        // would stop it there): then where it was let go.
+        const near = await OBR.scene.grid.snapPosition(move.position);
+        const reached = stopAtWalls(move.position, near, items, localItems, 0);
+        const snapped = Math.hypot(reached.x - near.x, reached.y - near.y) < 0.5 ? near : move.position;
         move.position = snapped;
         // Shown there now (not where it was let go, nor the steps it's saved along: see endMove); the
         // drag's over (it isn't taken for one again: showTokenAt would).
@@ -2389,10 +2429,6 @@ async function start() {
   let localSight = sightKey(localItems);
   let fogKey = "";
   let lastFog: ReturnType<typeof fogOver> | null = null;
-  /** The fog the relief was last cut to (see refresh), its key, and the wait for the fog to settle. */
-  let sightFog: ReturnType<typeof fogOver> | null = null;
-  let sightFogKey = "";
-  let sightTimer: ReturnType<typeof setTimeout> | null = null;
   OBR.scene.fog.onChange((fog) => {
     fogFilled = fog.filled;
     fogColor = fog.style.color;
@@ -2460,42 +2496,15 @@ async function start() {
       }
       // The player view's fog, worked out again only when what it depends on changed (not on every token move).
       if (options.playerView) {
-        const key = JSON.stringify([fogFilled, sightKey(items), localSight, items.filter((item) => item.layer === "FOG").map((item) => [item.id, item.visible, item.position, item.rotation, item.scale, item.lastModified])]);
-        if (key !== fogKey || !lastFog) {
+        const key = JSON.stringify([fogFilled, sightKey(items), localSight, items.filter((item) => item.layer === "FOG").map((item) => [item.id, item.visible, item.zIndex, item.position, item.rotation, item.scale, item.lastModified])]);
+        if (key !== fogKey || !lastFog || live.size > 0) {
           fogKey = key;
-          lastFog = fogOver(fogFilled, items, localItems, fogColor);
+          lastFog = fogNow();
           view.setFog(lastFog);
         }
       }
-      // The relief follows the fog once it settles: cutting the terrain to it costs more than drawing it,
-      // and the fog's own picture (live) already covers what's moving meanwhile.
-      // Not while a token's being dragged (its light comes and goes in bursts, Smoke & Spectre's every
-      // half second or so): once it's dropped and the fog has settled.
-      if (options.playerView && lastFog && sightFogKey !== fogKey && (live.size === 0 || !sightFog)) {
-        if (!sightFog) {
-          sightFog = lastFog;
-          sightFogKey = fogKey;
-        } else {
-          // Once it's settled: every change (a light moving with a dragged token) puts it off again.
-          if (sightTimer) {
-            clearTimeout(sightTimer);
-          }
-          sightTimer = setTimeout(() => {
-            sightTimer = null;
-            if (live.size > 0) {
-              return;
-            }
-            sightFog = lastFog;
-            sightFogKey = fogKey;
-            refresh();
-          }, 600);
-        }
-      }
-      if (!options.playerView) {
-        sightFog = null;
-        sightFogKey = "";
-      }
-      const fogNow = options.playerView ? sightFog : null;
+      // The fog doesn't touch the terrain: it's drawn whole, and the view leaves out what's under the fog
+      // as it draws (see VistazoView.setFog), live, a light moving with a dragged token too.
       const t0 = stamp();
       // The map being edited drawn even hidden (a map got ready before it's shown).
       const drawn = session ? items.map((item) => (item.id === session!.imageId && !item.visible ? { ...item, visible: true } : item)) : items;
@@ -2508,7 +2517,7 @@ async function start() {
         scene ?? undefined,
         hexCenter,
         options.playerView,
-        fogNow ? { key: sightFogKey, clear: (world) => clearOf(fogNow, world) } : null,
+        null,
         reliefs
       );
       // What it was built from: its terrain worked out away from the page from it (see terrainJob).
@@ -2520,7 +2529,7 @@ async function start() {
         gridType,
         hexCenter,
         playerView: options.playerView,
-        fog: fogNow ? { key: sightFogKey, filled: fogNow.filled, shapes: fogNow.shapes, lit: fogNow.lit } : null,
+        fog: null,
         reliefs,
       };
       since("vistazo.buildScene", t0);

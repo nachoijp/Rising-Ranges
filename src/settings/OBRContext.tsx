@@ -1,6 +1,7 @@
 import OBR, { type GridScale, type GridType } from "@owlbear-rodeo/sdk";
 import { createContext, useContext, useState, useEffect } from "react";
-import { bandSetFromMetadata, customBandSetsFromMetadata, resolveBandSet } from "../bandSets/bandSets";
+import { bandSetFromMetadata, resolveBandSet } from "../bandSets/bandSets";
+import { adoptSceneRanges, loadRanges } from "../bandSets/library";
 import { BandSet } from "../engine/types";
 import { Language, languageFromMetadata, setLanguage as persistLanguage } from "../i18n/language";
 import { displayFromMetadata, type DisplaySettings } from "./display";
@@ -10,7 +11,10 @@ type OBRContextValue = {
   /** The scene's grid type, live (Elevación's perspective options only work on some). */
   gridType: GridType;
   bandSet: BandSet;
+  /** The room's custom sets (see bandSets/library.ts), as the page loaded. */
   customBandSets: BandSet[];
+  /** Sets an earlier version kept in this scene that didn't fit in the room's list. */
+  leftBehind: BandSet[];
   // Live (not just the initial fetch) and shared via context — most of the
   // settings tree needs to read the current language for useTranslation(),
   // far more call sites than bandSet's own "fetch once, prop-drill from
@@ -60,15 +64,19 @@ export function OBRContextProvider({
   const [customBandSets, setCustomBandSets] = useState<BandSet[] | null>(
     null
   );
+  const [leftBehind, setLeftBehind] = useState<BandSet[]>([]);
   const [language, setLanguageState] = useState<Language | null>(null);
   const [display, setDisplay] = useState<DisplaySettings | null>(null);
   useEffect(() => {
     let mounted = true;
-    OBR.scene.getMetadata().then((metadata) => {
+    Promise.all([OBR.scene.getMetadata(), loadRanges(), OBR.player.getRole()]).then(async ([metadata, room, role]) => {
+      // A GM moves an earlier version's scene-kept sets up to the room (a player doesn't write).
+      const { ranges, left } = role === "GM" ? await adoptSceneRanges(metadata, room) : { ranges: room, left: [] };
       if (mounted) {
         const language = languageFromMetadata(metadata);
         setBandSet(bandSetFromMetadata(metadata));
-        setCustomBandSets(customBandSetsFromMetadata(metadata));
+        setCustomBandSets(ranges);
+        setLeftBehind(left);
         setLanguageState(language);
         setDisplay(displayFromMetadata(metadata));
       }
@@ -93,7 +101,7 @@ export function OBRContextProvider({
 
   return (
     <OBRContext.Provider
-      value={{ gridScale, gridType, bandSet, customBandSets, language, onChangeLanguage, display }}
+      value={{ gridScale, gridType, bandSet, customBandSets, leftBehind, language, onChangeLanguage, display }}
     >
       {children}
     </OBRContext.Provider>
