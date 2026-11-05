@@ -192,12 +192,6 @@ export const bridgeTop = (bridge: Bridge, x: number, y: number) => (bridge.surfa
 /** A bridge's highest top (at its corners, if it isn't flat). */
 export const bridgeHighest = (bridge: Bridge) => (bridge.surface ? Math.max(bridge.top, ...bridge.shape.flat(2).map(([x, y]) => bridgeTop(bridge, x, y))) : bridge.top);
 
-/**
- * The player view's sight: what of the map the fog leaves clear (worked out
- * from the map's outline), and a key that changes with it. Under the fog the
- * terrain is flat ground: its heights would give away what's there.
- */
-export type Sight = { key: string; clear: (world: MultiPolygon) => MultiPolygon | null };
 
 export type VistazoScene = Terrain & {
   /** What it was built from, for the terrain's worker to build the same scene (see terrainJob); none: worked out on the page. */
@@ -269,11 +263,11 @@ function closed(ring: Pair[]): Pair[] {
 }
 
 /** What the terrain is built from: the map images (where they are), the tokens when there's none to size it, the reliefs. */
-function terrainKeyOf(items: Item[], tokenItems: Image[], dpi: number, terrainOff: boolean, sight: Sight | null, reliefKey: string): string {
+function terrainKeyOf(items: Item[], tokenItems: Image[], dpi: number, terrainOff: boolean, reliefKey: string): string {
   const images = items.filter((item): item is Image => isImage(item) && item.layer === "MAP");
   const sized = images.some((item) => item.visible) ? [] : tokenItems.map((token) => token.position);
   const mapItems = images.map((item) => [item.id, item.position, item.rotation, item.scale, item.visible, item.zIndex, item.image, item.grid]);
-  return JSON.stringify([dpi, terrainOff, mapItems, sized, sight?.key ?? null, reliefKey]);
+  return JSON.stringify([dpi, terrainOff, mapItems, sized, reliefKey]);
 }
 
 /**
@@ -289,7 +283,6 @@ export function buildScene(
   previous?: VistazoScene,
   hexCenter: { x: number; y: number } | null = null,
   playerView = false,
-  sight: Sight | null = null,
   reliefs: Reliefs = { byImage: new Map(), key: "" }
 ): VistazoScene {
   const settings = globalSettingsFromMetadata(metadata);
@@ -297,14 +290,14 @@ export function buildScene(
   const altitude = settings.enableAltitude ?? true;
   // Characters, and mounts with them (a horse is a creature too).
   const tokenItems = items.filter((item): item is Image => isImage(item) && (item.layer === "CHARACTER" || item.layer === "MOUNT"));
-  const key = terrainKeyOf(items, tokenItems, dpi, terrainOff, sight, `${reliefs.key}${reliefs.surfaced ? "+surfaced" : ""}`);
+  const key = terrainKeyOf(items, tokenItems, dpi, terrainOff, `${reliefs.key}${reliefs.surfaced ? "+surfaced" : ""}`);
   const reused = !!previous && previous.terrainKey === key;
   if (reused && !terrainOff) {
     // The same terrain, but a relief changed where it is (a brush let go): those over it follow (see stack.ts).
     const maps = items.filter((item): item is Image => isImage(item) && item.layer === "MAP" && item.visible && reliefs.byImage.has(item.id)).sort((a, b) => a.zIndex - b.zIndex);
     stackReliefs(maps.map((item) => ({ id: item.id, relief: reliefs.byImage.get(item.id)!, anchor: anchorOf(item) })), dpi);
   }
-  const terrain = reused ? previous! : buildTerrain(key, items, tokenItems, dpi, terrainOff, sight, reliefs.byImage, !!reliefs.surfaced);
+  const terrain = reused ? previous! : buildTerrain(key, items, tokenItems, dpi, terrainOff, reliefs.byImage, !!reliefs.surfaced);
   const { measuredAt } = terrain;
 
   const bandSet = onGrid(bandSetFromMetadata(metadata), gridType);
@@ -399,7 +392,6 @@ function buildTerrain(
   tokenItems: Image[],
   dpi: number,
   terrainOff: boolean,
-  sight: Sight | null,
   reliefs: Map<string, Relief>,
   surfaced: boolean
 ): Terrain {
@@ -423,10 +415,9 @@ function buildTerrain(
     world = [[[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]]];
   }
   const withRelief = terrainOff ? [] : mapItems.filter((item) => reliefs.has(item.id));
-  const clear = sight ? sight.clear(world) : null;
   // Each over those under it (see stack.ts): a prop's relief stands on the map's.
   stackReliefs(withRelief.map((item) => ({ id: item.id, relief: reliefs.get(item.id)!, anchor: anchorOf(item) })), dpi);
-  const parts = withRelief.map((item) => time("scene.reliefTerrain", () => reliefTerrain(reliefs.get(item.id)!, anchorOf(item), dpi, clear, surfaced)));
+  const parts = withRelief.map((item) => time("scene.reliefTerrain", () => reliefTerrain(reliefs.get(item.id)!, anchorOf(item), dpi, surfaced)));
   // Each image's shapes numbered apart (the first's as they are): two images' shape 4 aren't the same one.
   const firstShape: Record<string, number> = {};
   parts.forEach((part, k) => {

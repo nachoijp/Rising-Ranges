@@ -1,7 +1,6 @@
 import "./workerShim";
 import { Relief } from "../relief/relief";
 import { buildScene, type VistazoScene } from "./scene";
-import { clearOf, type Fog } from "./fog";
 import { computeTerrain, terrainTransfers } from "./view/terrainBuffers";
 import { FineSurfaces } from "./view/surfaces";
 import type { MapColors } from "./view/mapColors";
@@ -41,11 +40,9 @@ self.onmessage = (event: MessageEvent<TerrainMessage>) => {
     }
     const byImage = new Map(job.reliefs.map(([image]) => [image, reliefs.get(image)!.relief]));
     const { recipe } = job;
-    const fog = recipe.fog;
-    const sight = fog ? { key: fog.key, clear: (world: Parameters<typeof clearOf>[1]) => clearOf(fog as unknown as Fog, world) } : null;
     const stages: Record<string, number> = {};
     const built = performance.now();
-    const scene = buildScene(recipe.metadata, recipe.items, recipe.dpi, recipe.scale, recipe.gridType, previous, recipe.hexCenter, recipe.playerView, sight, {
+    const scene = buildScene(recipe.metadata, recipe.items, recipe.dpi, recipe.scale, recipe.gridType, previous, recipe.hexCenter, recipe.playerView, {
       byImage,
       key: recipe.reliefKey,
       surfaced: recipe.surfaced,

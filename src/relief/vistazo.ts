@@ -1,7 +1,7 @@
 import type { MultiPolygon, Pair } from "polygon-clipping";
 import clip from "../terrain/clip";
 import { frameOf } from "../terrain/terrain";
-import { inShape as inScene, type Bridge, type Piece, type StandEdge } from "../vistazo/scene";
+import type { Bridge, Piece, StandEdge } from "../vistazo/scene";
 import { cellToScene, sceneToCell, type Anchor } from "./anchor";
 import { bbox, centroid, closed, inBox, inShape, open } from "./geom";
 import { ReliefMesh } from "./mesh";
@@ -27,8 +27,7 @@ export type ReliefTerrain = {
 };
 
 /**
- * `clear`: in the player view, what of the map the fog leaves clear (scene
- * px); under the fog the terrain's flat (its heights would give it away).
+ * (The player view's fog isn't cut out here: the view leaves out what's under it as it draws.)
  * `surfaced`: every piece with its surface, flat ones too (while it's being
  * edited: a brush's heights then move its corners where they are, see
  * VistazoView.reheight). `skip`: shapes left out; `within`: only what's
@@ -39,7 +38,6 @@ export function reliefTerrain(
   relief: Relief,
   anchor: Anchor,
   dpi: number,
-  clear: MultiPolygon | null = null,
   surfaced = false,
   skip: Set<number> | null = null,
   within: Pt[][][] | null = null
@@ -56,11 +54,6 @@ export function reliefTerrain(
   const bounds: Pt[][][] = within ?? [[closed(rect)]];
   const box = within ? bbox(within.flatMap((polygon) => polygon[0])) : null;
   const near = (b: { x0: number; y0: number; x1: number; y1: number }) => !box || (b.x0 <= box.x1 && b.x1 >= box.x0 && b.y0 <= box.y1 && b.y1 >= box.y0);
-  // On the clear area's very edge counts as in it: a shape cut at the map's edge has its corners there (the
-  // clear area's edge too), and asked exactly on it, "outside" would draw them on the ground (its top sunk).
-  const NEAR = 0.01;
-  const visible = (x: number, y: number) =>
-    !clear || inScene(x, y, clear) || inScene(x + NEAR, y, clear) || inScene(x - NEAR, y, clear) || inScene(x, y + NEAR, clear) || inScene(x, y - NEAR, clear);
   // Over another image's relief with no ground of its own (see stack.ts): only its shapes are its own.
   const see = relief.seeThrough;
   const heightAt = (x: number, y: number): number | undefined => {
@@ -68,7 +61,7 @@ export function reliefTerrain(
     if (cx < 0 || cy < 0 || cx > w || cy > h || (see && !relief.covered(cx, cy))) {
       return undefined;
     }
-    return visible(x, y) ? relief.evaluate(cx, cy) : 0;
+    return relief.evaluate(cx, cy);
   };
   /**
    * A layer and its piece as the relief has them now: worked out again since (a brush: Relief.derive),
@@ -95,9 +88,6 @@ export function reliefTerrain(
   };
   /** A piece's own surface (see Relief.evaluateOn): its edge's points at its height, not the next one's. */
   const surfaceOf = (own: Layer | null, piece?: ReliefPiece) => (p: { x: number; y: number }) => {
-    if (!visible(p.x, p.y)) {
-      return 0;
-    }
     const [cx, cy] = sceneToCell(anchor, dpi, p.x, p.y);
     const [layer, now] = own ? live(own, piece) : [null, piece];
     return relief.evaluateOn(layer, cx, cy, now);
@@ -202,60 +192,16 @@ export function reliefTerrain(
     console.error("Rising Ranges: 3D Glance couldn't cut the relief's ground", error);
   }
   const plainGround = relief.data.ground.every((v) => v === 0) && !relief.layers.some((layer) => layer.soft > 0);
-  // Under the fog: each shape's piece cut to what's clear, the ground taking the rest, flat there. Its own
-  // ground cut to what's clear and the hidden part added (not the map less the pieces cut: the cuts move
-  // their sides a hair, and what's left between them would be slivers of ground at its foot, as teeth).
-  // Nothing hidden (no fog over it): as it is.
-  let groundScene = sceneOf(ground);
-  let hidden: MultiPolygon = [];
-  if (clear) {
-    try {
-      hidden = clip.difference(area, clear);
-    } catch (error) {
-      console.error("Rising Ranges: 3D Glance couldn't work out what the fog hides of the relief", error);
-    }
-  }
-  if (hidden.length > 0) {
-    for (let i = pieces.length - 1; i >= 0; i--) {
-      try {
-        const kept = clip.intersection(pieces[i].shape, clear!);
-        if (kept.length > 0) {
-          pieces[i].shape = kept;
-        } else {
-          pieces.splice(i, 1);
-        }
-      } catch (error) {
-        console.error("Rising Ranges: 3D Glance couldn't cut a part of the relief to the fog", error);
-      }
-    }
-    try {
-      const seen = groundScene.length > 0 ? clip.intersection(groundScene, clear!) : [];
-      groundScene = seen.length > 0 ? clip.union(seen, hidden) : hidden;
-    } catch (error) {
-      console.error("Rising Ranges: 3D Glance couldn't cut the relief's ground to the fog", error);
-    }
-  }
+  const groundScene = sceneOf(ground);
   if (groundScene.length > 0 && !see) {
-    pieces.unshift({ height: 0, shape: groundScene, surface: plainGround && hidden.length === 0 && !surfaced ? undefined : surfaceOf(null) });
+    pieces.unshift({ height: 0, shape: groundScene, surface: plainGround && !surfaced ? undefined : surfaceOf(null) });
   }
   // Slabs: bridges over the terrain (a slab's top as its middle has it; one that isn't flat, at each point too).
   const bridges: Bridge[] = (within ? [] : relief.slabLayers.filter((layer) => !skip?.has(layer.si))).flatMap((layer) => {
     const shape = relief.data.shapes[layer.si];
     const [cx, cy] = centroid(layer.ring);
     const top = relief.surface(layer, cx, cy);
-    let outline = sceneOf([[closed(layer.ring), ...layer.holes.map(closed)]]);
-    // Under the fog, as the shapes: cut to what's clear (its outline there would give it away), or none.
-    if (clear) {
-      try {
-        outline = clip.intersection(outline, clear);
-      } catch (error) {
-        console.error("Rising Ranges: 3D Glance couldn't cut a slab to the fog", error);
-        return [];
-      }
-      if (outline.length === 0) {
-        return [];
-      }
-    }
+    const outline = sceneOf([[closed(layer.ring), ...layer.holes.map(closed)]]);
     const flat = shape.kind === "flat" && layer.pieces.length === 1 && !(shape.detail && shape.detail.v.size > 0);
     return [{
       id: `relief-${layer.si}`,

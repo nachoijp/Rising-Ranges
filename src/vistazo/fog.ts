@@ -47,22 +47,7 @@ const closed = (ring: Point[]): Point[] => [...ring, ring[0]];
 const unionOf = (rings: Point[][]): MultiPolygon =>
   rings.length === 0 ? [] : polygonClipping.union([[closed(rings[0])]], ...rings.slice(1).map((ring): MultiPolygon => [[closed(ring)]]));
 
-/**
- * What of `world` isn't under the fog (the lit areas, and outside the fog
- * shapes when it isn't filled): where the player view shows the terrain's
- * heights. null if it can't be worked out (then nothing's flattened).
- */
-export function clearOf(fog: Pick<Fog, "filled" | "layers" | "lit">, world: MultiPolygon): MultiPolygon | null {
-  const fogged = foggedOf(fog, world);
-  try {
-    return fogged === null ? null : fogged.length > 0 ? polygonClipping.difference(world, fogged) : world;
-  } catch (error) {
-    console.error("Rising Ranges: 3D Glance couldn't work out what the fog leaves clear", error);
-    return null;
-  }
-}
-
-/** What of `world` is under the fog (as clearOf, the other way). null if it can't be worked out. */
+/** What of `world` is under the fog (for its curtains: see VistazoView.buildFogFloor). null if it can't be worked out. */
 export function foggedOf(fog: Pick<Fog, "filled" | "layers" | "lit">, world: MultiPolygon): MultiPolygon | null {
   try {
     let fogged: MultiPolygon = fog.filled ? world : [];

@@ -147,7 +147,7 @@ function underShapes(relief: Relief, anchor: Anchor, dpi: number, moving: Moving
   }
   try {
     const within = (where.length === 1 ? where : clip.union(where[0], ...where.slice(1))) as [number, number][][][];
-    return reliefTerrain(relief, anchor, dpi, null, true, new Set(moving.shapes), within).pieces;
+    return reliefTerrain(relief, anchor, dpi, true, new Set(moving.shapes), within).pieces;
   } catch (error) {
     console.error("Rising Ranges: 3D Glance couldn't work out what's under the shapes dragged", error);
     return [];
@@ -2517,7 +2517,6 @@ async function start() {
         scene ?? undefined,
         hexCenter,
         options.playerView,
-        null,
         reliefs
       );
       // What it was built from: its terrain worked out away from the page from it (see terrainJob).
@@ -2529,7 +2528,6 @@ async function start() {
         gridType,
         hexCenter,
         playerView: options.playerView,
-        fog: null,
         reliefs,
       };
       since("vistazo.buildScene", t0);
