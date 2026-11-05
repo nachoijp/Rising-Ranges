@@ -8,7 +8,7 @@ import Tabs from "@mui/material/Tabs";
 import Tab from "@mui/material/Tab";
 
 import { getDefaultBandSets, resolveBandSet } from "../bandSets/bandSets";
-import { MAX_RANGES, fitsRoom, onRangesChange, rangesFile, rangesFromFile, saveRanges, newSetId, numberedBands } from "../bandSets/library";
+import { MAX_RANGES, fitsRoom, onRangesChange, rangesFile, rangesFromFile, saveRanges, newSetId, freshBands } from "../bandSets/library";
 import { BandSet } from "../engine/types";
 import { BandSetSelector } from "./BandSetSelector";
 import { BandasTab } from "./BandasTab";
@@ -303,7 +303,7 @@ export function Settings() {
       ...selectedBandSet,
       id: newSetId(),
       name: t("settings.bandas.copyName", { name: selectedBandSet.name }),
-      bands: numberedBands(selectedBandSet.bands),
+      bands: freshBands(selectedBandSet.bands),
     });
   }
 

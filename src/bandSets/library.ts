@@ -13,9 +13,30 @@ import { DICTIONARY_D1 } from "./dictionary";
 // more go to a file (export/import). New sets and Bandas get short ids.
 // Earlier versions kept the list in each scene's metadata: it's moved up
 // the first time the settings open in that scene (see adoptSceneRanges).
+//
+// 2.2 keeps it under a key of its own (KEY), in a format 2.1.0 can't read:
+// a 2.1.0 still open reads only its old key (OLD_KEY), so it never takes the
+// new list for an empty one and writes that over it. The old key's list is
+// moved up the first time a 2.2 GM opens the settings (see moveOldRanges).
 
-const KEY = getPluginId("ranges");
+const KEY = getPluginId("sets");
+const OLD_KEY = getPluginId("ranges");
 const SCENE_KEY = getPluginId("bandSets");
+
+const ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
+
+/** `length` letters and digits at random, evenly (bytes of 252 and up, which would favour 0–3, drawn again). */
+function randomId(length: number): string {
+  let id = "";
+  while (id.length < length) {
+    for (const byte of crypto.getRandomValues(new Uint8Array(length))) {
+      if (byte < 252 && id.length < length) {
+        id += ALPHABET[byte % 36];
+      }
+    }
+  }
+  return id;
+}
 
 /**
  * A new set's id: 6 letters and digits at random (36⁶, about 2 × 10⁹: never twice in a room's five).
@@ -23,26 +44,30 @@ const SCENE_KEY = getPluginId("bandSets");
  * before (UUIDs) stay as they are: a scene's active set and the filter's Banda point at them.
  */
 export function newSetId(): string {
-  const ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
-  let id = "";
-  for (const byte of crypto.getRandomValues(new Uint8Array(6))) {
-    id += ALPHABET[byte % 36];
-  }
-  return id;
+  return randomId(6);
 }
 
 /**
- * A new Banda's id in its set: the next number after the set's own ("1", "2", …). It only has to be
- * one of a kind within its set (the filter's Banda is looked for in the set it's in).
+ * A new Banda's id: 4 letters and digits at random (36⁴, about 1.7 × 10⁶), none its set has. Not a
+ * number in its set: the Banda filter is the room's, and looks for its id in whatever set is active, so
+ * one set's "2" mustn't be another's, nor a deleted Banda's id come back on a new one.
  */
-export function newBandId(bands: { id: string }[]): string {
-  const taken = bands.map((band) => Number(band.id)).filter((n) => Number.isInteger(n) && n > 0);
-  return String(Math.max(0, ...taken) + 1);
+export function newBandId(bands: { id: string }[] = []): string {
+  for (;;) {
+    const id = randomId(4);
+    if (!bands.some((band) => band.id === id)) {
+      return id;
+    }
+  }
 }
 
-/** Bandas' ids for a new set (made, or copied from another): 1, 2, 3, … */
-export function numberedBands<B extends { id: string }>(bands: B[]): B[] {
-  return bands.map((band, i) => ({ ...band, id: String(i + 1) }));
+/** Bandas with ids of their own, for a new set (made, or copied from another). */
+export function freshBands<B extends { id: string }>(bands: B[]): B[] {
+  const out: B[] = [];
+  for (const band of bands) {
+    out.push({ ...band, id: newBandId(out) });
+  }
+  return out;
 }
 
 /** The most ranges a room keeps. */
@@ -57,7 +82,9 @@ export const BUDGET = 3000;
 const DICT = "d1:";
 const ZIP = "z1:";
 const RAW = "j1:";
-const dictionary = new TextEncoder().encode(DICTIONARY_D1);
+/** The dictionary as bytes, made when first needed (not by every page that loads this). */
+let dictionaryBytes: Uint8Array | null = null;
+const dictionary = () => (dictionaryBytes ??= new TextEncoder().encode(DICTIONARY_D1));
 
 function toBase64(bytes: Uint8Array): string {
   let text = "";
@@ -72,14 +99,15 @@ function fromBase64(text: string): Uint8Array {
   return bytes;
 }
 
-async function through(bytes: Uint8Array, stream: CompressionStream | DecompressionStream): Promise<Uint8Array> {
-  const out = new Response(new Blob([bytes as BlobPart]).stream().pipeThrough(stream));
+/** 2.1.0's "z1" undone: deflate-raw, with the browser's own stream. */
+async function inflateRaw(bytes: Uint8Array): Promise<Uint8Array> {
+  const out = new Response(new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream("deflate-raw")));
   return new Uint8Array(await out.arrayBuffer());
 }
 
 /** The list as it's stored. */
 export async function encodeRanges(ranges: BandSet[]): Promise<string> {
-  return DICT + toBase64(deflateSync(new TextEncoder().encode(JSON.stringify(ranges)), { level: 9, dictionary }));
+  return DICT + toBase64(deflateSync(new TextEncoder().encode(JSON.stringify(ranges)), { level: 9, dictionary: dictionary() }));
 }
 
 /** The list from what's stored (any version this one knows; nothing it can't read). */
@@ -87,9 +115,9 @@ export async function decodeRanges(stored: unknown): Promise<BandSet[]> {
   try {
     let value: unknown = stored;
     if (typeof stored === "string" && stored.startsWith(DICT)) {
-      value = JSON.parse(new TextDecoder().decode(inflateSync(fromBase64(stored.slice(DICT.length)), { dictionary })));
+      value = JSON.parse(new TextDecoder().decode(inflateSync(fromBase64(stored.slice(DICT.length)), { dictionary: dictionary() })));
     } else if (typeof stored === "string" && stored.startsWith(ZIP)) {
-      value = JSON.parse(new TextDecoder().decode(await through(fromBase64(stored.slice(ZIP.length)), new DecompressionStream("deflate-raw"))));
+      value = JSON.parse(new TextDecoder().decode(await inflateRaw(fromBase64(stored.slice(ZIP.length)))));
     } else if (typeof stored === "string" && stored.startsWith(RAW)) {
       value = JSON.parse(stored.slice(RAW.length));
     }
@@ -100,9 +128,21 @@ export async function decodeRanges(stored: unknown): Promise<BandSet[]> {
   }
 }
 
+/** What the room keeps of its ranges: under 2.2's key, or (till they're moved: see moveOldRanges) the old one. */
+const storedIn = (metadata: Record<string, unknown>) => (metadata[KEY] !== undefined ? metadata[KEY] : metadata[OLD_KEY]);
+
 /** The room's ranges now. */
 export async function loadRanges(): Promise<BandSet[]> {
-  return decodeRanges((await OBR.room.getMetadata())[KEY]);
+  return decodeRanges(storedIn(await OBR.room.getMetadata()));
+}
+
+/** A GM's: the list 2.1.0 kept under the old key moved to the new one (once; the old key then goes). */
+export async function moveOldRanges(): Promise<void> {
+  const metadata = await OBR.room.getMetadata();
+  if (metadata[KEY] === undefined && metadata[OLD_KEY] !== undefined) {
+    const ranges = await decodeRanges(metadata[OLD_KEY]);
+    await saveRanges(ranges.slice(0, MAX_RANGES));
+  }
 }
 
 export type SaveResult = { ok: true } | { ok: false; reason: "tooMany" | "tooBig" | "failed" };
@@ -117,7 +157,8 @@ export async function saveRanges(ranges: BandSet[]): Promise<SaveResult> {
     return { ok: false, reason: "tooBig" };
   }
   try {
-    await OBR.room.setMetadata({ [KEY]: ranges.length > 0 ? stored : undefined });
+    // The old key goes with the first save: the list's under the new one from then on.
+    await OBR.room.setMetadata({ [KEY]: ranges.length > 0 ? stored : undefined, [OLD_KEY]: undefined });
     return { ok: true };
   } catch (error) {
     console.warn("Rising Ranges: the room's ranges couldn't be saved", error);
@@ -131,7 +172,7 @@ export function onRangesChange(callback: (ranges: BandSet[]) => void): () => voi
   // Read in order: a change decoded after a newer one is dropped (decoding takes its time).
   let latest = 0;
   return OBR.room.onMetadataChange((metadata) => {
-    const stored = metadata[KEY];
+    const stored = storedIn(metadata);
     if (stored === last) {
       return;
     }

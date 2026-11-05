@@ -1,7 +1,7 @@
 import OBR, { type GridScale, type GridType } from "@owlbear-rodeo/sdk";
 import { createContext, useContext, useState, useEffect } from "react";
 import { bandSetFromMetadata, resolveBandSet } from "../bandSets/bandSets";
-import { adoptSceneRanges, loadRanges } from "../bandSets/library";
+import { adoptSceneRanges, loadRanges, moveOldRanges } from "../bandSets/library";
 import { BandSet } from "../engine/types";
 import { Language, languageFromMetadata, setLanguage as persistLanguage } from "../i18n/language";
 import { displayFromMetadata, type DisplaySettings } from "./display";
@@ -76,7 +76,13 @@ export function OBRContextProvider({
     };
     Promise.all([
       OBR.scene.getMetadata().catch(failed("the scene")),
-      loadRanges().catch(failed("the room's sets")),
+      // A GM moves 2.1.0's list to 2.2's key first (a player only reads, either one).
+      OBR.player
+        .getRole()
+        .then((role) => (role === "GM" ? moveOldRanges() : undefined))
+        .catch(failed("2.1.0's sets"))
+        .then(() => loadRanges())
+        .catch(failed("the room's sets")),
       OBR.player.getRole().catch(failed("the player's role")),
     ]).then(async ([sceneMetadata, roomRanges, role]) => {
       const metadata = sceneMetadata ?? {};
