@@ -702,7 +702,7 @@ export class MapView {
     }
     const one = ed.sel?.kind === "shape" && !ed.sel.more?.length ? data.shapes[ed.sel.i] : null;
     // A picked ramp's arrow ends (dragged with any tool): its tail dark, its head the picked colour.
-    if (one?.kind === "ramp" && one.ramp) {
+    if (one?.kind === "ramp" && one.ramp && !one.locked && !one.hidden) {
       for (const [end, fill] of [["a", C.dark], ["b", C.pick]] as const) {
         const [x, y] = this.toScreen(...one.ramp[end]);
         ctx.beginPath();

@@ -35,6 +35,7 @@ const es = {
   "settings.bandSet.importBad": "Ese archivo no tiene sets que esta versión pueda leer.",
   "settings.bandSet.leftBehind": "Sets de una versión anterior que no entran en la sala (máximo {max}): {names}. Exportalos para no perderlos.",
   "settings.bandSet.saveFailed": "No se pudo guardar en la sala; tus cambios siguen en este panel.",
+  "settings.bandSet.tooBig": "Los sets ocupan más de lo que guarda la sala. Acortá nombres, sacá bandas o exportá y borrá algún set.",
 
   "settings.band.radiusAriaLabel": "Radio",
   "settings.band.newName": "Banda {n}",

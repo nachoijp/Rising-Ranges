@@ -655,6 +655,8 @@ export class ReliefEditor {
       return;
     }
     if (this.isBrush()) {
+      // Its own cursor (the stylesheet's), not a hand left from an arrow's end.
+      this.host.setCursor("");
       this.cursor = p;
       this.flip = !!mods.ctrl;
       if (held && this.brushing && !(this.brushKind === "flatten" && mods.alt)) {
@@ -876,7 +878,7 @@ export class ReliefEditor {
   /** The end of the picked ramp's arrow under the pointer, or null. */
   arrowEndAt(p: { x: number; y: number }): { s: Shape; end: "a" | "b" } | null {
     const s = this.sel?.kind === "shape" && !this.sel.more?.length ? this.data.shapes[this.sel.i] : null;
-    if (s?.kind !== "ramp" || !s.ramp) {
+    if (s?.kind !== "ramp" || !s.ramp || s.locked || s.hidden) {
       return null;
     }
     const reach = this.host.snapReach() * 1.2;

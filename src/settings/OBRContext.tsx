@@ -69,9 +69,26 @@ export function OBRContextProvider({
   const [display, setDisplay] = useState<DisplaySettings | null>(null);
   useEffect(() => {
     let mounted = true;
-    Promise.all([OBR.scene.getMetadata(), loadRanges(), OBR.player.getRole()]).then(async ([metadata, room, role]) => {
+    // Each read on its own: one that fails leaves its part empty, the panel still opens.
+    const failed = (what: string) => (error: unknown) => {
+      console.error(`Rising Ranges: settings couldn't read ${what}`, error);
+      return null;
+    };
+    Promise.all([
+      OBR.scene.getMetadata().catch(failed("the scene")),
+      loadRanges().catch(failed("the room's sets")),
+      OBR.player.getRole().catch(failed("the player's role")),
+    ]).then(async ([sceneMetadata, roomRanges, role]) => {
+      const metadata = sceneMetadata ?? {};
+      const room = roomRanges ?? [];
       // A GM moves an earlier version's scene-kept sets up to the room (a player doesn't write).
-      const { ranges, left } = role === "GM" ? await adoptSceneRanges(metadata, room) : { ranges: room, left: [] };
+      const { ranges, left } =
+        role === "GM" && sceneMetadata && roomRanges
+          ? await adoptSceneRanges(metadata, room).catch((error) => {
+              failed("an earlier version's sets")(error);
+              return { ranges: room, left: [] };
+            })
+          : { ranges: room, left: [] };
       if (mounted) {
         const language = languageFromMetadata(metadata);
         setBandSet(bandSetFromMetadata(metadata));

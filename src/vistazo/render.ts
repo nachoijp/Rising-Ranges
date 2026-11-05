@@ -166,6 +166,9 @@ export class VistazoView {
   private fogScratch: HTMLCanvasElement | null = null;
   /** The fog sharp: what's hidden, no soft edges (see drawFog, fogHidden). */
   private fogHardCanvas: HTMLCanvasElement | null = null;
+  /** The sharp picture's pixels (read when first asked after it's drawn: see hiddenAt), and where it lies. */
+  private hiddenPixels: Uint8ClampedArray | null = null;
+  private hiddenFrame: { x0: number; y0: number; px: number; w: number; h: number } | null = null;
   private fogHardTexture: THREE.CanvasTexture | null = null;
   private fogCanvas: HTMLCanvasElement | null = null;
   /**
@@ -768,6 +771,26 @@ export class VistazoView {
   }
 
   /**
+   * Whether the player view's fog hides a scene point, as it's drawn (its sharp picture's pixel there:
+   * see drawFog, fogHidden). Quick: asked for every height read under the pointer.
+   */
+  hiddenAt(x: number, y: number): boolean {
+    const frame = this.hiddenFrame;
+    if (!this.fog || !frame || !this.fogHardCanvas) {
+      return false;
+    }
+    if (!this.hiddenPixels) {
+      this.hiddenPixels = this.fogHardCanvas.getContext("2d")!.getImageData(0, 0, frame.w, frame.h).data;
+    }
+    const i = Math.floor((x - frame.x0) * frame.px);
+    const j = Math.floor((y - frame.y0) * frame.px);
+    if (i < 0 || j < 0 || i >= frame.w || j >= frame.h) {
+      return this.fog.filled;
+    }
+    return this.hiddenPixels[(j * frame.w + i) * 4 + 3] > 127;
+  }
+
+  /**
    * The fog as a picture of the whole map: its colour over the scene (or its
    * shapes), the lit areas cut out of it, sharp — up to 1024 px across.
    */
@@ -778,6 +801,8 @@ export class VistazoView {
     this.setLayers({ fog: !!fog && !!scene });
     if (!fog || !scene) {
       this.dropFogFloor();
+      this.hiddenFrame = null;
+      this.hiddenPixels = null;
       return;
     }
     const { x0, y0, x1, y1 } = scene.bounds;
@@ -864,6 +889,9 @@ export class VistazoView {
     }
     this.fogHardTexture.needsUpdate = true;
     this.fogUniforms.uFogHard.value = this.fogHardTexture;
+    // Its pixels for asking a point (see hiddenAt), read when first asked.
+    this.hiddenPixels = null;
+    this.hiddenFrame = { x0, y0, px, w: cw, h: ch };
     const u = this.u;
     this.fogUniforms.uFog.value = this.fogTexture;
     this.fogUniforms.uFogBox.value.set(x0 * u, y0 * u, w * u, h * u);
@@ -1478,7 +1506,7 @@ export class VistazoView {
     if (i < 0 || j < 0 || i >= w || j >= h) {
       return NaN;
     }
-    return this.fog?.at(x, y) ? 0 : cells[j * w + i];
+    return this.hiddenAt(x, y) ? 0 : cells[j * w + i];
   }
 
 

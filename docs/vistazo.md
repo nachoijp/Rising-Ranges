@@ -53,7 +53,7 @@ At the top:
 - **Top-down view** — the camera straight down, as the map.
 - **Sync view** (GM) — players with the Glance see what your camera sees (it opens for them if it's set to Everyone). Each still sees through their own fog.
 - **Edit relief** (GM) — the relief editor (see below).
-- **Show tokens** and **View as a player** — the scene as a player sees it: with the fog (Owlbear's or Smoke & Spectre's), without hidden tokens or what's under the fog.
+- **Show tokens** and **View as a player** — the scene as a player sees it: with the fog (Owlbear's or Smoke & Spectre's), without hidden tokens or what's under the fog. The fog is as on Owlbear's map: fog shapes, rooms you've cut open, and what the lights reveal, with their soft edges. A secondary light (a campfire) shows only once a character's light sees it. The fog opens around a token as it's dragged, and a token dragged in the Glance stops at the fog's walls, as on the map. Under the fog the terrain isn't shown: a flat floor of fog, with a curtain of it along its edge, stands in for it, and heights read 0 there.
 - **Quality** — High as designed; Medium is a little less sharp on dense screens, with less weather; Low for slower devices.
 
 The rest is folded into sections:
@@ -110,7 +110,7 @@ The tools, on the left:
 
   ![The terrain brush](screenshots/glance/bar-brush.png)
 
-The **magnet** snaps to the grid; the **palette** colors the map by height.
+The **magnet** snaps to the grid (on unless you turn it off); the **palette** colors the map by height.
 
 ## Shapes
 
@@ -121,6 +121,7 @@ Shapes are stacked: each one sits on what's under it. Picking one shows its pane
 - **Height** — a level over what's under it (**relative**), or a height of its own (**fixed**, the pin under **Measured**).
 - **Type** — **Terrain** (ground you can stand on), **Slab** (a bridge, balcony or platform floating over the terrain: see [Slabs](#slabs)), or **Standing** (the map's picture of it stood upright, as a statue or a tree).
 - **Surface** — **Flat**, a **Ramp** (an arrow from one height to another, in steps if you want stairs), or **Inclined** (each corner at its own height).
+  - A ramp's arrow goes from its start to its end height: drag its two ends — with any tool, while the ramp is picked — to turn it or to set where the slope starts and ends. The arrow buttons point it up, right, down or left across the whole shape, keeping its heights; **Flip** swaps its start and end heights, so it rises the other way; **Reset** lays it along the shape's longer side again.
 - **3D look** — its walls' look: **Blend** (the default: the map's colors along the wall, the top's running into the foot's, with a subtle grain), **Flat color**, **Stretched edge** and **Folded edge** (the map's edge pulled down the wall), **Brick**, **Stone**, **Earth** or **Wood**; a texture taken from a rectangle of the map; water in it; its edge (a wall, or a soft slope); and **Not covered by slabs** (see [Slabs](#slabs)).
 
 Right-click a shape for duplicate, rename, layer up or down, convert, combine (union, subtract, intersect, exclude), group, take a texture, or delete.
@@ -160,6 +161,7 @@ Shapes can be grouped, as folders in the shapes list: **Ctrl + G** (or the right
 - A group's shapes always stay together in the stacking order, so their order inside it stays as it is.
 - Click a group to pick all its shapes; drag it to move it whole; drop something on its lower half to put it in.
 - Its eye and lock hide or lock all its shapes at once (in the editor only).
+- Groups start folded when the editor opens; one you make while editing starts open.
 - A new shape drawn while a grouped shape is picked goes into that group.
 
 ![Groups in the shapes list](screenshots/glance/groups.png)

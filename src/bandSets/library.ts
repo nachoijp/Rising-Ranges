@@ -94,14 +94,26 @@ export async function saveRanges(ranges: BandSet[]): Promise<SaveResult> {
 /** Calls back with the room's ranges whenever they change (another GM's edit too). */
 export function onRangesChange(callback: (ranges: BandSet[]) => void): () => void {
   let last: unknown = undefined;
+  // Read in order: a change decoded after a newer one is dropped (decoding takes its time).
+  let latest = 0;
   return OBR.room.onMetadataChange((metadata) => {
     const stored = metadata[KEY];
     if (stored === last) {
       return;
     }
     last = stored;
-    decodeRanges(stored).then(callback);
+    const mine = ++latest;
+    decodeRanges(stored).then((ranges) => {
+      if (mine === latest) {
+        callback(ranges);
+      }
+    });
   });
+}
+
+/** Whether a list fits what the room keeps (see BUDGET). */
+export async function fitsRoom(ranges: BandSet[]): Promise<boolean> {
+  return ranges.length <= MAX_RANGES && (await encodeRanges(ranges)).length <= BUDGET;
 }
 
 /**

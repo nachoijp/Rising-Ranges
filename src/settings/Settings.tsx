@@ -8,7 +8,7 @@ import Tabs from "@mui/material/Tabs";
 import Tab from "@mui/material/Tab";
 
 import { getDefaultBandSets, resolveBandSet } from "../bandSets/bandSets";
-import { MAX_RANGES, onRangesChange, rangesFile, rangesFromFile, saveRanges } from "../bandSets/library";
+import { MAX_RANGES, fitsRoom, onRangesChange, rangesFile, rangesFromFile, saveRanges } from "../bandSets/library";
 import { BandSet } from "../engine/types";
 import { BandSetSelector } from "./BandSetSelector";
 import { BandasTab } from "./BandasTab";
@@ -162,8 +162,8 @@ export function Settings() {
   // would go with it.)
   const pending = useRef<BandSet[] | null>(null);
   const saving = useRef(false);
-  const failedText = useRef("");
-  failedText.current = t("settings.bandSet.saveFailed");
+  const failedText = useRef({ failed: "", tooBig: "" });
+  failedText.current = { failed: t("settings.bandSet.saveFailed"), tooBig: t("settings.bandSet.tooBig") };
   const save = useCallback(async () => {
     if (saving.current) {
       return;
@@ -174,7 +174,7 @@ export function Settings() {
       pending.current = null;
       const result = await saveRanges(list);
       if (!result.ok) {
-        setNotice({ severity: "warning", text: failedText.current });
+        setNotice({ severity: "warning", text: result.reason === "tooBig" ? failedText.current.tooBig : failedText.current.failed });
       }
     }
     saving.current = false;
@@ -280,6 +280,11 @@ export function Settings() {
       } else {
         skipped++;
       }
+    }
+    // Too much for the room: nothing taken (said so), rather than kept here only, to be lost.
+    if (!(await fitsRoom(next))) {
+      setNotice({ severity: "warning", text: t("settings.bandSet.tooBig") });
+      return;
     }
     changeRanges(next);
     const now = next.find((r) => r.id === selectedBandSet.id);

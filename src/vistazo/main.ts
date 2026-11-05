@@ -1531,7 +1531,8 @@ async function start() {
           // corner would cut through one. Snapped to the grid on release (finishMove). Stopped at
           // those walls here too, as Owlbear's map does (else it'd go through, its light showing
           // what's beyond, and go back once dropped).
-          const position = stopAtWalls(move.position, { x: ground.x + move.grab.x, y: ground.y + move.grab.y }, items, localItems, dpi * 0.05);
+          const wanted = { x: ground.x + move.grab.x, y: ground.y + move.grab.y };
+          const position = move.item.visible ? stopAtWalls(move.position, wanted, items, localItems, dpi * 0.05) : wanted;
           move.position = position;
           move.path.add(position, dpi * 0.1);
           void move.interaction?.then(([update]) => {
@@ -2135,12 +2136,21 @@ async function start() {
       });
     return fogOver(fogFilled, shifted(items), shifted(localItems), fogColor);
   };
-  /** The fog again with the dragged tokens' lights where they are (the player view's, at most once a frame: see setFog). */
+  /** Whether a token being dragged carries a light (the fog then follows it: see fogNow). */
+  const liveLit = () => live.size > 0 && [...items, ...localItems].some((item) => item.type === "LIGHT" && !!item.attachedTo && live.has(item.attachedTo));
+  /** The fog again with the dragged tokens' lights where they are: the player view's, at most once a frame. */
+  let liveFogFrame = 0;
   const liveFog = () => {
-    if (options.playerView && [...items, ...localItems].some((item) => item.type === "LIGHT" && item.attachedTo && live.has(item.attachedTo))) {
-      lastFog = fogNow();
-      view.setFog(lastFog);
+    if (liveFogFrame || !options.playerView || !liveLit()) {
+      return;
     }
+    liveFogFrame = requestAnimationFrame(() => {
+      liveFogFrame = 0;
+      if (options.playerView) {
+        lastFog = fogNow();
+        view.setFog(lastFog);
+      }
+    });
   };
   /** A token shown at `position` (and `own` height, if given), what's attached to it as far along (see followers). */
   const placeLive = (tokenId: string, position: Vector2, own?: number) => {
@@ -2380,7 +2390,7 @@ async function start() {
         // Snapped to the grid where it's let go, as Owlbear's own move does; not across a wall (Owlbear
         // would stop it there): then where it was let go.
         const near = await OBR.scene.grid.snapPosition(move.position);
-        const reached = stopAtWalls(move.position, near, items, localItems, 0);
+        const reached = move.item.visible ? stopAtWalls(move.position, near, items, localItems, 0) : near;
         const snapped = Math.hypot(reached.x - near.x, reached.y - near.y) < 0.5 ? near : move.position;
         move.position = snapped;
         // Shown there now (not where it was let go, nor the steps it's saved along: see endMove); the
@@ -2425,7 +2435,14 @@ async function start() {
   let localItems = options.playerView ? await OBR.scene.local.getItems().catch(() => []) : [];
   /** What of the local items the fog depends on (lights and walls), so other local changes don't redo it. */
   const sightKey = (list: typeof localItems) =>
-    JSON.stringify(list.filter((item) => item.type === "LIGHT" || item.type === "WALL").map((item) => [item.id, item.position, item.rotation, item.visible, (item as { points?: unknown }).points, (item as { attenuationRadius?: unknown }).attenuationRadius]));
+    JSON.stringify(
+      list
+        .filter((item) => item.type === "LIGHT" || item.type === "WALL")
+        .map((item) => {
+          const l = item as Partial<{ points: unknown; attenuationRadius: number; sourceRadius: number; falloff: number; innerAngle: number; outerAngle: number; lightType: string; blocking: boolean }>;
+          return [item.id, item.position, item.rotation, item.visible, item.attachedTo, l.points, l.attenuationRadius, l.sourceRadius, l.falloff, l.innerAngle, l.outerAngle, l.lightType, l.blocking];
+        })
+    );
   let localSight = sightKey(localItems);
   let fogKey = "";
   let lastFog: ReturnType<typeof fogOver> | null = null;
@@ -2497,7 +2514,7 @@ async function start() {
       // The player view's fog, worked out again only when what it depends on changed (not on every token move).
       if (options.playerView) {
         const key = JSON.stringify([fogFilled, sightKey(items), localSight, items.filter((item) => item.layer === "FOG").map((item) => [item.id, item.visible, item.zIndex, item.position, item.rotation, item.scale, item.lastModified])]);
-        if (key !== fogKey || !lastFog || live.size > 0) {
+        if (key !== fogKey || !lastFog || liveLit()) {
           fogKey = key;
           lastFog = fogNow();
           view.setFog(lastFog);
@@ -2531,6 +2548,11 @@ async function start() {
         reliefs,
       };
       since("vistazo.buildScene", t0);
+      // The player view: heights as measured (free points, templates, tokens) read 0 where the fog hides
+      // the terrain, as it's drawn (the terrain's built whole: see VistazoView.hiddenAt).
+      // Once: a scene built on the last one's terrain has its (already wrapped) measuredAt; the raw one's kept.
+      const measured: (x: number, y: number) => number = (scene.measuredAt as { raw?: (x: number, y: number) => number }).raw ?? scene.measuredAt;
+      scene.measuredAt = Object.assign((x: number, y: number) => (options.playerView && view.hiddenAt(x, y) ? 0 : measured(x, y)), { raw: measured });
       builtWith = `${reliefs.key}${reliefs.surfaced}`;
       heightsOnly = null;
       for (const [id, at] of live) {

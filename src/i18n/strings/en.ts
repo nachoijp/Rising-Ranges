@@ -40,6 +40,7 @@ const en: Record<TranslationKey, string> = {
   "settings.bandSet.importBad": "That file has no sets this version can read.",
   "settings.bandSet.leftBehind": "Sets from an earlier version that don't fit in the room (up to {max}): {names}. Export them so they aren't lost.",
   "settings.bandSet.saveFailed": "Couldn't save to the room; your changes are still in this panel.",
+  "settings.bandSet.tooBig": "These sets take more than the room keeps. Shorten names, remove ranges, or export and delete a set.",
 
   "settings.band.radiusAriaLabel": "Radius",
   "settings.band.newName": "Range {n}",
