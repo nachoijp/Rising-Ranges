@@ -1,34 +1,44 @@
-import type { Image } from "@owlbear-rodeo/sdk";
+import type { Image, Item } from "@owlbear-rodeo/sdk";
 import { emptyRelief } from "../codec";
-import { GEN_STAGES, type GenStage } from "../trace/gen/generate";
-import { readUvtt, type Picture, type Uvtt } from "../trace/uvtt";
-import type { Pt, ReliefData } from "../types";
+import { fogPlans, type FogPlan } from "../trace/fogPlan";
+import { readUvtt, type Picture } from "../trace/uvtt";
+import type { Pt } from "../types";
 import type { ReliefEditor } from "./editor";
-import type { GenReply, GenRequest, GenTemplates } from "./generate.worker";
+import type { GenReply, GenRequest, GenStage, GenTemplates } from "./generate.worker";
 import type { T } from "./panel";
 
-// "Generar relieve": a panel asking only what can't be read from the map (its
-// plan of walls, if there's one; how heights are to be had; whether what's
-// there stays), then the work (in a worker, see generate.worker.ts) with its
-// steps shown, then the relief in place of (or over) what was there: one step
-// to undo.
+// "Convertir niebla en relieve": the walls the room's fog already has —
+// Smoke & Spectre!'s lines, Owlbear's own fog (its rooms' outlines), or a
+// .uvtt plan — made the relief's walls and rooms, measured on the map's
+// picture (see trace/fogPlan.ts and trace/uvtt.ts). A panel asking only what
+// can't be read (which of them, stairs or not, the walls' height, whether
+// what's there stays), the work in a worker with its steps shown, then the
+// relief in place of (or over) what was there: one step to undo.
 
-/** Pixels a cell the map's picture is read at, and the most pixels it may take. */
-const PX = 16;
-const MAX_PIXELS = 8e6;
+/** Pixels a square of the scene the map's picture is read at, and the most pixels it may take. */
+const PX = 24;
+const MAX_PIXELS = 6e6;
 
-type Heights = "seeds" | "flat" | "guess";
+/** Pixels a cell the map's picture is read at: PX a square of the scene (`unit` squares a cell), fewer on a map too big for MAX_PIXELS. */
+export function picturePx(w: number, h: number, unit: number): number {
+  return Math.max(8, Math.min(Math.round(PX * unit), Math.floor(Math.sqrt(MAX_PIXELS / (w * h)))));
+}
+
+type Source = "smoke" | "obr" | "uvtt";
+
+/** The worker's steps, in order (see generate.worker.ts). */
+const GEN_STAGES: GenStage[] = ["walls", "stairs", "shapes"];
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
-/** The map's picture, `px` a cell, as big as the relief. */
-async function mapPicture(url: string, w: number, h: number): Promise<Picture | null> {
+/** The map's picture, PX a square of the scene (`unit` squares a cell), as big as the relief. */
+async function mapPicture(url: string, w: number, h: number, unit: number): Promise<Picture | null> {
   try {
     const img = document.createElement("img");
     img.crossOrigin = "anonymous";
     img.src = url;
     await img.decode();
-    const px = Math.max(6, Math.min(PX, Math.floor(Math.sqrt(MAX_PIXELS / (w * h)))));
+    const px = picturePx(w, h, unit);
     const cw = Math.round(w * px), ch = Math.round(h * px);
     const canvas = document.createElement("canvas");
     canvas.width = cw;
@@ -42,27 +52,16 @@ async function mapPicture(url: string, w: number, h: number): Promise<Picture | 
   }
 }
 
-/** The shapes already drawn as guides: flat ones, with their outline and height (not the generator's own). */
-function guidesOf(data: ReliefData, generated: string): { rings: Pt[][]; h: number }[] {
-  const mine = new Set((data.groups ?? []).filter((g) => g.name === generated).map((g) => g.id));
-  // A group inside a generated one is the generator's too.
-  let grew = true;
-  while (grew) {
-    grew = false;
-    for (const g of data.groups ?? []) if (g.parent && mine.has(g.parent) && !mine.has(g.id)) (mine.add(g.id), (grew = true));
-  }
-  const at = (i: number): Pt => [data.verts[i].x, data.verts[i].y];
-  return data.shapes
-    .filter((s) => s.kind === "flat" && !s.slab && !s.stand && !s.soft && !(s.group && mine.has(s.group)))
-    .map((s) => ({ rings: [s.ring.map(at), ...(s.holes ?? []).map((h) => h.map(at))], h: s.h }));
-}
-
-export function openGenerate(o: { root: HTMLElement; t: T; editor: ReliefEditor; image: Image; notice: (text: string) => void }) {
+export function openGenerate(o: { root: HTMLElement; t: T; editor: ReliefEditor; image: Image; scene: () => { items: Item[]; dpi: number }; notice: (text: string) => void }) {
   const { root, t, editor, image, notice } = o;
   root.querySelector(".re-gen")?.remove();
-  const guides = guidesOf(editor.data, t("relief.gen.top"));
-  let uvtt: Uvtt | null = null;
-  let heights: Heights = guides.length ? "seeds" : "flat";
+  const { items, dpi } = o.scene();
+  const found = fogPlans(items, image, dpi, editor.data.w, editor.data.h);
+  const smoke = found.find((p) => p.source === "smoke");
+  const obr = found.find((p) => p.source === "obr");
+  let uvtt: FogPlan | null = null;
+  let source: Source = smoke ? "smoke" : obr ? "obr" : "uvtt";
+  let stairs = true;
   let replace = true;
   let wallH = 2;
   let worker: Worker | null = null;
@@ -78,16 +77,17 @@ export function openGenerate(o: { root: HTMLElement; t: T; editor: ReliefEditor;
     <p class="re-gen-intro">${esc(t("relief.gen.intro"))}</p>
     <div class="re-gen-form">
       <section>
-        <h4>${esc(t("relief.gen.plan"))}</h4>
-        <div class="re-gen-file"><button type="button" class="re-gen-btn" data-k="pick">${esc(t("relief.gen.planPick"))}</button><span data-k="planName">${esc(t("relief.gen.planNone"))}</span></div>
-        <small>${esc(t("relief.gen.planHint"))}</small>
+        <h4>${esc(t("relief.gen.source"))}</h4>
+        ${radio("s", "smoke", source === "smoke", smoke ? t("relief.gen.smoke", { n: smoke.walls.length, d: smoke.portals.length }) : t("relief.gen.smokeNone"), t("relief.gen.smokeHint"), !smoke)}
+        ${radio("s", "obr", source === "obr", obr ? t("relief.gen.obr", { n: obr.walls.length }) : t("relief.gen.obrNone"), t("relief.gen.obrHint"), !obr)}
+        ${radio("s", "uvtt", source === "uvtt", t("relief.gen.uvtt"), t("relief.gen.uvttHint"))}
+        <div class="re-gen-file" data-k="fileRow" ${source === "uvtt" ? "" : "hidden"}><button type="button" class="re-gen-btn" data-k="pick">${esc(t("relief.gen.planPick"))}</button><span data-k="planName">${esc(t("relief.gen.planNone"))}</span></div>
         <input type="file" data-k="file" accept=".uvtt,.dd2vtt,.df2vtt,.json" hidden />
+        ${smoke || obr ? "" : `<small class="re-gen-none">${esc(t("relief.gen.noFog"))}</small>`}
       </section>
       <section>
-        <h4>${esc(t("relief.gen.heights"))}</h4>
-        ${radio("h", "seeds", heights === "seeds", guides.length ? t("relief.gen.hSeeds", { n: guides.length }) : t("relief.gen.hSeedsNone"), t("relief.gen.hSeedsHint"), !guides.length)}
-        ${radio("h", "flat", heights === "flat", t("relief.gen.hFlat"), t("relief.gen.hFlatHint"))}
-        ${radio("h", "guess", false, t("relief.gen.hGuess"), t("relief.gen.hGuessHint"))}
+        <h4>${esc(t("relief.gen.extras"))}</h4>
+        <label class="re-gen-opt"><input type="checkbox" data-k="stairs" checked /><span><b>${esc(t("relief.gen.stairs"))}</b><small>${esc(t("relief.gen.stairsHint"))}</small></span></label>
       </section>
       <section>
         <h4>${esc(t("relief.gen.existing"))}</h4>
@@ -103,6 +103,8 @@ export function openGenerate(o: { root: HTMLElement; t: T; editor: ReliefEditor;
     <div class="re-gen-actions"><button type="button" class="re-gen-btn" data-k="cancel">${esc(t("relief.gen.cancel"))}</button><button type="button" class="done" data-k="run">${esc(t("relief.gen.run"))}</button></div>`;
   root.append(panel);
   const $ = <E extends HTMLElement = HTMLElement>(k: string) => panel.querySelector<E>(`[data-k="${k}"]`)!;
+  const ready = () => ($<HTMLButtonElement>("run").disabled = source === "uvtt" && !uvtt);
+  ready();
 
   const close = () => {
     worker?.terminate();
@@ -124,16 +126,28 @@ export function openGenerate(o: { root: HTMLElement; t: T; editor: ReliefEditor;
     const chosen = input.files?.[0];
     input.value = "";
     if (!chosen) return;
-    let read: Uvtt | null = null;
+    let read = null;
     try {
       read = readUvtt(JSON.parse(await chosen.text()));
     } catch {
       read = null;
     }
-    uvtt = read && read.walls.length ? { ...read, image: undefined } : null;
+    // The plan stretched onto this map, if its size differs.
+    const { w, h } = editor.data;
+    const st = (p: Pt): Pt => (read ? [(p[0] * w) / read.w, (p[1] * h) / read.h] : p);
+    uvtt = read && read.walls.length ? { source: "smoke", walls: read.walls.map((l) => l.map(st)), portals: read.portals.map(([a, b]) => [st(a), st(b)] as [Pt, Pt]), openings: false, rooms: [] } : null;
     $("planName").textContent = uvtt ? chosen.name : t("relief.gen.planBad");
+    ready();
   };
-  panel.querySelectorAll<HTMLInputElement>('input[name="h"]').forEach((el) => (el.onchange = () => (heights = el.value as Heights)));
+  panel.querySelectorAll<HTMLInputElement>('input[name="s"]').forEach(
+    (el) =>
+      (el.onchange = () => {
+        source = el.value as Source;
+        $("fileRow").hidden = source !== "uvtt";
+        ready();
+      }),
+  );
+  $<HTMLInputElement>("stairs").onchange = () => (stairs = $<HTMLInputElement>("stairs").checked);
   panel.querySelectorAll<HTMLInputElement>('input[name="x"]').forEach((el) => (el.onchange = () => (replace = el.value === "replace")));
   $<HTMLInputElement>("wallH").onchange = () => {
     const v = Number($<HTMLInputElement>("wallH").value);
@@ -148,45 +162,41 @@ export function openGenerate(o: { root: HTMLElement; t: T; editor: ReliefEditor;
   };
 
   $("run").onclick = async () => {
+    const plan = source === "smoke" ? smoke : source === "obr" ? obr : uvtt;
+    if (!plan) return;
     panel.querySelectorAll<HTMLInputElement | HTMLButtonElement>(".re-gen-form input, .re-gen-form button, [data-k='run']").forEach((el) => (el.disabled = true));
     show("loading");
     const { w, h } = editor.data;
-    const pic = await mapPicture(image.image.url, w, h);
+    // A cell of the relief is the image's own grid cell, drawn `unit` squares of the scene wide.
+    const unit = Math.sqrt(Math.abs(image.scale.x * image.scale.y)) || 1;
+    const pic = await mapPicture(image.image.url, w, h, unit);
     if (!pic) {
       notice(t("relief.gen.noPicture"));
       close();
       return;
     }
-    const base = replace ? emptyRelief(w, h) : editor.data;
     const names: GenTemplates = {
-      top: t("relief.gen.top"),
-      levels: t("relief.gen.levels"),
-      water: t("relief.gen.water"),
-      plants: t("relief.gen.plants"),
-      cliffs: t("relief.gen.cliffs"),
-      group: t("relief.uvtt.group"),
+      group: t(`relief.gen.group.${source}`),
       rooms: t("relief.uvtt.rooms"),
       walls: t("relief.uvtt.walls"),
       hedges: t("relief.uvtt.hedges"),
       objects: t("relief.uvtt.objects"),
       stairs: t("relief.uvtt.stairs"),
+      solids: t("relief.gen.solids"),
       room: t("relief.uvtt.room", { n: "{n}" }),
       wall: t("relief.uvtt.wall", { n: "{n}" }),
       hedge: t("relief.uvtt.hedge", { n: "{n}" }),
       object: t("relief.uvtt.object", { n: "{n}" }),
       stair: t("relief.uvtt.stair", { n: "{n}" }),
-      level: t("relief.gen.level", { h: "{h}" }),
-      pond: t("relief.gen.pond", { n: "{n}" }),
-      tree: t("relief.gen.tree", { n: "{n}" }),
-      bush: t("relief.gen.bush", { n: "{n}" }),
-      cliff: t("relief.gen.cliff", { n: "{n}" }),
+      solid: t("relief.gen.solid", { n: "{n}" }),
     };
     const request: GenRequest = {
       pic,
-      uvtt,
-      base,
+      plan: { walls: plan.walls, portals: plan.portals, openings: plan.openings, rooms: plan.rooms },
+      base: replace ? emptyRelief(w, h) : editor.data,
       names,
-      options: { wallH, seeds: heights === "seeds" ? guides : [], guess: heights === "guess" },
+      unit,
+      options: { wallH, stairs },
     };
     worker = new Worker(new URL("./generate.worker.ts", import.meta.url), { type: "module" });
     worker.onmessage = (event: MessageEvent<GenReply>) => {
@@ -206,17 +216,14 @@ export function openGenerate(o: { root: HTMLElement; t: T; editor: ReliefEditor;
         [
           ["rooms", c.rooms],
           ["walls", c.walls + c.hedges],
-          ["levels", c.levels],
-          ["cliffs", c.cliffs],
-          ["water", c.water],
-          ["trees", c.trees],
-          ["bushes", c.bushes],
+          ["objects", c.objects],
+          ["solids", c.solids],
           ["stairs", c.stairs],
         ] as const
       )
         .filter(([, n]) => n > 0)
         .map(([k, n]) => t(`relief.gen.sum.${k}`, { n }));
-      notice(t("relief.gen.done", { summary: parts.join(", ") || "—" }));
+      notice(t(source === "obr" ? "relief.gen.doneObr" : "relief.gen.done", { summary: parts.join(", ") || "—" }));
       close();
     };
     worker.onerror = (e) => {

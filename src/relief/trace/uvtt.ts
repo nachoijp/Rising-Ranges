@@ -23,6 +23,8 @@
 // none, every wall gets the usual thickness.
 
 import type { Group, Pt, ReliefData, Shape } from "../types";
+import { solidAreas } from "./solids";
+import type { Loop } from "./vector";
 
 /** A map's picture: RGBA, `px` pixels per cell. */
 export type Picture = { w: number; h: number; px: number; data: Uint8ClampedArray };
@@ -51,6 +53,8 @@ export type UvttNames = {
   hedge: (n: number) => string;
   object: (n: number) => string;
   stair: (n: number) => string;
+  solids: string;
+  solid: (n: number) => string;
 };
 
 export type UvttOptions = {
@@ -64,7 +68,7 @@ export type UvttOptions = {
 };
 
 /** What was made, for the editor to say. */
-export type UvttCounts = { rooms: number; walls: number; hedges: number; objects: number; stairs: number; measured: number; thickness: number };
+export type UvttCounts = { rooms: number; walls: number; hedges: number; objects: number; stairs: number; solids: number; measured: number; thickness: number };
 
 type V = { x: number; y: number };
 
@@ -77,6 +81,8 @@ const STEP = 1 / 32;
 const STATION = 0.2;
 /** A closed loop on its own smaller than this (cells²) is an object, not a wall round a room. */
 const OBJECT_AREA = 4;
+/** The thickest a wall measured on the picture is believed (squares). */
+const MAX_THICK = 0.9;
 /** A face smaller than this (cells²) isn't a room. */
 const ROOM_AREA = 1.5;
 
@@ -120,8 +126,8 @@ export function readUvtt(json: unknown): Uvtt | null {
 type Edge = { a: number; b: number; portal: boolean };
 type Graph = { nodes: V[]; edges: Edge[] };
 
-/** Walls and doors split where they meet, their ends joined. */
-export function planGraph(walls: Pt[][], portals: [Pt, Pt][]): Graph {
+/** Walls and doors split where they meet, their ends joined; a wall over a door is a wall, unless `doorsWin` (Owlbear's fog: the room next door's edge runs over it). */
+export function planGraph(walls: Pt[][], portals: [Pt, Pt][], doorsWin = false): Graph {
   const segs: { a: V; b: V; portal: boolean }[] = [];
   for (const line of walls) {
     for (let i = 1; i < line.length; i++) {
@@ -184,6 +190,8 @@ export function planGraph(walls: Pt[][], portals: [Pt, Pt][]): Graph {
       const had = seen.get(id);
       if (had === undefined) {
         seen.set(id, edges.push({ a: n0, b: n1, portal }) - 1);
+      } else if (doorsWin) {
+        edges[had].portal ||= portal;
       } else if (!portal) {
         // A wall over a door: a wall.
         edges[had].portal = false;
@@ -651,6 +659,180 @@ export function findStairs(pic: Picture): Stair[] {
   return out;
 }
 
+// ---------- Walls or ways through, along a line ----------
+
+/** Cells between the stations looked across, and the least stretch of a way through (a door) and of a wall. */
+const OPEN_STATION = 0.125;
+const OPEN_MIN = 0.6;
+const WALL_MIN = 0.3;
+/** A bit of wall with ways through on both sides, shorter than this, isn't one. */
+const LONE_MIN = 1;
+/** How near a door (squares) a wall's line is a way through. */
+const DOOR_NEAR = 0.3;
+/** How unlike the ground on both sides (Lab ΔE) a band must look to be a wall. */
+const WALL_DE = 12;
+/** Each half of a band this like its own side (ΔE): a border between two floors, not a wall. */
+const BORDER_DE = 8;
+/** How far off the line (cells) a wall's middle is looked for: the line may run along one of its faces. */
+const SHIFT = 0.3;
+
+/** How far a point is from a segment. */
+function segDist(x: number, y: number, a: Pt, b: Pt): number {
+  const dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+  const t = L2 ? Math.max(0, Math.min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / L2)) : 0;
+  return Math.hypot(a[0] + t * dx - x, a[1] + t * dy - y);
+}
+
+/** A Lab colour of the picture at a point (cells), bilinear. */
+function labAt(pic: Picture, lab: Float32Array, x: number, y: number, out: number[]) {
+  const px = x * pic.px - 0.5, py = y * pic.px - 0.5;
+  const x0 = Math.max(0, Math.min(pic.w - 2, Math.floor(px))), y0 = Math.max(0, Math.min(pic.h - 2, Math.floor(py)));
+  const fx = Math.max(0, Math.min(1, px - x0)), fy = Math.max(0, Math.min(1, py - y0));
+  for (let c = 0; c < 3; c++) {
+    const i = (y0 * pic.w + x0) * 3 + c;
+    const top = lab[i] * (1 - fx) + lab[i + 3] * fx;
+    const bot = lab[i + pic.w * 3] * (1 - fx) + lab[i + pic.w * 3 + 3] * fx;
+    out[c] = top * (1 - fy) + bot * fy;
+  }
+}
+
+/** The part of a line from `s0` to `s1` along it (cells; a closed one's may start before 0, going round). */
+function cutLine(line: Pt[], closed: boolean, s0: number, s1: number): Pt[] {
+  // The line with its distances, twice round for a closed one.
+  const pts: Pt[] = closed ? [...line, ...line, line[0]] : line;
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  const total = closed ? cum[line.length] : cum[cum.length - 1];
+  if (closed && s0 < 0) {
+    s0 += total;
+    s1 += total;
+  }
+  const at = (s: number): Pt => {
+    let i = 1;
+    while (i < pts.length - 1 && cum[i] < s) i++;
+    const span = cum[i] - cum[i - 1] || 1, t = Math.max(0, Math.min(1, (s - cum[i - 1]) / span));
+    return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t];
+  };
+  const out: Pt[] = [at(s0)];
+  for (let i = 0; i < pts.length; i++) if (cum[i] > s0 + 1e-9 && cum[i] < s1 - 1e-9) out.push(pts[i]);
+  out.push(at(s1));
+  return out;
+}
+
+/**
+ * The stations along a line, every eighth of a cell (`step` apart, `total`
+ * long), for a wall `t` thick: at each, how unlike the ground on both sides
+ * (ΔE) the band most like a wall near it is.
+ */
+export function stationsOf(pic: Picture, lab: Float32Array, line: Pt[], closed: boolean, t: number, open: (x: number, y: number) => boolean = () => false): { scores: Float32Array; step: number; total: number } {
+  const n = line.length, segs = closed ? n : n - 1;
+  const segLen = (i: number) => Math.hypot(line[(i + 1) % n][0] - line[i][0], line[(i + 1) % n][1] - line[i][1]);
+  let total = 0;
+  for (let i = 0; i < segs; i++) total += segLen(i);
+  const count = Math.max(1, Math.round(total / OPEN_STATION));
+  const step = total / count;
+  const half = Math.max(0.06, t / 2);
+  // Samples across, every 1/32 cell, far enough for the band anywhere in reach and its sides.
+  const R = SHIFT + half + 0.45, K = Math.round(2 * R * 32) + 1;
+  const px = [0, 0, 0];
+  const cum = Array.from({ length: K + 1 }, () => [0, 0, 0]);
+  const meanOf = (o0: number, o1: number) => {
+    const k0 = Math.max(0, Math.round((o0 + R) * 32)), k1 = Math.min(K - 1, Math.round((o1 + R) * 32));
+    const m = k1 - k0 + 1;
+    return [0, 1, 2].map((c) => (cum[k1 + 1][c] - cum[k0][c]) / m);
+  };
+  const dE = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  // How unlike its sides a band (from o0 to o1) is: none when it splits into its two sides' grounds (a border between two floors).
+  const apart = (o0: number, o1: number) => {
+    const before = meanOf(o0 - 0.45, o0 - 0.12), after = meanOf(o1 + 0.12, o1 + 0.45);
+    for (let m = o0 + 1 / 16; m < o1 - 1 / 32; m += 1 / 16) if (dE(meanOf(o0, m), before) < BORDER_DE && dE(meanOf(m, o1), after) < BORDER_DE) return 0;
+    const band = meanOf(o0, o1);
+    return Math.min(dE(band, before), dE(band, after));
+  };
+  const scores = new Float32Array(count);
+  let seg = 0, segStart = 0;
+  for (let k = 0; k < count; k++) {
+    const s = (k + 0.5) * step;
+    while (seg < segs - 1 && s > segStart + segLen(seg)) {
+      segStart += segLen(seg);
+      seg++;
+    }
+    const a = line[seg], b = line[(seg + 1) % n], len = segLen(seg) || 1;
+    const f = (s - segStart) / len;
+    const cx = a[0] + (b[0] - a[0]) * f, cy = a[1] + (b[1] - a[1]) * f;
+    const nx = -(b[1] - a[1]) / len, ny = (b[0] - a[0]) / len;
+    // A door there (its own, or the room next door's on an edge that doesn't quite meet it): a way through.
+    if (open(cx, cy)) continue;
+    for (let i = 0; i < K; i++) {
+      labAt(pic, lab, cx + nx * (-R + i / 32), cy + ny * (-R + i / 32), px);
+      for (let c = 0; c < 3; c++) cum[i + 1][c] = cum[i][c] + px[c];
+    }
+    // The band's middle, anywhere within reach of the line: the line may run along a face.
+    for (let c = -SHIFT; c <= SHIFT + 1e-9; c += 1 / 16) scores[k] = Math.max(scores[k], apart(c - half, c + half));
+  }
+  return { scores, step, total };
+}
+
+/**
+ * Where along a line the picture has a wall and where the ground runs on
+ * across it: a door, an arch, one room into the next. A station is wall
+ * where a band as thick as the wall, near the line, looks unlike the ground
+ * on both sides. Ways through shorter than a door, and bits of wall shorter
+ * than a post, don't count. (A door drawn shut reads as wall: its plank and
+ * posts are the walls' own colours.)
+ */
+export function wallPieces(
+  run: { scores: Float32Array; step: number; total: number },
+  line: Pt[],
+  closed: boolean,
+): { whole: boolean; walls: { line: Pt[]; first: boolean; last: boolean }[]; open: Pt[][] } {
+  const { scores, step, total } = run;
+  const count = scores.length;
+  const raw = Array.from(scores, (v) => v >= WALL_DE);
+  // Steadied: the most of five.
+  const at = (k: number) => (closed ? raw[((k % count) + count) % count] : raw[Math.max(0, Math.min(count - 1, k))]);
+  const wall = raw.map((_, k) => [-2, -1, 0, 1, 2].filter((d) => at(k + d)).length >= 3);
+  // Stretches of one kind: [start station, end station (excl.), kind].
+  const stretches = (): [number, number, boolean][] => {
+    const out: [number, number, boolean][] = [];
+    for (let k = 0; k < count; ) {
+      let e = k;
+      while (e < count && wall[e] === wall[k]) e++;
+      out.push([k, e, wall[k]]);
+      k = e;
+    }
+    // Round a closed line, the last stretch goes on into the first.
+    if (closed && out.length > 1 && out[0][2] === out[out.length - 1][2]) {
+      const last = out.pop()!;
+      out[0] = [last[0] - count, out[0][1], out[0][2]];
+    }
+    return out;
+  };
+  const set = (s: number, e: number, v: boolean) => {
+    for (let i = s; i < e; i++) wall[((i % count) + count) % count] = v;
+  };
+  const flip = (kind: boolean, least: number) => {
+    for (const [s, e, k] of stretches()) if (k === kind && (e - s) * step < least) set(s, e, !kind);
+  };
+  flip(false, OPEN_MIN);
+  flip(true, WALL_MIN);
+  // A short bit of wall with ways through on both sides is something drawn there (a table's edge), not a wall.
+  const now = stretches();
+  if (now.length > 1) {
+    for (const [s, e, k] of now) if (k && (closed || (s > 0 && e < count)) && (e - s) * step < LONE_MIN) set(s, e, false);
+  }
+  if (wall.every((v) => v)) return { whole: true, walls: [], open: [] };
+  const walls: { line: Pt[]; first: boolean; last: boolean }[] = [];
+  const open: Pt[][] = [];
+  for (const [s, e, k] of stretches()) {
+    const s0 = s === 0 && !closed ? 0 : s * step, s1 = e === count && !closed ? total : e * step;
+    const piece = cutLine(line, closed, s0, s1);
+    if (k) walls.push({ line: piece, first: !closed && s === 0, last: !closed && e === count });
+    else open.push(piece);
+  }
+  return { whole: false, walls, open };
+}
+
 // ---------- Outlines ----------
 
 /** The outline round a line, `left`/`right` off it (a closed line: its outer ring and its hole). */
@@ -692,19 +874,25 @@ export function bandRings(line: Pt[], closed: boolean, left: number, right: numb
 
 // ---------- The relief ----------
 
+/** How a plan's lines are taken: `openings`, its edges may be ways through (Owlbear's fog: the picture tells); `lab`, the picture's Lab if already worked out. */
+export type PlanOptions = { openings?: boolean; lab?: Float32Array };
+
 export type UvttPlan = {
   graph: Graph;
   rooms: Pt[][];
-  runs: { run: Run; line: Pt[]; m: Measure; kind: "wall" | "hedge" | "object"; rings: Pt[][] }[];
+  /** Each run's outline (with `parts`, the outlines of its pieces, each a shape); `open`: the stretches of its line the picture has no wall on (with `openings`). */
+  runs: { run: Run; line: Pt[]; m: Measure; kind: "wall" | "hedge" | "object"; rings: Pt[][]; open: Pt[][]; parts?: { line: Pt[]; rings: Pt[][] }[] }[];
   thickness: number;
   stairs: Stair[];
+  /** Areas that are rock, not ground (see solids.ts). */
+  solids: Loop[];
 };
 
 /** Everything worked out, before it's made shapes (the bench draws this). */
-export function planOf(u: Uvtt, pic: Picture | null, scale: [number, number] = [1, 1], stairs = true): UvttPlan {
+export function planOf(u: Pick<Uvtt, "walls" | "portals">, pic: Picture | null, scale: [number, number] = [1, 1], stairs = true, o: PlanOptions = {}): UvttPlan {
   const sc = (l: Pt[]) => l.map((p): Pt => [p[0] * scale[0], p[1] * scale[1]]);
-  const graph = planGraph(u.walls.map(sc), u.portals.map((p) => sc(p) as [Pt, Pt]));
-  const lab = pic ? labOf(pic) : null;
+  const graph = planGraph(u.walls.map(sc), u.portals.map((p) => sc(p) as [Pt, Pt]), o.openings);
+  const lab = pic ? (o.lab ?? labOf(pic)) : null;
   const runs = wallRuns(graph).map((run) => {
     let line = straighten(
       run.nodes.map((k): Pt => [graph.nodes[k].x, graph.nodes[k].y]),
@@ -713,10 +901,13 @@ export function planOf(u: Uvtt, pic: Picture | null, scale: [number, number] = [
     const area = run.closed ? Math.abs(signedArea(line)) : 0;
     const round = run.closed ? roundLoop(line) : null;
     if (round) line = round;
-    const isObject = run.closed && area < OBJECT_AREA;
+    const isObject = !o.openings && run.closed && area < OBJECT_AREA;
     const m: Measure = pic && lab && !isObject ? measureRun(pic, lab, line, run.closed, run.endsAtWall) : { left: 0, right: 0, sure: false, lab: null };
-    return { run, line, m, kind: (isObject ? "object" : greenish(m.lab) ? "hedge" : "wall") as "wall" | "hedge" | "object", rings: [] as Pt[][] };
+    return { run, line, m, kind: (isObject ? "object" : !o.openings && greenish(m.lab) ? "hedge" : "wall") as "wall" | "hedge" | "object", rings: [] as Pt[][], open: [] as Pt[][], parts: undefined as { line: Pt[]; rings: Pt[][] }[] | undefined };
   });
+  // A wall thicker than this isn't one the picture told right (a line along a rock's dark edge).
+  const believed = (m: Measure) => m.sure && m.left + m.right <= MAX_THICK;
+  for (const r of runs) r.m.sure = believed(r.m);
   // The usual thickness: of the walls the picture told surely.
   const sure = runs.filter((r) => r.m.sure && r.kind === "wall").map((r) => r.m.left + r.m.right).sort((a, b) => a - b);
   const thickness = sure.length ? sure[Math.floor(sure.length / 2)] : 0.3;
@@ -750,13 +941,41 @@ export function planOf(u: Uvtt, pic: Picture | null, scale: [number, number] = [
     }
     return Math.min(1, most);
   };
+  // With openings: every wall's stations.
+  const cuts = new Map<(typeof runs)[number], ReturnType<typeof stationsOf>>();
+  if (o.openings && pic && lab) {
+    const doors = u.portals.map(sc);
+    const nearDoor = (x: number, y: number) => doors.some(([a, b]) => segDist(x, y, a, b) < DOOR_NEAR);
+    for (const r of runs) if (r.kind !== "object") cuts.set(r, stationsOf(pic, lab, r.line, r.run.closed, Math.min(0.6, Math.max(0.15, r.m.left + r.m.right)), nearDoor));
+  }
   for (const r of runs) {
     if (r.kind === "object") {
       r.rings = [r.line];
       continue;
     }
     const ext: [number, number] = r.run.closed ? [0, 0] : [r.run.endsAtWall[0] ? reach(r, 0) : 0, r.run.endsAtWall[1] ? reach(r, 1) : 0];
-    r.rings = bandRings(r.line, r.run.closed, r.m.left, r.m.right, ext);
+    if (o.openings && cuts.has(r)) {
+      // Only where the picture has a wall: the rest is a way through. Each piece its own faces.
+      const pieces = wallPieces(cuts.get(r)!, r.line, r.run.closed);
+      r.open = pieces.open;
+      if (pieces.whole) {
+        r.rings = bandRings(r.line, r.run.closed, r.m.left, r.m.right, ext);
+      } else {
+        // Each piece an outline of its own (a shape each: they're not one outline and its holes).
+        r.parts = pieces.walls.map((p) => {
+          const own = measureRun(pic!, lab!, p.line, false, [p.first && r.run.endsAtWall[0], p.last && r.run.endsAtWall[1]]);
+          const [lf, rt] = believed(own) ? [own.left, own.right] : [r.m.left, r.m.right];
+          return { line: p.line, rings: bandRings(p.line, false, lf, rt, [p.first ? ext[0] : 0, p.last ? ext[1] : 0]) };
+        });
+        r.rings = r.parts.flatMap((p) => p.rings);
+      }
+    } else {
+      r.rings = bandRings(r.line, r.run.closed, r.m.left, r.m.right, ext);
+    }
+  }
+  if (o.openings) {
+    // A run that's all way through is no wall at all.
+    for (let i = runs.length - 1; i >= 0; i--) if (runs[i].kind !== "object" && runs[i].rings.length === 0) runs.splice(i, 1);
   }
   const objectAreas = runs.filter((r) => r.kind === "object").map((r) => Math.abs(signedArea(r.line)));
   const rooms = faces(graph)
@@ -766,7 +985,7 @@ export function planOf(u: Uvtt, pic: Picture | null, scale: [number, number] = [
       // An object's own loop is its inside, not a room.
       return a >= ROOM_AREA && !objectAreas.some((o) => Math.abs(o - a) < 0.05 * a);
     });
-  return { graph, rooms, runs, thickness, stairs: pic && stairs ? findStairs(pic) : [] };
+  return { graph, rooms, runs, thickness, stairs: pic && stairs ? findStairs(pic) : [], solids: [] };
 }
 
 const newId = () => Math.random().toString(36).slice(2, 8);
@@ -784,6 +1003,7 @@ export function uvttRelief(plan: UvttPlan, base: ReliefData, names: UvttNames, o
     groups.push(g);
     return g.id;
   };
+  // Every shape at its own height, not over what's under it: a room ringed by rock would stand on the rock.
   const indices = (ring: Pt[]) => ring.map(([x, y]) => verts.push({ x: r2(x), y: r2(y), h: 0 }) - 1);
   const add = (rings: Pt[][], shape: Omit<Shape, "ring" | "holes">) => {
     const [ring, ...holes] = rings;
@@ -792,25 +1012,29 @@ export function uvttRelief(plan: UvttPlan, base: ReliefData, names: UvttNames, o
     if (holes.length) s.holes = holes.map(indices);
     shapes.push(s);
   };
-  const counts: UvttCounts = { rooms: 0, walls: 0, hedges: 0, objects: 0, stairs: 0, measured: 0, thickness: plan.thickness };
+  const counts: UvttCounts = { rooms: 0, walls: 0, hedges: 0, objects: 0, stairs: 0, solids: 0, measured: 0, thickness: plan.thickness };
+  if (plan.solids.length) {
+    const g = sub(names.solids);
+    plan.solids.forEach((l) => add([l.ring, ...l.holes], { kind: "flat", h: wallH, rel: false, name: names.solid(++counts.solids), group: g }));
+  }
   if (rooms && plan.rooms.length) {
     const g = sub(names.rooms);
-    plan.rooms.forEach((ring) => add([ring], { kind: "flat", h: 0, rel: true, name: names.room(++counts.rooms), group: g }));
+    plan.rooms.forEach((ring) => add([ring], { kind: "flat", h: 0, rel: false, name: names.room(++counts.rooms), group: g }));
   }
   const objects = plan.runs.filter((r) => r.kind === "object");
   if (objects.length) {
     const g = sub(names.objects);
-    objects.forEach((r) => add(r.rings, { kind: "flat", h: objectH, rel: true, name: names.object(++counts.objects), group: g }));
+    objects.forEach((r) => (r.parts?.map((p) => p.rings) ?? [r.rings]).forEach((rings) => add(rings, { kind: "flat", h: objectH, rel: false, name: names.object(++counts.objects), group: g })));
   }
   const hedges = plan.runs.filter((r) => r.kind === "hedge");
   if (hedges.length) {
     const g = sub(names.hedges);
-    hedges.forEach((r) => add(r.rings, { kind: "flat", h: hedgeH, rel: true, name: names.hedge(++counts.hedges), group: g }));
+    hedges.forEach((r) => (r.parts?.map((p) => p.rings) ?? [r.rings]).forEach((rings) => add(rings, { kind: "flat", h: hedgeH, rel: false, name: names.hedge(++counts.hedges), group: g })));
   }
   const walls = plan.runs.filter((r) => r.kind === "wall");
   if (walls.length) {
     const g = sub(names.walls);
-    walls.forEach((r) => add(r.rings, { kind: "flat", h: wallH, rel: true, name: names.wall(++counts.walls), group: g }));
+    walls.forEach((r) => (r.parts?.map((p) => p.rings) ?? [r.rings]).forEach((rings) => add(rings, { kind: "flat", h: wallH, rel: false, name: names.wall(++counts.walls), group: g })));
   }
   if (plan.stairs.length) {
     const g = sub(names.stairs);
@@ -819,7 +1043,7 @@ export function uvttRelief(plan: UvttPlan, base: ReliefData, names: UvttNames, o
       const ramp = st.axis === "x" ? { a: [st.x0, my] as Pt, b: [st.x1, my] as Pt, from: 0, to: 1, steps: st.steps } : { a: [mx, st.y0] as Pt, b: [mx, st.y1] as Pt, from: 0, to: 1, steps: st.steps };
       add(
         [[[st.x0, st.y0], [st.x1, st.y0], [st.x1, st.y1], [st.x0, st.y1]]],
-        { kind: "ramp", h: 1, rel: true, ramp, name: names.stair(++counts.stairs), group: g },
+        { kind: "ramp", h: 1, rel: false, ramp, name: names.stair(++counts.stairs), group: g },
       );
     }
   }
@@ -828,4 +1052,79 @@ export function uvttRelief(plan: UvttPlan, base: ReliefData, names: UvttNames, o
     data: { ...base, verts, shapes: [...base.shapes, ...shapes], groups: [...(base.groups ?? []), ...groups] },
     counts,
   };
+}
+
+/** How far to either side of a wall's line (squares) rock is looked for, and the share of it along rock that makes it the rock's own edge. */
+const ROCK_SIDE = 0.3;
+const ROCK_ALONG = 0.6;
+
+/**
+ * The plan worked out in the scene's squares, given back in the relief's
+ * cells: a wall's thickness, a door's width, a step are measured in squares,
+ * and a map scaled up has cells of more than one (`unit`: squares a cell).
+ */
+export function planInSquares(
+  lines: { walls: Pt[][]; portals: [Pt, Pt][]; openings: boolean; rooms?: Pt[][] },
+  cellPic: Picture,
+  unit: number,
+  stairs: boolean,
+  progress: (stage: "walls" | "stairs") => void = () => {},
+): UvttPlan {
+  const k = unit > 0 && Number.isFinite(unit) ? unit : 1;
+  const pic: Picture = { ...cellPic, px: cellPic.px / k };
+  const up = (p: Pt): Pt => [p[0] * k, p[1] * k];
+  const back = (p: Pt): Pt => [p[0] / k, p[1] / k];
+  const walls = lines.walls.map((l) => l.map(up));
+  const portals = lines.portals.map(([a, b]) => [up(a), up(b)] as [Pt, Pt]);
+  // The picture's colours, once: the walls are measured on them and the rock told by them.
+  const lab = labOf(pic);
+  progress("walls");
+  const plan = planOf({ walls, portals }, pic, [1, 1], false, { openings: lines.openings, lab });
+  // Rock: dark areas between the lines that aren't rooms; the rooms and objects in it aren't.
+  const rock = solidAreas(pic, lab, [...walls, ...portals], (lines.rooms ?? []).map((r) => r.map(up)));
+  plan.solids = rock.loops;
+  if (plan.solids.length) {
+    /** Whether a wall's line runs along the rock (the rock closes it there; a wall measured there runs into the floor). */
+    const alongRock = (line: Pt[], closed: boolean) => {
+      const L = closed ? [...line, line[0]] : line;
+      let n = 0, along = 0;
+      for (let i = 1; i < L.length; i++) {
+        const [ax, ay] = L[i - 1], [bx, by] = L[i], len = Math.hypot(bx - ax, by - ay);
+        if (len < 1e-6) continue;
+        const nx = -(by - ay) / len, ny = (bx - ax) / len;
+        for (let d = 0.125; d < len; d += 0.25) {
+          const cx = ax + ((bx - ax) * d) / len, cy = ay + ((by - ay) * d) / len;
+          n++;
+          if (rock.at(cx + nx * ROCK_SIDE, cy + ny * ROCK_SIDE) || rock.at(cx - nx * ROCK_SIDE, cy - ny * ROCK_SIDE)) along++;
+        }
+      }
+      return n > 0 && along >= ROCK_ALONG * n;
+    };
+    plan.rooms = plan.rooms.filter((r) => rock.share(r) < 0.5);
+    plan.runs = plan.runs.filter((r) => {
+      if (r.kind === "object") return rock.share(r.line) < 0.5;
+      if (!r.parts) return !alongRock(r.line, r.run.closed);
+      // Piece by piece: those along the rock go, the rest stay.
+      r.parts = r.parts.filter((p) => !alongRock(p.line, false));
+      r.rings = r.parts.flatMap((p) => p.rings);
+      return r.parts.length > 0;
+    });
+  }
+  if (stairs) {
+    progress("stairs");
+    plan.stairs = findStairs(pic);
+  }
+  if (k !== 1) {
+    plan.rooms = plan.rooms.map((r) => r.map(back));
+    for (const r of plan.runs) {
+      r.line = r.line.map(back);
+      r.rings = r.rings.map((g) => g.map(back));
+      r.open = r.open.map((g) => g.map(back));
+      if (r.parts) r.parts = r.parts.map((p) => ({ line: p.line.map(back), rings: p.rings.map((g) => g.map(back)) }));
+    }
+    plan.stairs = plan.stairs.map((st) => ({ ...st, x0: st.x0 / k, y0: st.y0 / k, x1: st.x1 / k, y1: st.y1 / k }));
+    plan.thickness /= k;
+    plan.solids = plan.solids.map((l) => ({ ring: l.ring.map(back), holes: l.holes.map((h) => h.map(back)) }));
+  }
+  return plan;
 }

@@ -59,6 +59,8 @@ export async function importUvtt(json: unknown, base: ReliefData, t: T): Promise
     object: (n) => t("relief.uvtt.object", { n }),
     stairs: t("relief.uvtt.stairs"),
     stair: (n) => t("relief.uvtt.stair", { n }),
+    solids: t("relief.gen.solids"),
+    solid: (n) => t("relief.gen.solid", { n }),
   });
   notes.unshift(t("relief.uvttDone", { rooms: counts.rooms, walls: counts.walls, hedges: counts.hedges, objects: counts.objects }));
   if (counts.stairs) notes.push(t("relief.uvttStairs", { stairs: counts.stairs }));

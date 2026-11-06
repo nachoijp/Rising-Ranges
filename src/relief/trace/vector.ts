@@ -1,8 +1,8 @@
-// Pixels to outlines and back: a mask's pieces as outlines with holes (along
+// Pixels to outlines and back (solids.ts): a mask's pieces as outlines with holes (along
 // the pixels' edges, simplified), and outlines painted into a mask. All in
 // cells of the map; `px` pixels a cell.
 
-import type { Pt } from "../../types";
+import type { Pt } from "../types";
 
 export type Loop = { ring: Pt[]; holes: Pt[][] };
 

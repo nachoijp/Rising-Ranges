@@ -1218,6 +1218,13 @@
   padding: 14px 16px;
   font-size: 13px;
   color: var(--fg);
+  /* Its own: .glass is painted only inside the editor's bars. Solid: much text over a busy map. */
+  background: var(--re-panel);
+  border: 1px solid var(--re-divider);
+  border-radius: var(--re-radius-l);
+  box-shadow:
+    0 10px 34px -10px rgba(0, 0, 0, 0.6),
+    0 0 0 100vmax rgba(0, 0, 0, 0.35);
 }
 .re-gen .ptitle {
   font-size: 15px;
@@ -1239,6 +1246,10 @@
   color: var(--muted);
   font-size: 12px;
   line-height: 1.35;
+}
+.re-gen-none {
+  margin-top: 4px;
+  color: var(--re-warn) !important;
 }
 .re-gen-file {
   display: flex;

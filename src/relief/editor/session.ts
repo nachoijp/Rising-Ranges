@@ -885,10 +885,9 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
           URL.revokeObjectURL(link.href);
         },
       },
-      { icon: "terrain", label: t("relief.gen.menu"), run: () => openGenerate({ root, t, editor, image, notice }) },
+      { icon: "terrain", label: t("relief.gen.menu"), run: () => openGenerate({ root, t, editor, image, scene: o.scene, notice }) },
       "-",
       { label: t("relief.import"), run: () => file.click() },
-      { label: t("relief.importUvtt"), run: () => file.click() },
       { label: t("relief.versions"), items: versions },
       {
         icon: "terrain",

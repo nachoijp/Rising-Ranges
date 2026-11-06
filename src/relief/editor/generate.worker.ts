@@ -1,37 +1,45 @@
-import { generate, type GenNames, type GenOptions, type GenStage } from "../trace/gen/generate";
-import type { Picture, Uvtt } from "../trace/uvtt";
+import { planInSquares, uvttRelief, type Picture, type UvttCounts } from "../trace/uvtt";
+import type { FogPlan } from "../trace/fogPlan";
 import type { ReliefData } from "../types";
 
-// "Generar relieve" away from the page (see generateDialog.ts): the work takes
-// a second or more, and the editor goes on answering meanwhile. The names
-// come as templates ("{n}", "{h}"), functions can't be sent.
+// "Convertir niebla en relieve" away from the page (see generateDialog.ts):
+// measuring the walls on the map's picture takes a moment, and the editor goes
+// on answering meanwhile. The names come as templates ("{n}"): functions
+// can't be sent.
 
-export type GenTemplates = Record<Exclude<keyof GenNames, "room" | "wall" | "hedge" | "object" | "stair" | "level" | "pond" | "tree" | "bush" | "cliff">, string> &
-  Record<"room" | "wall" | "hedge" | "object" | "stair" | "level" | "pond" | "tree" | "bush" | "cliff", string>;
+// Only types leave this file: importing a value from it would run it in the page (its onmessage on the window).
+export type GenStage = "walls" | "stairs" | "shapes";
 
-export type GenRequest = { pic: Picture; uvtt: Uvtt | null; base: ReliefData; names: GenTemplates; options: GenOptions };
-export type GenReply = { kind: "stage"; stage: GenStage } | { kind: "done"; data: ReliefData; counts: ReturnType<typeof generate>["counts"] } | { kind: "error"; message: string };
+export type GenTemplates = Record<"group" | "rooms" | "walls" | "hedges" | "objects" | "stairs" | "solids" | "room" | "wall" | "hedge" | "object" | "stair" | "solid", string>;
 
-const fill = (template: string) => (n: number) => template.replace("{n}", String(n)).replace("{h}", String(n));
+export type GenRequest = {
+  pic: Picture;
+  plan: Pick<FogPlan, "walls" | "portals" | "openings" | "rooms">;
+  base: ReliefData;
+  names: GenTemplates;
+  /** The scene's squares a cell of the relief takes (a map scaled up: more than one); the work is done in squares. */
+  unit: number;
+  options: { wallH: number; stairs: boolean };
+};
+export type GenReply = { kind: "stage"; stage: GenStage } | { kind: "done"; data: ReliefData; counts: UvttCounts } | { kind: "error"; message: string };
+
+const fill = (template: string) => (n: number) => template.replace("{n}", String(n));
 
 self.onmessage = (event: MessageEvent<GenRequest>) => {
-  const { pic, uvtt, base, names: t, options } = event.data;
+  const { pic: cellPic, plan: lines, base, names: t, options, unit: u } = event.data;
   const post = (reply: GenReply) => (self as unknown as Worker).postMessage(reply);
   try {
-    const names: GenNames = {
+    const plan = planInSquares(lines, cellPic, u, options.stairs, (stage) => post({ kind: "stage", stage }));
+    post({ kind: "stage", stage: "shapes" });
+    const { data, counts } = uvttRelief(plan, base, {
       ...t,
       room: fill(t.room),
       wall: fill(t.wall),
       hedge: fill(t.hedge),
       object: fill(t.object),
       stair: fill(t.stair),
-      level: fill(t.level),
-      pond: fill(t.pond),
-      tree: fill(t.tree),
-      bush: fill(t.bush),
-      cliff: fill(t.cliff),
-    };
-    const { data, counts } = generate(pic, uvtt, base, names, options, (stage) => post({ kind: "stage", stage }));
+      solid: fill(t.solid),
+    }, { wallH: options.wallH });
     post({ kind: "done", data, counts });
   } catch (error) {
     post({ kind: "error", message: error instanceof Error ? error.message : String(error) });
