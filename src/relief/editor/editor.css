@@ -1204,3 +1204,132 @@
 .re-ui.re-wrapped.re-tighter .re-top [data-k="more"] {
   margin-left: auto;
 }
+
+/* "Generar relieve" (generateDialog.ts): a panel in the middle of the map, over everything of the editor's. */
+.re-gen {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 30;
+  width: min(440px, calc(100% - 32px));
+  max-height: calc(100% - 32px);
+  overflow: auto;
+  padding: 14px 16px;
+  font-size: 13px;
+  color: var(--fg);
+}
+.re-gen .ptitle {
+  font-size: 15px;
+}
+.re-gen-intro {
+  margin: 6px 0 10px;
+  color: var(--muted);
+}
+.re-gen section {
+  margin: 0 0 12px;
+}
+.re-gen h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.re-gen small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.re-gen-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  min-width: 0;
+}
+.re-gen-file span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.re-gen-opt {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 4px 0;
+  cursor: pointer;
+}
+.re-gen-opt input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+.re-gen-opt span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.re-gen-opt b {
+  font-weight: 400;
+}
+.re-gen-opt.off {
+  opacity: 0.5;
+  cursor: default;
+}
+.re-gen-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.re-gen-row h4 {
+  margin: 0;
+}
+.re-gen-row input {
+  width: 72px;
+}
+.re-gen-btn {
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--re-radius-f);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+  flex: none;
+}
+.re-gen-btn:hover {
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+.re-gen-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 12px;
+  color: var(--muted);
+}
+.re-gen-progress .bar {
+  height: 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+  overflow: hidden;
+}
+.re-gen-progress .bar > div {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.25s;
+}
+.re-gen-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.re-gen-actions .done {
+  margin-left: 0;
+}
+.re-gen-actions .done:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

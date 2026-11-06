@@ -8,6 +8,8 @@ import { pack } from "../sceneItems";
 import { onSaved, saveRelief } from "../store";
 import type { Affine, ReliefData, Shape } from "../types";
 import { withZones } from "../zones";
+import { importUvtt } from "./uvttImport";
+import { openGenerate } from "./generateDialog";
 import { DEFAULT_SETTINGS, ReliefEditor, type Mods, type Settings, type ToolId } from "./editor";
 import { icon } from "./icons";
 import {
@@ -270,7 +272,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       <button type="button" class="ib sm re-help" data-k="help">?</button>
       <div class="vsep"></div>
       <button type="button" class="ib sm" data-k="more">${icon("more")}</button>
-      <input type="file" data-k="file" accept=".json,application/json" hidden />
+      <input type="file" data-k="file" accept=".json,application/json,.uvtt,.dd2vtt,.df2vtt" hidden />
       <button type="button" class="ib sm" data-k="exit">${icon("close")}</button>
       <button type="button" class="done" data-k="done"></button>
     </div>
@@ -796,12 +798,27 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     if (!chosen) {
       return;
     }
-    let read: ReliefData | null = null;
+    let json: unknown = null;
     try {
-      read = fromStored(JSON.parse(await chosen.text()));
+      json = JSON.parse(await chosen.text());
     } catch {
-      read = null;
+      json = null;
     }
+    // A Universal VTT plan (.uvtt, .dd2vtt): its walls added to this relief.
+    if (json && typeof json === "object" && "line_of_sight" in json) {
+      notice(t("relief.uvttReading"));
+      const done = await importUvtt(json, editor.data, t).catch(() => null);
+      if (!done) {
+        notice(t("relief.importBad"));
+      } else if (done.empty) {
+        notice(t("relief.uvttNone"));
+      } else {
+        editor.replace(done.data);
+        notice(done.notes.join(" "));
+      }
+      return;
+    }
+    const read = json ? fromStored(json) : null;
     if (!read) {
       notice(t("relief.importBad"));
       return;
@@ -868,7 +885,10 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
           URL.revokeObjectURL(link.href);
         },
       },
+      { icon: "terrain", label: t("relief.gen.menu"), run: () => openGenerate({ root, t, editor, image, notice }) },
+      "-",
       { label: t("relief.import"), run: () => file.click() },
+      { label: t("relief.importUvtt"), run: () => file.click() },
       { label: t("relief.versions"), items: versions },
       {
         icon: "terrain",
