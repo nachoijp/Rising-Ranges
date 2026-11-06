@@ -450,7 +450,7 @@ export class MapView {
         const text =
           s.kind === "flat"
             ? s.rel
-              ? `+${fmt(s.h)}`
+              ? `${s.h < 0 ? "" : "+"}${fmt(s.h)}`
               : fmt(s.h)
             : s.kind === "ramp" && !s.ramp
               ? this.texts.rampNoArrow
@@ -701,8 +701,8 @@ export class MapView {
       ctx.setLineDash([]);
     }
     const one = ed.sel?.kind === "shape" && !ed.sel.more?.length ? data.shapes[ed.sel.i] : null;
-    // A picked ramp's arrow ends (dragged with Elegir): its tail dark, its head the picked colour.
-    if (ed.tool === "edit" && one?.kind === "ramp" && one.ramp) {
+    // A picked ramp's arrow ends (dragged with any tool): its tail dark, its head the picked colour.
+    if (one?.kind === "ramp" && one.ramp && !one.locked && !one.hidden) {
       for (const [end, fill] of [["a", C.dark], ["b", C.pick]] as const) {
         const [x, y] = this.toScreen(...one.ramp[end]);
         ctx.beginPath();
@@ -794,20 +794,53 @@ export class MapView {
   }
 }
 
+/**
+ * A ramp's arrow: a thick shaft and a big head, so it reads as an arrow (its
+ * head shows past the end's handle drawn over its tip when it's picked),
+ * edged in dark like the vertices, so its colour holds on any map.
+ */
 function arrow(ctx: CanvasRenderingContext2D, [ax, ay]: [number, number], [bx, by]: [number, number], color: string) {
+  const HEAD = 20; // px, tip to base
+  const SPREAD = 0.45; // radians, each side of the shaft
+  const SHAFT = 4; // px
+  const EDGE = 1.5; // px of dark round it
+  const angle = Math.atan2(by - ay, bx - ax);
+  const length = Math.hypot(bx - ax, by - ay);
+  // A short arrow keeps its head within its length.
+  const head = Math.min(HEAD, length * 0.6);
+  const [baseX, baseY] = [bx - Math.cos(angle) * head * Math.cos(SPREAD), by - Math.sin(angle) * head * Math.cos(SPREAD)];
+  const shaft = () => {
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(baseX, baseY);
+  };
+  const tip = () => {
+    ctx.beginPath();
+    ctx.moveTo(bx, by);
+    ctx.lineTo(bx - Math.cos(angle - SPREAD) * head, by - Math.sin(angle - SPREAD) * head);
+    ctx.lineTo(bx - Math.cos(angle + SPREAD) * head, by - Math.sin(angle + SPREAD) * head);
+    ctx.closePath();
+  };
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  // The dark edge: under the shaft and round the head.
+  ctx.strokeStyle = C.vertexEdge;
+  ctx.lineWidth = SHAFT + EDGE * 2;
+  shaft();
+  ctx.stroke();
+  ctx.lineWidth = EDGE * 2;
+  tip();
+  ctx.stroke();
+  // The arrow itself.
   ctx.strokeStyle = color;
   ctx.fillStyle = color;
-  ctx.lineWidth = 2.5;
-  ctx.beginPath();
-  ctx.moveTo(ax, ay);
-  ctx.lineTo(bx, by);
+  ctx.lineWidth = SHAFT;
+  shaft();
   ctx.stroke();
-  const angle = Math.atan2(by - ay, bx - ax);
-  ctx.beginPath();
-  ctx.moveTo(bx, by);
-  ctx.lineTo(bx - Math.cos(angle - 0.4) * 12, by - Math.sin(angle - 0.4) * 12);
-  ctx.lineTo(bx - Math.cos(angle + 0.4) * 12, by - Math.sin(angle + 0.4) * 12);
+  tip();
   ctx.fill();
+  ctx.lineCap = "butt";
+  ctx.lineJoin = "miter";
 }
 
 function label(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, selected: boolean) {

@@ -1,4 +1,3 @@
-import OBR from "@owlbear-rodeo/sdk";
 import { isPlainObject } from "../util/isPlainObject";
 import { getPluginId } from "../util/getPluginId";
 import { BandSet } from "../engine/types";
@@ -32,7 +31,7 @@ export function resolveBandSet(bandSet: BandSet, language: Language): BandSet {
   return defaults.find((defaultBandSet) => defaultBandSet.id === bandSet.id) ?? bandSet;
 }
 
-function isBandSet(value: unknown): value is BandSet {
+export function isBandSet(value: unknown): value is BandSet {
   return (
     isPlainObject(value) &&
     "name" in value &&
@@ -49,12 +48,4 @@ export function customBandSetsFromMetadata(
 ): BandSet[] {
   const stored = metadata[getPluginId("bandSets")];
   return Array.isArray(stored) ? stored.filter(isBandSet) : [];
-}
-
-export async function setCustomBandSets(bandSets: BandSet[]): Promise<void> {
-  try {
-    await OBR.scene.setMetadata({ [getPluginId("bandSets")]: bandSets });
-  } catch (error) {
-    console.warn("Failed to save custom band sets to scene metadata:", error);
-  }
 }

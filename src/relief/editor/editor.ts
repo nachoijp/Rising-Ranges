@@ -96,7 +96,7 @@ export type Settings = {
   stamp: PrefabId;
 };
 
-export const DEFAULT_SETTINGS: Settings = { pickMode: "shapes", rollerMode: "new", lassoSmooth: 0, radius: 1.5, strength: 0.5, level: 1, lastSoft: 0, groundOnly: false, shapeRadius: 1, brushMode: "raise", grid: false, stamp: "column" };
+export const DEFAULT_SETTINGS: Settings = { pickMode: "shapes", rollerMode: "new", lassoSmooth: 0, radius: 1.5, strength: 0.5, level: 1, lastSoft: 0, groundOnly: false, shapeRadius: 1, brushMode: "raise", grid: true, stamp: "column" };
 
 /** An ellipse's points. */
 const SHAPE_POINTS = 24;
@@ -435,6 +435,13 @@ export class ReliefEditor {
       this.skinBox = { start: p, end: p };
       return;
     }
+    // A picked ramp's arrow ends: dragged with any tool, not only Elegir (they're shown with any).
+    const arrowEnd = !this.drawing && !mods.alt ? this.arrowEndAt(p) : null;
+    if (arrowEnd) {
+      this.pushUndo();
+      this.arrowEnd = arrowEnd;
+      return;
+    }
     if (this.isBrush()) {
       if (this.levelPick || (this.brushKind === "flatten" && mods.alt)) {
         this.levelPick = false;
@@ -570,15 +577,8 @@ export class ReliefEditor {
     this.host.redraw();
   }
 
-  /** Choosing (Elegir) on what's under the pointer, before the rest: a ramp's arrow end, Alt (remove), a double click (add). */
+  /** Choosing (Elegir) on what's under the pointer, before the rest: Alt (remove), a double click (add). (A ramp's arrow ends: see down.) */
   private editDown(p: { x: number; y: number }, mods: Mods): boolean {
-    // A picked ramp's arrow: its ends, dragged.
-    const end = this.arrowEndAt(p);
-    if (end) {
-      this.pushUndo();
-      this.arrowEnd = end;
-      return true;
-    }
     // Vertices and points: not while picking shapes only.
     if (this.settings.pickMode === "shapes") {
       return false;
@@ -643,7 +643,20 @@ export class ReliefEditor {
   }
 
   move(p: { x: number; y: number }, mods: Mods = {}, held = false) {
+    if (held && this.arrowEnd) {
+      this.arrowEnd.s.ramp![this.arrowEnd.end] = [p.x, p.y];
+      this.changed();
+      return;
+    }
+    if (!held && !this.drawing && this.skinPick === null && this.arrowEndAt(p)) {
+      this.cursor = p;
+      this.host.setCursor("grab");
+      this.host.redraw();
+      return;
+    }
     if (this.isBrush()) {
+      // Its own cursor (the stylesheet's), not a hand left from an arrow's end.
+      this.host.setCursor("");
       this.cursor = p;
       this.flip = !!mods.ctrl;
       if (held && this.brushing && !(this.brushKind === "flatten" && mods.alt)) {
@@ -661,11 +674,6 @@ export class ReliefEditor {
       }
       return;
     }
-    if (held && this.arrowEnd) {
-      this.arrowEnd.s.ramp![this.arrowEnd.end] = [p.x, p.y];
-      this.changed();
-      return;
-    }
     if (held && this.shape?.origin) {
       const o = this.shape.origin;
       const q = this.gridded(p);
@@ -677,11 +685,6 @@ export class ReliefEditor {
       this.shape.start = mods.alt ? { x: o.x - dx, y: o.y - dy } : o;
       this.shape.end = { x: o.x + dx, y: o.y + dy };
       this.host.redraw();
-      return;
-    }
-    if (!held && this.tool === "edit" && this.arrowEndAt(p)) {
-      this.cursor = p;
-      this.host.setCursor("grab");
       return;
     }
     if (this.tool === "paintShape") {
@@ -875,7 +878,7 @@ export class ReliefEditor {
   /** The end of the picked ramp's arrow under the pointer, or null. */
   arrowEndAt(p: { x: number; y: number }): { s: Shape; end: "a" | "b" } | null {
     const s = this.sel?.kind === "shape" && !this.sel.more?.length ? this.data.shapes[this.sel.i] : null;
-    if (s?.kind !== "ramp" || !s.ramp) {
+    if (s?.kind !== "ramp" || !s.ramp || s.locked || s.hidden) {
       return null;
     }
     const reach = this.host.snapReach() * 1.2;

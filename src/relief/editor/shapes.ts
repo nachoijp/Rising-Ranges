@@ -298,6 +298,24 @@ export function defaultRamp(ed: ReliefEditor, s: Shape): Ramp {
   return { a, b, from, to: from + 1, steps: 0 };
 }
 
+/** A ramp's arrow's ends pointing `dir` (a unit vector, y down): from edge to edge of the shape, through its middle. */
+export function rampToward(ed: ReliefEditor, s: Shape, [dx, dy]: Pt): [Pt, Pt] {
+  const [ring] = ed.relief.coordsOf(s);
+  const { x0, y0, x1, y1 } = bbox(ring);
+  const [cx, cy] = [(x0 + x1) / 2, (y0 + y1) / 2];
+  let t0 = Infinity;
+  let t1 = -Infinity;
+  for (const [x, y] of ring) {
+    const t = (x - cx) * dx + (y - cy) * dy;
+    t0 = Math.min(t0, t);
+    t1 = Math.max(t1, t);
+  }
+  return [
+    [cx + dx * t0, cy + dy * t0],
+    [cx + dx * t1, cy + dy * t1],
+  ];
+}
+
 /** A shape's heights told over what's under it, or fixed, kept where they are. */
 export function setRel(ed: ReliefEditor, si: number, rel: boolean) {
   const s = ed.data.shapes[si];

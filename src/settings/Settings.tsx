@@ -3,14 +3,12 @@ import OBR from "@owlbear-rodeo/sdk";
 
 import Stack from "@mui/material/Stack";
 import Alert from "@mui/material/Alert";
+import Button from "@mui/material/Button";
 import Tabs from "@mui/material/Tabs";
 import Tab from "@mui/material/Tab";
 
-import {
-  getDefaultBandSets,
-  resolveBandSet,
-  setCustomBandSets as storeCustomBandSets,
-} from "../bandSets/bandSets";
+import { getDefaultBandSets, resolveBandSet } from "../bandSets/bandSets";
+import { MAX_RANGES, fitsRoom, onRangesChange, rangesFile, rangesFromFile, saveRanges, newSetId, freshBands } from "../bandSets/library";
 import { BandSet } from "../engine/types";
 import { BandSetSelector } from "./BandSetSelector";
 import { BandasTab } from "./BandasTab";
@@ -49,6 +47,7 @@ export function Settings() {
   const {
     bandSet: initialBandSet,
     customBandSets: initialCustomBandSets,
+    leftBehind,
     language,
   } = useOBRContext();
   const t = useTranslation();
@@ -59,6 +58,8 @@ export function Settings() {
     initialCustomBandSets
   );
   const [tab, setTab] = useState(0);
+  /** A notice under the set selector (an import's outcome, a save that failed); closed by the GM. */
+  const [notice, setNotice] = useState<{ severity: "info" | "warning"; text: string } | null>(null);
   const defaultBandSets = useMemo(() => getDefaultBandSets(language), [language]);
   // The room settings every tab but Bandas edits. One copy for all of them,
   // so a change on one tab can't be overwritten by another's stale copy.
@@ -154,9 +155,45 @@ export function Settings() {
     };
   }, []);
 
-  useEffect(() => {
-    storeCustomBandSets(customBandSets);
-  }, [customBandSets]);
+  // The room's sets are saved as each change is made (the controls send one
+  // per action: a slider when let go, a name when left), one save at a time:
+  // a change made while one's under way waits, and only the latest goes.
+  // (Not put off: the panel may close any moment, and a save left for later
+  // would go with it.)
+  const pending = useRef<BandSet[] | null>(null);
+  const saving = useRef(false);
+  const failedText = useRef({ failed: "", tooBig: "" });
+  failedText.current = { failed: t("settings.bandSet.saveFailed"), tooBig: t("settings.bandSet.tooBig") };
+  const save = useCallback(async () => {
+    if (saving.current) {
+      return;
+    }
+    saving.current = true;
+    while (pending.current) {
+      const list = pending.current;
+      pending.current = null;
+      const result = await saveRanges(list);
+      if (!result.ok) {
+        setNotice({ severity: "warning", text: result.reason === "tooBig" ? failedText.current.tooBig : failedText.current.failed });
+      }
+    }
+    saving.current = false;
+  }, []);
+  function changeRanges(next: BandSet[]) {
+    setCustomBandSets(next);
+    pending.current = next;
+    void save();
+  }
+  // Another GM's changes (or this one's, coming back): taken unless something here is still to be saved.
+  useEffect(
+    () =>
+      onRangesChange((list) => {
+        if (!pending.current && !saving.current) {
+          setCustomBandSets(list);
+        }
+      }),
+    []
+  );
 
   // selectedBandSet is this component's own local copy (seeded once from
   // context) — it doesn't pick up OBRContext's already-relocalized bandSet
@@ -194,32 +231,84 @@ export function Settings() {
   }
 
   function onDeleteBandSet(bandSet: BandSet) {
-    setCustomBandSets(customBandSets.filter((b) => b.id !== bandSet.id));
+    changeRanges(customBandSets.filter((b) => b.id !== bandSet.id));
     if (bandSet.id === selectedBandSet.id) {
       onSelectBandSet(defaultBandSets[0]);
     }
     setEditing(false);
   }
 
+  const full = customBandSets.length >= MAX_RANGES;
+
   function onAddBandSet(bandSet: BandSet) {
-    setCustomBandSets([...customBandSets, bandSet]);
+    if (full) {
+      return;
+    }
+    changeRanges([...customBandSets, bandSet]);
     onSelectBandSet(bandSet, true);
+  }
+
+  function exportSets(list: BandSet[]) {
+    const url = URL.createObjectURL(new Blob([rangesFile(list)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = t("settings.bandSet.fileName");
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  /** Sets from a file: one with a set's id here takes its place; new ones as long as there's room. A preset's id isn't taken. */
+  async function importSets(file: File) {
+    const list = rangesFromFile(await file.text().catch(() => ""))?.filter((r) => !defaultBandSets.some((d) => d.id === r.id));
+    if (!list || list.length === 0) {
+      setNotice({ severity: "warning", text: t("settings.bandSet.importBad") });
+      return;
+    }
+    const next = [...customBandSets];
+    let taken = 0;
+    let skipped = 0;
+    for (const range of list) {
+      const at = next.findIndex((r) => r.id === range.id);
+      if (at >= 0) {
+        next[at] = range;
+        taken++;
+      } else if (next.length < MAX_RANGES) {
+        next.push(range);
+        taken++;
+      } else {
+        skipped++;
+      }
+    }
+    // Too much for the room: nothing taken (said so), rather than kept here only, to be lost.
+    if (!(await fitsRoom(next))) {
+      setNotice({ severity: "warning", text: t("settings.bandSet.tooBig") });
+      return;
+    }
+    changeRanges(next);
+    const now = next.find((r) => r.id === selectedBandSet.id);
+    if (now && !deepEqual(now, selectedBandSet)) {
+      onSelectBandSet(now, editing);
+    }
+    setNotice({
+      severity: skipped > 0 ? "warning" : "info",
+      text: skipped > 0 ? t("settings.bandSet.importedSome", { n: taken, skipped, max: MAX_RANGES }) : t("settings.bandSet.imported", { n: taken }),
+    });
   }
 
   /** A preset's editable copy, selected and opened for editing. */
   function onDuplicateBandSet() {
     onAddBandSet({
       ...selectedBandSet,
-      id: crypto.randomUUID(),
+      id: newSetId(),
       name: t("settings.bandas.copyName", { name: selectedBandSet.name }),
-      bands: selectedBandSet.bands.map((band) => ({ ...band, id: crypto.randomUUID() })),
+      bands: freshBands(selectedBandSet.bands),
     });
   }
 
   function onChangeBandSet(bandSet: BandSet) {
-    setCustomBandSets(
-      customBandSets.map((b) => (b.id === bandSet.id ? bandSet : b))
-    );
+    changeRanges(customBandSets.map((b) => (b.id === bandSet.id ? bandSet : b)));
     if (bandSet.id === selectedBandSet.id) {
       setSelectedBandSet(bandSet);
       OBR.scene.setMetadata({ [getPluginId("bandSet")]: bandSet });
@@ -263,7 +352,10 @@ export function Settings() {
         onSelect={(bandSet) => onSelectBandSet(bandSet)}
         customBandSets={customBandSets}
         defaultBandSets={defaultBandSets}
+        max={MAX_RANGES}
         onAdd={onAddBandSet}
+        onExport={() => exportSets(customBandSets)}
+        onImport={importSets}
         onEdit={() => {
           setEditing((prev) => !prev);
         }}
@@ -283,6 +375,23 @@ export function Settings() {
       {outdatedBandSet && (
         <Alert severity="warning">
           {t("settings.bandSet.outOfSync", { name: selectedBandSet.name })}
+        </Alert>
+      )}
+      {leftBehind.length > 0 && (
+        <Alert
+          severity="warning"
+          action={
+            <Button color="inherit" size="small" onClick={() => exportSets(leftBehind)}>
+              {t("settings.bandSet.export")}
+            </Button>
+          }
+        >
+          {t("settings.bandSet.leftBehind", { max: MAX_RANGES, names: leftBehind.map((r) => `"${r.name}"`).join(", ") })}
+        </Alert>
+      )}
+      {notice && (
+        <Alert severity={notice.severity} onClose={() => setNotice(null)}>
+          {notice.text}
         </Alert>
       )}
       <Tabs
@@ -310,6 +419,7 @@ export function Settings() {
             onChange={onChangeBandSet}
             onDelete={onDeleteBandSet}
             onDuplicate={onDuplicateBandSet}
+            canDuplicate={!full}
           />
         )}
         {tab === 1 && (

@@ -19,7 +19,6 @@ export type SceneRecipe = {
   gridType: GridType;
   hexCenter: { x: number; y: number } | null;
   playerView: boolean;
-  fog: { key: string; filled: boolean; shapes: [number, number][][]; lit: [number, number][][] } | null;
   reliefs: Reliefs;
 };
 

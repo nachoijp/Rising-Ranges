@@ -64,6 +64,10 @@ Under **Perspective view** in the Elevation tab, **Draw tokens at their elevatio
 
 Start from Dagger, Steel, or Dragons — duplicate one to edit it — or build your own: name each range, set its radius and icon, add or delete ranges, and pick the rings' shape (circles, squares, or hexes on a hex grid), the calculation mode (spherical / cubic / cylindrical / octagonal: diagonals alternating one and two cells, 5-10-5), whether elevations step by range or by cell, and how forgiving Tolerance is. Turn on a Final Range to give everything past the farthest range a name and color of its own, instead of "Out of range".
 
+![Your sets, and Export / Import](docs/screenshots/sets-menu.png)
+
+Your sets belong to the room: every scene in it has them, and every GM in it sees them. A room keeps up to five; **Export** saves them to a file and **Import** brings sets in from one — to take them to another room, keep a copy, or share them with another GM. Each scene remembers which set it uses. Sets made with an earlier version, kept in a scene, move to the room the first time its settings are opened there (any that don't fit are offered for export).
+
 ## What shows on the map
 
 ![Measures settings](docs/screenshots/measures-tab.png)

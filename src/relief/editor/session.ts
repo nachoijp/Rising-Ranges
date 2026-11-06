@@ -46,6 +46,8 @@ import { time } from "../../timing";
 // the scene a moment after; the X leaves it as it was when editing began.
 
 const SETTINGS_KEY = "rising-ranges/relief-editor/settings";
+/** Set once the grid's been turned on for this device (2.1: on by default, for those who had settings kept already too). */
+const GRID_ON_KEY = "rising-ranges/relief-editor/grid-on-2.1";
 const FOLDS_KEY = "rising-ranges/relief-editor/folds";
 /** Shapes copied (Ctrl+C), kept on this device: pasted on another image too, or the next time. */
 const CLIP_KEY = "rising-ranges/relief-editor/clipboard";
@@ -122,6 +124,25 @@ function keepJson(key: string, value: unknown) {
   } catch {
     // Not kept: the next time starts from the defaults.
   }
+}
+
+/**
+ * The editor's settings kept on this device. Since 2.1 the grid is on by
+ * default; settings are kept whole, so it's turned on once for everyone
+ * (anyone can turn it off again, and it stays off).
+ */
+function loadSettings(): Settings {
+  const settings = loadJson<Settings>(SETTINGS_KEY, DEFAULT_SETTINGS);
+  try {
+    if (!localStorage.getItem(GRID_ON_KEY)) {
+      settings.grid = true;
+      keepJson(SETTINGS_KEY, settings);
+      localStorage.setItem(GRID_ON_KEY, "1");
+    }
+  } catch {
+    // No storage: the defaults (grid on) every time.
+  }
+  return settings;
 }
 
 /** A video's first frame, once it has one (it isn't played on). */
@@ -527,7 +548,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       toScreen: (x, y) => map.toScreen(x, y),
       saveSettings: () => keepJson(SETTINGS_KEY, editor.settings),
     },
-    loadJson<Settings>(SETTINGS_KEY, DEFAULT_SETTINGS)
+    loadSettings()
   );
   // Height points no shape takes (left by an earlier version, a shape removed then): let go, so a shape
   // drawn there doesn't take them up (see prunePoints). Kept with its next save.
@@ -575,9 +596,24 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     const r = root.getBoundingClientRect();
     return [clientX - r.left, clientY - r.top];
   };
-  /** The groups folded in the shapes' list (this time the editor's open). */
-  const groupsFolded = new Set<string>();
-  const listUi = (): ShapesList => ({ folded: shapesFold, groupsFolded, onMenu: shapeMenu, onGroupMenu: groupMenu, focusName });
+  /**
+   * The groups opened in the shapes' list (this time the editor's open): the
+   * others are folded, as they start. A group made while editing (Ctrl+G, a
+   * paste) starts open, to see what went in it.
+   */
+  const groupsOpen = new Set<string>();
+  const groupIds = () => new Set((editor.data.groups ?? []).map((g) => g.id));
+  let groupsSeen = groupIds();
+  const listUi = (): ShapesList => {
+    const now = groupIds();
+    for (const id of now) {
+      if (!groupsSeen.has(id)) {
+        groupsOpen.add(id);
+      }
+    }
+    groupsSeen = now;
+    return { folded: shapesFold, groupsOpen, onMenu: shapeMenu, onGroupMenu: groupMenu, focusName };
+  };
   const redoAll = () => {
     editor.changed();
     editor.host.showProps();

@@ -12,36 +12,61 @@ import { itemOutline } from "../terrain/terrain";
 // Fog) or local to this client: Smoke & Spectre! builds its per-player
 // vision that way (local Light and Wall items, radius in scene px), so both
 // are read alike. Explored areas (lights that have moved on) aren't kept.
+//
+// As Owlbear has it: the fog shapes one over another, the topmost winning —
+// a shape covers, a cut one (hidden: the GM's reveal) takes the fog under it
+// away — over the whole scene covered (filled) or nothing.
 
 /** Whether a scene point is under the fog. */
 export type FogAt = (x: number, y: number) => boolean;
 
+/** A fog shape's outline, and whether it's cut (takes the fog under it away) rather than covering. */
+export type FogLayer = { ring: Point[]; cut: boolean };
+
 /**
- * The fog worked out: `at` to ask a point, and what to draw it with —
- * the whole scene (`filled`) or `shapes`, less the `lit` areas, in `color`.
+ * What a light clears of the fog: its outline and holes (`rings`, scene
+ * px), and the light, for its soft edge (see VistazoView.drawFog): where
+ * it is, its reach, the part of it that fades out (`soft`: 0 sharp, 1 from
+ * its middle), and its cone if it has one (its middle, and the half-angles
+ * it's whole within and fades out by, radians; angles from straight right,
+ * clockwise on screen).
  */
-export type Fog = { at: FogAt; filled: boolean; shapes: Point[][]; lit: Point[][]; color: string };
+export type LitArea = {
+  rings: Point[][];
+  light: { x: number; y: number; radius: number; soft: number; cone: { middle: number; inner: number; outer: number } | null };
+};
+
+/**
+ * The fog worked out: `at` to ask a point, and what to draw it with — the
+ * whole scene (`filled`) or nothing, then `layers` bottom to top, less the
+ * `lit` areas, in `color`.
+ */
+export type Fog = { at: FogAt; filled: boolean; layers: FogLayer[]; lit: LitArea[]; color: string };
 
 const closed = (ring: Point[]): Point[] => [...ring, ring[0]];
 const unionOf = (rings: Point[][]): MultiPolygon =>
   rings.length === 0 ? [] : polygonClipping.union([[closed(rings[0])]], ...rings.slice(1).map((ring): MultiPolygon => [[closed(ring)]]));
 
-/**
- * What of `world` isn't under the fog (the lit areas, and outside the fog
- * shapes when it isn't filled): where the player view shows the terrain's
- * heights. null if it can't be worked out (then nothing's flattened).
- */
-export function clearOf(fog: Fog, world: MultiPolygon): MultiPolygon | null {
+/** What of `world` is under the fog (for its curtains: see VistazoView.buildFogFloor). null if it can't be worked out. */
+export function foggedOf(fog: Pick<Fog, "filled" | "layers" | "lit">, world: MultiPolygon): MultiPolygon | null {
   try {
-    const lit = unionOf(fog.lit);
-    if (fog.filled) {
-      return lit.length > 0 ? polygonClipping.intersection(world, lit) : [];
+    let fogged: MultiPolygon = fog.filled ? world : [];
+    for (const { ring, cut } of fog.layers) {
+      const shape: MultiPolygon = [[closed(ring)]];
+      if (cut) {
+        fogged = fogged.length > 0 ? polygonClipping.difference(fogged, shape) : fogged;
+      } else {
+        fogged = fogged.length > 0 ? polygonClipping.union(fogged, shape) : shape;
+      }
     }
-    const covered = unionOf(fog.shapes);
-    const fogged = covered.length > 0 && lit.length > 0 ? polygonClipping.difference(covered, lit) : covered;
-    return fogged.length > 0 ? polygonClipping.difference(world, fogged) : world;
+    const lit: MultiPolygon =
+      fog.lit.length === 0 ? [] : polygonClipping.union([fog.lit[0].rings.map(closed)], ...fog.lit.slice(1).map((area): MultiPolygon => [area.rings.map(closed)]));
+    if (fogged.length > 0 && lit.length > 0) {
+      fogged = polygonClipping.difference(fogged, lit);
+    }
+    return fogged.length > 0 ? polygonClipping.intersection(fogged, world) : [];
   } catch (error) {
-    console.error("Rising Ranges: 3D Glance couldn't work out what the fog leaves clear", error);
+    console.error("Rising Ranges: 3D Glance couldn't work out what the fog covers", error);
     return null;
   }
 }
@@ -85,6 +110,33 @@ function blockingSegments(walls: Wall[]): Segment[] {
     }
   }
   return segments;
+}
+
+/**
+ * A token moved from `from` toward `to` as Owlbear's dynamic fog lets it: up to
+ * the first wall in the way that blocks (a closed door does; an open one, no),
+ * `gap` (scene px) short of it. The walls: the scene's and this client's own.
+ */
+export function stopAtWalls(from: { x: number; y: number }, to: { x: number; y: number }, items: Item[], local: Item[], gap: number): { x: number; y: number } {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 1e-9) {
+    return to;
+  }
+  const walls = [...items, ...local].filter(isWall);
+  if (walls.length === 0) {
+    return to;
+  }
+  let first = Infinity;
+  for (const segment of blockingSegments(walls)) {
+    first = Math.min(first, hit(from.x, from.y, dx / length, dy / length, segment));
+  }
+  if (first > length) {
+    return to;
+  }
+  const reach = Math.max(0, first - gap);
+  return { x: from.x + (dx / length) * reach, y: from.y + (dy / length) * reach };
 }
 
 /** How far along a ray (from c, direction d) it meets a segment, or Infinity. */
@@ -159,25 +211,79 @@ function litArea(light: Light, segments: Segment[]): Point[] {
 
 /**
  * The fog over the scene now: `filled` (Owlbear's fog setting), the
- * scene's items and this client's local ones. Hidden fog shapes (the GM's
- * reveal) and hidden lights don't count.
+ * scene's items and this client's local ones. A hidden fog shape is a cut
+ * one (the GM's reveal); hidden lights don't count.
  */
 export function fogOver(filled: boolean, items: Item[], local: Item[], color = "#222222"): Fog {
   const all = [...items, ...local];
-  const shapes = items
-    .filter((item) => item.layer === "FOG" && item.visible && (isShape(item) || isCurve(item) || isPath(item)))
-    .flatMap((item) => itemOutline(item));
+  const layers: FogLayer[] = items
+    .filter((item) => item.layer === "FOG" && (isShape(item) || isCurve(item) || isPath(item)))
+    .sort((a, b) => a.zIndex - b.zIndex)
+    .flatMap((item) => itemOutline(item).map((ring) => ({ ring, cut: !item.visible })));
   const segments = blockingSegments(all.filter(isWall));
-  const lights = all
-    .filter(isLight)
-    .filter((light) => light.visible && light.attenuationRadius > 0)
-    .map((light) => ({ x: light.position.x, y: light.position.y, radius: light.attenuationRadius, area: litArea(light, segments) }));
+  const lights = all.filter(isLight).filter((light) => light.visible && light.attenuationRadius > 0);
+  const lit: LitArea[] = [];
+  // Primary and auxiliary lights clear what they light, as far as the walls let them.
+  for (const light of lights) {
+    if (light.lightType !== "SECONDARY") {
+      lit.push({ rings: [litArea(light, segments)], light: lightOf(light) });
+    }
+  }
+  // A secondary one (a campfire) only what of that a primary light sees: in its line of sight (its
+  // cone's, if it's one), however far (not an auxiliary's).
+  const secondary = lights.filter((light) => light.lightType === "SECONDARY");
+  const seers = lights.filter((light) => light.lightType !== "SECONDARY" && light.lightType !== "AUXILIARY");
+  if (secondary.length > 0 && seers.length > 0) {
+    try {
+      const seen = unionOf(seers.map((light) => litArea({ ...light, attenuationRadius: SIGHT }, segments)));
+      for (const light of secondary) {
+        const own: MultiPolygon = [[closed(litArea(light, segments))]];
+        for (const polygon of seen.length > 0 ? polygonClipping.intersection(own, seen) : []) {
+          lit.push({ rings: polygon.map((ring) => ring.slice(0, -1)), light: lightOf(light) });
+        }
+      }
+    } catch (error) {
+      console.error("Rising Ranges: 3D Glance couldn't work out what the secondary lights clear", error);
+    }
+  }
   const at: FogAt = (x, y) => {
-    const covered = filled || shapes.some((ring) => inRing(x, y, ring));
+    // The topmost shape over the point says; none, the fill.
+    let covered = filled;
+    for (let i = layers.length - 1; i >= 0; i--) {
+      if (inRing(x, y, layers[i].ring)) {
+        covered = !layers[i].cut;
+        break;
+      }
+    }
     if (!covered) {
       return false;
     }
-    return !lights.some((light) => Math.hypot(x - light.x, y - light.y) <= light.radius && inRing(x, y, light.area));
+    return !lit.some((area) => inRing(x, y, area.rings[0]) && !area.rings.slice(1).some((hole) => inRing(x, y, hole)));
   };
-  return { at, filled, shapes, lit: lights.map((light) => light.area), color };
+  return { at, filled, layers, lit, color };
+}
+
+/** The share of a light's reach each unit of its falloff fades (see lightOf). */
+const FALLOFF_REACH = 0.25;
+
+/** How far (scene px) a primary light's line of sight reaches, for the secondary lights it sees: past any map. */
+const SIGHT = 1e6;
+
+/**
+ * A light's soft edge, as Owlbear's falloff draws it: the part of its reach that fades out (0 sharp, at
+ * most all of it) — a quarter of it for each unit of falloff, as its map shows (falloff 1 fades the
+ * last quarter, 1.5 the last three eighths; measured against Owlbear's own drawing, 2026-11); its cone's
+ * half-angles, whole within the inner one, faded out by the outer.
+ */
+function lightOf(light: Light): LitArea["light"] {
+  const cone = light.outerAngle > 0 && light.outerAngle < 360;
+  return {
+    x: light.position.x,
+    y: light.position.y,
+    radius: light.attenuationRadius,
+    soft: Math.max(0, Math.min(1, light.falloff * FALLOFF_REACH)),
+    cone: cone
+      ? { middle: ((light.rotation - 90) * Math.PI) / 180, inner: (Math.min(light.innerAngle, light.outerAngle) * Math.PI) / 360, outer: (light.outerAngle * Math.PI) / 360 }
+      : null,
+  };
 }
