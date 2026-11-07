@@ -10,6 +10,7 @@ import type { Affine, ReliefData, Shape } from "../types";
 import { withZones } from "../zones";
 import { importUvtt } from "./uvttImport";
 import { openGenerate } from "./generateDialog";
+import { fogPlans } from "../trace/fogPlan";
 import { DEFAULT_SETTINGS, ReliefEditor, type Mods, type Settings, type ToolId } from "./editor";
 import { icon } from "./icons";
 import {
@@ -106,6 +107,8 @@ export type SessionOptions = {
   onRelief: (imageId: string, relief: Relief, lite: boolean, heights?: Box | null, moving?: Moving | null, settle?: boolean) => void;
   /** The scene's items and its dpi now (for its old terrain zones). */
   scene: () => { items: Item[]; dpi: number };
+  /** Only the relief's doors changed: shown again, nothing else built. */
+  onDoors?: (imageId: string, relief: Relief) => void;
   /** What's picked changed: these shapes (their indexes) are, shown in the 3D. */
   onPick?: (shapes: number[]) => void;
   /** "Done" (or the X): editing over. */
@@ -509,7 +512,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       history();
     });
   };
-  const busy = () => !!(editor.xf || editor.drag || editor.brushing || editor.arrowEnd);
+  const busy = () => !!(editor.xf || editor.drag || editor.brushing || editor.arrowEnd || editor.doorGrab);
   /** The shapes named for good (see nameShapes): those of this relief (opened, or undone to) already seen. */
   let named: { relief: Relief; seen: WeakSet<Shape> } | null = null;
   const name = () => {
@@ -549,6 +552,20 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       snapReach: () => 10 / map.scale,
       toScreen: (x, y) => map.toScreen(x, y),
       saveSettings: () => keepJson(SETTINGS_KEY, editor.settings),
+      doorsChanged: (terrain) => {
+        map.redraw();
+        save();
+        if (terrain) {
+          // Where they cut through their walls (see doorCut.ts): built again, as any change.
+          o.onRelief(image.id, editor.relief, busy());
+        } else {
+          o.onDoors?.(image.id, editor.relief);
+        }
+      },
+      fogDoors: () => {
+        const { items, dpi } = o.scene();
+        return fogPlans(items, image, dpi, editor.data.w, editor.data.h).flatMap((plan) => plan.doors);
+      },
     },
     loadSettings()
   );
@@ -1033,7 +1050,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       },
     },
     pending() {
-      return !!document.querySelector(".re-menu") || !$("pop").hidden || editor.drawing !== null || editor.skinPick !== null;
+      return !!document.querySelector(".re-menu") || !$("pop").hidden || editor.drawing !== null || editor.skinPick !== null || editor.doorPick !== null;
     },
     key(event) {
       const target = event.target as HTMLElement;

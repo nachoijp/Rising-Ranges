@@ -1,5 +1,7 @@
 import type { TranslationKey } from "../../i18n/translate";
-import type { Group, Pt, ReliefData, Shape, StandEdge, UnderLook, WallLook } from "../types";
+import type { DoorLook, DoorOpens, Group, Pt, ReliefData, Shape, StandEdge, UnderLook, WallLook } from "../types";
+import { DOOR_H } from "../trace/doors";
+import { linkDoor } from "./doorsEdit";
 import { corners } from "../stand";
 import { HEIGHT_LIMIT, quarter } from "../relief";
 import { BRUSHES, type BrushKind } from "./brush";
@@ -88,6 +90,18 @@ export const TOOLS: (ToolDef | null)[] = [
     icon: "stamp",
     key: "t",
     keys: [["relief.key.clickPlace", "relief.key.clickPlaceDo"]],
+  },
+  null,
+  {
+    id: "door",
+    icon: "door",
+    key: "d",
+    keys: [
+      ["relief.key.doorDrag", "relief.key.doorDragDo"],
+      ["relief.key.shift", "relief.key.by15Do"],
+      ["relief.key.doorEnds", "relief.key.doorEndsDo"],
+      ["relief.key.zx", "relief.key.doorZxDo"],
+    ],
   },
   null,
   {
@@ -439,7 +453,7 @@ function readNumber(input: HTMLInputElement): number | null {
 }
 
 /** A number field: the relief changed as it's typed, a step to undo from its first change. */
-function bindNumber(el: HTMLElement, ed: ReliefEditor, key: string, get: () => number, set: (v: number) => void) {
+function bindNumber(el: HTMLElement, ed: ReliefEditor, key: string, get: () => number, set: (v: number) => void, changed = () => ed.changed()) {
   const input = el.querySelector<HTMLInputElement>(`[data-k="${key}"]`);
   if (!input) {
     return;
@@ -456,7 +470,7 @@ function bindNumber(el: HTMLElement, ed: ReliefEditor, key: string, get: () => n
     if (v !== null) {
       step.take();
       set(v);
-      ed.changed();
+      changed();
     }
   };
   // Left: what it is (within its limits, or as it was if it was left empty).
@@ -468,8 +482,8 @@ const stepper = (field: string, key: string, by: number, t: T, extra = "") =>
   `<span class="numbox">${field}<button type="button" class="ib sm" data-by="${-by}" data-for="${key}" ${tip(t("relief.less"))}>${icon("minus")}</button><button type="button" class="ib sm" data-by="${by}" data-for="${key}" ${tip(t("relief.plus"))}>${icon("plus")}</button>${extra ? `<span class="nsep"></span>${extra}` : ""}</span>`;
 
 /** A stepper's field, and its −/+ (each a step to undo, when it changes anything). */
-function bindStepper(el: HTMLElement, ed: ReliefEditor, key: string, get: () => number, set: (v: number) => void) {
-  bindNumber(el, ed, key, get, set);
+function bindStepper(el: HTMLElement, ed: ReliefEditor, key: string, get: () => number, set: (v: number) => void, changed = () => ed.changed()) {
+  bindNumber(el, ed, key, get, set, changed);
   const input = el.querySelector<HTMLInputElement>(`[data-k="${key}"]`);
   if (!input) {
     return;
@@ -488,7 +502,7 @@ function bindStepper(el: HTMLElement, ed: ReliefEditor, key: string, get: () => 
       ed.pushUndo();
       set(next);
       input.value = String(after);
-      ed.changed();
+      changed();
     };
   }
 }
@@ -614,6 +628,11 @@ function measureOf(ed: ReliefEditor, t: T, unit: (cells: number) => string): str
   if (ed.stroke) {
     return t("relief.measure.width", { d: length(ed.settings.shapeRadius * 2) });
   }
+  // A door drawn, or one of its ends dragged: how wide it is.
+  const door = ed.doorDraw ?? (ed.doorGrab?.moved && ed.doorGrab.end !== "body" ? ed.data.doors?.[ed.doorGrab.i] : null);
+  if (door) {
+    return t("relief.measure.width", { d: length(Math.hypot(door.b[0] - door.a[0], door.b[1] - door.a[1])) });
+  }
   const m = ed.xf ? ed.xfMap : null;
   if (ed.xf && m) {
     if (ed.xf.kind === "move") {
@@ -642,7 +661,7 @@ export function liveHint(ed: ReliefEditor, t: T, unit: (cells: number) => string
 /** What the keys do in what's being done right now (see liveHint). */
 function keysHint(ed: ReliefEditor, t: T): string {
   const pairs = (list: [TranslationKey, TranslationKey][]) => list.map(([k, v]) => `${t(k)}: ${t(v)}`).join(" · ");
-  if (ed.skinPick !== null) {
+  if (ed.skinPick !== null || ed.doorPick !== null) {
     return `${t("relief.shape.picking")} · ${t("relief.key.escape")}: ${t("relief.key.cancelDo")}`;
   }
   if (ed.shape) {
@@ -665,7 +684,7 @@ function keysHint(ed: ReliefEditor, t: T): string {
   if (ed.stroke) {
     return ed.settings.rollerMode === "cut" ? "" : pairs([["relief.key.alt", "relief.key.altCutsDo"]]);
   }
-  if (ed.knife) {
+  if (ed.knife || ed.doorDraw || (ed.doorGrab && ed.doorGrab.end !== "body")) {
     return pairs([["relief.key.shift", "relief.key.by15Do"]]);
   }
   if (ed.xf && ed.xf.kind !== "move") {
@@ -848,11 +867,14 @@ export function renderOptions(el: HTMLElement, ed: ReliefEditor, t: T) {
   const saved = () => ed.host.saveSettings();
   const unders: Record<string, Under> = {};
   // Taking a shape's texture from the map: that, whatever the tool, till it's done or let go.
-  if (ed.skinPick !== null) {
-    const s = ed.data.shapes[ed.skinPick];
-    el.innerHTML = `${icon("texture")}<span class="opt-label">${esc(t("relief.taking", { name: s ? nameOf(t, s, ed.skinPick) : "" }))}</span><button type="button" class="field" data-k="cancelSkin" ${tip(t("relief.key.cancelDo"), "", "Esc")}>${esc(t("relief.cancel"))}</button>`;
+  if (ed.skinPick !== null || ed.doorPick !== null) {
+    const s = ed.skinPick !== null ? ed.data.shapes[ed.skinPick] : undefined;
+    const door = ed.doorPick !== null ? ed.data.doors?.[ed.doorPick] : undefined;
+    const name = s ? nameOf(t, s, ed.skinPick!) : door ? door.name || t("relief.door.name", { n: ed.doorPick! + 1 }) : "";
+    el.innerHTML = `${icon("texture")}<span class="opt-label">${esc(t("relief.taking", { name }))}</span><button type="button" class="field" data-k="cancelSkin" ${tip(t("relief.key.cancelDo"), "", "Esc")}>${esc(t("relief.cancel"))}</button>`;
     el.querySelector<HTMLButtonElement>('[data-k="cancelSkin"]')!.onclick = () => {
       ed.skinPick = null;
+      ed.doorPick = null;
       ed.skinBox = null;
       ed.host.showProps();
       ed.host.redraw();
@@ -931,7 +953,7 @@ export function renderOptions(el: HTMLElement, ed: ReliefEditor, t: T) {
     bindUnders(el, unders, saved);
     return;
   }
-  if (ed.tool === "cut") {
+  if (ed.tool === "cut" || ed.tool === "door") {
     el.innerHTML = "";
     bindUnders(el, unders, saved);
     return;
@@ -985,6 +1007,8 @@ export function renderProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: n
   el.hidden = !ed.sel;
   if (!ed.sel) {
     el.innerHTML = "";
+  } else if (ed.sel.kind === "door") {
+    doorProps(el, ed, t, unit);
   } else if (ed.sel.kind === "shape") {
     if (ed.sel.more?.length) {
       comboProps(el, ed, t);
@@ -1037,6 +1061,143 @@ function pointProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
   input.onchange = () => (input.value = same || targets.every((x) => x.h === targets[0].h) ? String(targets[0].h) : "");
   bindSteps(el, ed);
   el.querySelector<HTMLButtonElement>('[data-k="del"]')!.onclick = () => ed.remove();
+}
+
+const DOOR_LOOKS: DoorLook[] = ["wood", "stone", "rubble", "earth", "flat", "blend", "stretch", "picture", "metal", "bars", "glass"];
+const DOOR_OPENS: DoorOpens[] = ["swing", "slide", "lift", "vanish"];
+
+/** A door picked: its fog door, its look, how it opens, its sizes, and whether it's secret. */
+function doorProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) => string) {
+  const i = (ed.sel as { i: number }).i;
+  const d = ed.data.doors?.[i];
+  if (!d) {
+    el.hidden = true;
+    return;
+  }
+  const opens = d.opens ?? "swing";
+  const h = d.h ?? DOOR_H;
+  const select = (key: string, label: TranslationKey, hint: TranslationKey, values: string[], value: string, text: (v: string) => string) =>
+    `<span class="l" ${tip(t(label), t(hint))}>${esc(t(label))}</span><select class="field" data-k="${key}" aria-label="${esc(t(label))}">${values.map((v) => `<option value="${v}" ${v === value ? "selected" : ""}>${esc(text(v))}</option>`).join("")}</select>`;
+  const linked = d.link ? t(d.link.kind === "obr" ? "relief.door.linkedObr" : "relief.door.linkedSmoke") : t("relief.door.unlinked");
+  const link = d.link
+    ? `<span class="muted grow">${esc(linked)}</span><button type="button" class="ib sm" data-k="unlink" ${tip(t("relief.door.unlink"), t("relief.door.unlinkHint"))}>${icon("close")}</button>`
+    : `<span class="muted grow">${esc(linked)}</span><button type="button" class="field" data-k="link" ${tip(t("relief.door.link"), t("relief.door.linkHint"))}>${esc(t("relief.door.link"))}</button>`;
+  el.innerHTML = `
+    <div class="head"><input class="name" data-k="name" maxlength="${NAME_MAX}" autocomplete="off" value="${esc(d.name ?? "")}" placeholder="${esc(t("relief.door.name", { n: i + 1 }))}" ${tip(t("relief.shape.nameHint"))} />${deleteButton(t)}</div>
+    <div class="rows">
+      <span class="l" ${tip(t("relief.door.fog"), t("relief.door.fogHint"))}>${esc(t("relief.door.fog"))}</span><span class="line">${link}</span>
+      ${ed.notice === "noFogDoor" ? `<span class="l"></span><p class="warn" role="status">${esc(t("relief.door.noFogDoor"))}</p>` : ""}
+      ${select("look", "relief.door.look", "relief.door.lookHint", DOOR_LOOKS, d.look ?? "wood", (v) => t(`relief.door.look.${v}` as TranslationKey))}
+      ${(d.look ?? "wood") === "picture" ? `<span class="l" ${tip(t("relief.door.picture"), t("relief.door.pictureHint"))}>${esc(t("relief.door.picture"))}</span><span class="line">${ed.doorPick === i ? `<span class="warn">${esc(t("relief.shape.picking"))}</span>` : `<button type="button" class="field" data-k="takePicture">${esc(t(d.picture ? "relief.shape.retake" : "relief.shape.take"))}</button>`}</span>` : ""}
+      ${select("opens", "relief.door.opens", "relief.door.opensHint", DOOR_OPENS, opens, (v) => t(`relief.door.opens.${v}` as TranslationKey))}
+      ${opens === "swing" ? `<span class="l" ${tip(t("relief.door.swing"), t("relief.door.swingHint"))}>${esc(t("relief.door.swing"))}</span><span class="line">${stepper(numField("swing", t("relief.door.swing"), 5, 180, true), "swing", 15, t)}<button type="button" class="ib sm" data-k="side" ${tip(t("relief.door.side"), t("relief.door.sideHint"))}>${icon("convert")}</button><button type="button" class="ib sm" data-k="hinge" ${tip(t("relief.door.hinge"), t("relief.door.hingeHint"))}>${icon("mirror")}</button></span>` : ""}
+      <span class="l" ${tip(t("relief.door.h"), t("relief.door.hHint"))}>${esc(t("relief.door.h"))}</span><span class="line">${stepper(numField("dh", t("relief.door.h"), 0.25, 20), "dh", 0.25, t)}<span class="muted">${esc(unit(h))}</span></span>
+      <span class="l" ${tip(t("relief.door.thick"), t("relief.door.thickHint"))}>${esc(t("relief.door.thick"))}</span><span class="line">${stepper(numField("thick", t("relief.door.thick"), 0.02, 1), "thick", 0.05, t)}</span>
+      <span class="l"></span><label class="check" ${tip(t("relief.door.secret"), t("relief.door.secretHint"))}><input type="checkbox" data-k="secret" ${d.secret ? "checked" : ""} /> ${esc(t("relief.door.secret"))}</label>
+    </div>`;
+  // Its leaf's look only: the terrain left as it is. Where it cuts through its wall (its doorway, secret): built again.
+  const changed = () => ed.doorsChanged(false);
+  const cuts = () => ed.doorsChanged(true);
+  const redo = (terrain = false) => {
+    ed.doorsChanged(terrain);
+    ed.host.showProps();
+  };
+  const q = <E extends HTMLElement>(key: string) => el.querySelector<E>(`[data-k="${key}"]`);
+  const name = q<HTMLInputElement>("name")!;
+  const naming = undoOnce(ed);
+  name.onfocus = naming.arm;
+  name.oninput = () => {
+    naming.take();
+    d.name = name.value.trim() || undefined;
+    changed();
+  };
+  name.onkeydown = (event) => {
+    if (event.key === "Enter" || event.key === "Escape") {
+      name.blur();
+    }
+  };
+  const round = (v: number, by: number) => Math.round(v / by) * by;
+  bindStepper(el, ed, "swing", () => d.swing, (v) => (d.swing = Math.max(5, Math.min(180, Math.round(v)))), changed);
+  bindStepper(el, ed, "dh", () => d.h ?? DOOR_H, (v) => (d.h = v === DOOR_H ? undefined : round(v, 0.05)), cuts);
+  bindStepper(el, ed, "thick", () => d.thick ?? 0.12, (v) => (d.thick = round(v, 0.01)), changed);
+  for (const [key, set] of [
+    ["look", (v: string) => {
+      d.look = v === "wood" ? undefined : (v as DoorLook);
+      // Its picture: taken now, if it has none yet.
+      if (v === "picture" && !d.picture) {
+        ed.doorPick = i;
+      }
+    }],
+    ["opens", (v: string) => (d.opens = v === "swing" ? undefined : (v as DoorOpens))],
+  ] as const) {
+    const box = q<HTMLSelectElement>(key)!;
+    box.onchange = () => {
+      ed.pushUndo();
+      set(box.value);
+      redo();
+    };
+  }
+  const takePicture = q<HTMLButtonElement>("takePicture");
+  if (takePicture) {
+    takePicture.onclick = () => {
+      ed.doorPick = i;
+      ed.host.showProps();
+      ed.host.redraw();
+    };
+  }
+  // The hinge at its other end: it still opens to the same side of the wall (its normal turns with it).
+  const hinge = q<HTMLButtonElement>("hinge");
+  if (hinge) {
+    hinge.onclick = () => {
+      ed.pushUndo();
+      [d.a, d.b] = [d.b, d.a];
+      d.side = d.side === 1 ? -1 : 1;
+      redo();
+    };
+  }
+  const side = q<HTMLButtonElement>("side");
+  if (side) {
+    side.onclick = () => {
+      ed.pushUndo();
+      d.side = d.side === 1 ? -1 : 1;
+      redo();
+    };
+  }
+  for (const [key, set] of [
+    ["secret", (on: boolean) => (d.secret = on ? true : undefined)],
+  ] as const) {
+    const check = q<HTMLInputElement>(key)!;
+    check.onchange = () => {
+      ed.pushUndo();
+      set(check.checked);
+      redo(true);
+    };
+  }
+  const linkButton = q<HTMLButtonElement>("link");
+  if (linkButton) {
+    linkButton.onclick = () => {
+      // Tried on a copy: a step to undo only if it's linked.
+      const copy = { ...d };
+      if (linkDoor(ed, copy)) {
+        ed.pushUndo();
+        Object.assign(d, { a: copy.a, b: copy.b, link: copy.link });
+        ed.notice = null;
+        redo(true);
+      } else {
+        ed.notice = "noFogDoor";
+        ed.host.showProps();
+      }
+    };
+  }
+  const unlink = q<HTMLButtonElement>("unlink");
+  if (unlink) {
+    unlink.onclick = () => {
+      ed.pushUndo();
+      delete d.link;
+      redo(true);
+    };
+  }
+  q<HTMLButtonElement>("del")!.onclick = () => ed.remove();
 }
 
 /** Several shapes picked: what they can make together. */

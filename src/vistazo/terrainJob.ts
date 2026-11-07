@@ -28,7 +28,7 @@ export type TerrainMessage =
   | {
       kind: "terrain";
       request: number;
-      recipe: Omit<SceneRecipe, "reliefs"> & { reliefKey: string; surfaced: boolean };
+      recipe: Omit<SceneRecipe, "reliefs"> & { reliefKey: string; surfaced: boolean; shutDoors?: string[] };
       /** Each map image's relief by version; the data of those the worker hasn't been sent yet. */
       reliefs: [string, number][];
       reliefData: [string, number, ReliefData][];
@@ -147,7 +147,7 @@ export class TerrainJobs {
     if (this.dead) {
       return Promise.resolve({ request, failed: "the worker stopped" });
     }
-    const message: TerrainMessage = { kind: "terrain", request, recipe: { ...rest, reliefKey: reliefs.key, surfaced: !!reliefs.surfaced }, reliefs: list, reliefData: data, base, lite, context: plain, colorsKey };
+    const message: TerrainMessage = { kind: "terrain", request, recipe: { ...rest, reliefKey: reliefs.key, surfaced: !!reliefs.surfaced, shutDoors: reliefs.shutDoors }, reliefs: list, reliefData: data, base, lite, context: plain, colorsKey };
     if (this.busy) {
       // A queued one's reliefs that this one doesn't send again (sent then) go with it.
       if (this.queued?.kind === "terrain") {

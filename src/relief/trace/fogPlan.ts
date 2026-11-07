@@ -1,7 +1,7 @@
 import { isCurve, type Image, type Item } from "@owlbear-rodeo/sdk";
 import { anchorOf, sceneToCell } from "../anchor";
 import { itemOutline } from "../../terrain/terrain";
-import type { Pt } from "../types";
+import type { DoorLink, Pt } from "../types";
 
 // The plan of a map's walls read from the fog the room already has, in the
 // relief's cells (see trace/uvtt.ts, which makes the relief of it):
@@ -21,9 +21,16 @@ const SMOKE = "com.battle-system.smoke/";
 const FORECAST = "rodeo.owlbear.forecast-item";
 const DOORS = "rodeo.owlbear.dynamic-fog/doors";
 
-/** A plan of lines (cells), and whether its edges may be open (to be told by the picture). */
-/** `rooms`: outlines that are rooms whatever the picture shows (Owlbear's Forecast's). */
-export type FogPlan = { source: "smoke" | "obr"; walls: Pt[][]; portals: [Pt, Pt][]; openings: boolean; rooms: Pt[][] };
+export type { PlanDoor } from "./doors";
+import type { PlanDoor } from "./doors";
+
+/**
+ * A plan of lines (cells), and whether its edges may be open (to be told by
+ * the picture); `rooms`: outlines that are rooms whatever the picture shows
+ * (Owlbear's Forecast's); `doors`: its doors, each whole (the portals are
+ * their pieces, as lines).
+ */
+export type FogPlan = { source: "smoke" | "obr"; walls: Pt[][]; portals: [Pt, Pt][]; openings: boolean; rooms: Pt[][]; doors: PlanDoor[] };
 
 /** A point of the item's own coordinates where it's drawn: position + R(rotation)·(scale·local). */
 function toScene(item: Item, p: { x: number; y: number }): [number, number] {
@@ -41,22 +48,25 @@ export function fogPlans(items: Item[], image: Image, dpi: number, w: number, h:
   // Smoke & Spectre!'s lines.
   const walls: Pt[][] = [];
   const portals: [Pt, Pt][] = [];
+  const smokeDoors: PlanDoor[] = [];
   for (const item of items) {
     if (!isCurve(item) || item.metadata[`${SMOKE}isVisionLine`] !== true || item.points.length < 2) continue;
     const line = item.points.map((p) => cell(toScene(item, p)));
     if (item.style.closed) line.push(line[0]);
     if (item.metadata[`${SMOKE}isDoor`] === true) {
       for (let i = 1; i < line.length; i++) portals.push([line[i - 1], line[i]]);
+      smokeDoors.push({ a: line[0], b: line[line.length - 1], link: { kind: "smoke", item: item.id } });
     } else {
       walls.push(line);
     }
   }
-  if (walls.length) plans.push({ source: "smoke", walls, portals, openings: false, rooms: [] });
+  if (walls.length) plans.push({ source: "smoke", walls, portals, openings: false, rooms: [], doors: smokeDoors });
 
   // Owlbear's fog shapes: every edge of their outlines (round rooms' made arcs).
   const rings: Pt[][] = [];
   const forecast: Pt[][] = [];
   const doors: [Pt, Pt][] = [];
+  const fogDoors: PlanDoor[] = [];
   for (const item of items) {
     if (item.layer !== "FOG" || !("style" in item)) continue;
     const outline = itemOutline(item);
@@ -72,7 +82,9 @@ export function fogPlans(items: Item[], image: Image, dpi: number, w: number, h:
       const ring = outline[door.index];
       if (!ring) continue;
       const line = stretchOf(ring, door.from * own, door.to * own).map(cell);
+      if (line.length < 2) continue;
       for (let i = 1; i < line.length; i++) doors.push([line[i - 1], line[i]]);
+      fogDoors.push({ a: line[0], b: line[line.length - 1], link: { kind: "obr", item: item.id, index: door.at } });
     }
   }
   const circles = rings.map(roundFit).filter((c): c is Circle => !!c);
@@ -102,24 +114,35 @@ export function fogPlans(items: Item[], image: Image, dpi: number, w: number, h:
       if (Math.hypot(b[0] - a[0], b[1] - a[1]) > 1e-6 && !onBorder(a, b)) edges.push(arcOf(a, b, circles));
     }
   }
-  if (edges.length) plans.push({ source: "obr", walls: edges, portals: doors, openings: true, rooms: forecast });
+  if (edges.length) plans.push({ source: "obr", walls: edges, portals: doors, openings: true, rooms: forecast, doors: fogDoors });
   return plans;
 }
 
 // ---------- Doors ----------
 
-/** Owlbear's doors on a fog shape (its metadata), as stretches of one of its outlines: from, to (px along it). */
-function doorsOf(meta: unknown): { index: number; from: number; to: number }[] {
+/** Owlbear's doors on a fog shape (its metadata), as stretches of one of its outlines (`index`): from, to (px along it); `at`: which door it is. */
+function doorsOf(meta: unknown): { at: number; index: number; from: number; to: number }[] {
   if (!Array.isArray(meta)) return [];
-  const out: { index: number; from: number; to: number }[] = [];
-  for (const d of meta as { start?: { distance?: unknown; index?: unknown }; end?: { distance?: unknown } }[]) {
+  const out: { at: number; index: number; from: number; to: number }[] = [];
+  (meta as { start?: { distance?: unknown; index?: unknown }; end?: { distance?: unknown } }[]).forEach((d, at) => {
     const a = d?.start?.distance, b = d?.end?.distance, index = d?.start?.index ?? 0;
     if (typeof a === "number" && typeof b === "number" && typeof index === "number" && Number.isFinite(a) && Number.isFinite(b)) {
-      out.push({ index, from: Math.min(a, b), to: Math.max(a, b) });
+      out.push({ at, index, from: Math.min(a, b), to: Math.max(a, b) });
     }
-  }
+  });
   return out;
 }
+
+/** Whether a fog door is open: Owlbear's (its fog shape's doors) or Smoke & Spectre!'s (its line). Undefined: it isn't there. */
+export function fogDoorOpen(link: DoorLink, items: Item[]): boolean | undefined {
+  const item = items.find((i) => i.id === link.item);
+  if (!item) return undefined;
+  if (link.kind === "smoke") return item.metadata[`${SMOKE}doorOpen`] === true;
+  const doors = item.metadata[DOORS];
+  if (!Array.isArray(doors) || !doors[link.index]) return undefined;
+  return (doors[link.index] as { open?: unknown }).open === true;
+}
+
 
 /** The stretch of a closed outline from `from` to `to` along it (from its first corner; past its length, round again). */
 function stretchOf(ring: [number, number][], from: number, to: number): [number, number][] {

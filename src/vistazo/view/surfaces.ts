@@ -137,11 +137,12 @@ function splitAt(corners: number[], tris: Uint32Array, x: number, y: number): Ui
 }
 
 /** Texture coordinates for view-unit points `xy` (x, y, z triples), from where the map's picture lies (`box`, scene px). */
-export function uvsOver(xy: ArrayLike<number>, count: number, u: number, box: UvBox): Float32Array {
+export function uvsOver(xy: ArrayLike<number>, count: number, u: number, box: UvBox, remap?: (x: number, y: number) => [number, number]): Float32Array {
   const uv = new Float32Array(count * 2);
   for (let i = 0; i < count; i++) {
-    uv[i * 2] = (xy[i * 3] / u - box.x0) / box.w;
-    uv[i * 2 + 1] = 1 - (xy[i * 3 + 1] / u - box.y0) / box.h;
+    const [x, y] = remap ? remap(xy[i * 3] / u, xy[i * 3 + 1] / u) : [xy[i * 3] / u, xy[i * 3 + 1] / u];
+    uv[i * 2] = (x - box.x0) / box.w;
+    uv[i * 2 + 1] = 1 - (y - box.y0) / box.h;
   }
   return uv;
 }
@@ -156,7 +157,17 @@ export type PieceBuffers =
   | { kind: "stand"; surface: Surface; roofUv: Float32Array; roofColor: [number, number, number]; roof: WallStyle; z: number; card: { position: Float32Array; uv: Float32Array; map: Float32Array } | null };
 
 /** What a piece's top is worked out with (see pieceBuffers): view units per scene px and per height unit, the map's picture's box (uvs: the scene's without one; `texture`: none without one), its colours, the fine surfaces' cache; `coarse`: cut to a cell (a drag's). */
-export type PieceContext = { u: number; k: number; uvBox: UvBox; texture: UvBox | null; colors: MapColors | null; fine: FineSurfaces; coarse?: boolean };
+export type PieceContext = {
+  u: number;
+  k: number;
+  uvBox: UvBox;
+  texture: UvBox | null;
+  colors: MapColors | null;
+  fine: FineSurfaces;
+  coarse?: boolean;
+  /** Where the map's read for a scene point (see VistazoScene.mapAt); none: where it is. */
+  remap?: (x: number, y: number) => [number, number];
+};
 
 export function pieceBuffers(piece: Piece, c: PieceContext): PieceBuffers {
   const { u, k } = c;
@@ -166,6 +177,7 @@ export function pieceBuffers(piece: Piece, c: PieceContext): PieceBuffers {
   const position = surface.position;
   const count = position.length / 3;
   if (!piece.stand) {
+    // Not read elsewhere: a doorway's floor is its threshold, as the map has it.
     const uv = uvsOver(position, count, u, c.uvBox);
     if (piece.surface) {
       // A ramp: each corner at its own height (a plane: the triangles stay flat).
@@ -188,7 +200,7 @@ export function pieceBuffers(piece: Piece, c: PieceContext): PieceBuffers {
       y1 = Math.max(y1, y);
     }
   }
-  const rgb = c.colors ? colorAt(c.colors, (x0 + x1) / 2, (y0 + y1) / 2) : STONE;
+  const rgb = c.colors ? colorAt(c.colors, ...(c.remap ? c.remap((x0 + x1) / 2, (y0 + y1) / 2) : ([(x0 + x1) / 2, (y0 + y1) / 2] as [number, number]))) : STONE;
   // Its top: the walls' pattern (stone, earth or wood; stone when they take theirs from the map),
   // tinted with the map's colour there, laid out flat a tile every two cells.
   const style = piece.walls ?? WALL_STYLE;

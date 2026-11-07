@@ -1,4 +1,6 @@
 import OBR, { type GridType, type Image, type InteractionManager, type Item, type Permission, type Theme, type Vector2 } from "@owlbear-rodeo/sdk";
+import { sceneDoors } from "./doors";
+import { doorOpening } from "../relief/doorCut";
 import { languageFromMetadata, type Language } from "../i18n/language";
 import { translate, type TranslationKey } from "../i18n/translate";
 import { formatDistance } from "../util/flattenGridScale";
@@ -2149,6 +2151,7 @@ async function start() {
       if (options.playerView) {
         lastFog = fogNow();
         view.setFog(lastFog);
+        showDoors();
       }
     });
   };
@@ -2446,6 +2449,75 @@ async function start() {
   let localSight = sightKey(localItems);
   let fogKey = "";
   let lastFog: ReturnType<typeof fogOver> | null = null;
+  /**
+   * The player view's doors the fog leaves as wall (see scene.ts Reliefs.shutDoors): shut, with the fog
+   * on a side of them (not both: then none's drawn at all). Each with the side that's clear (1: its
+   * normal's), for its board (see showDoors).
+   */
+  const fogShut = new Map<string, 1 | -1>();
+  const readFogShut = () => {
+    fogShut.clear();
+    const fogAt = options.playerView && lastFog ? lastFog.at : null;
+    if (!fogAt) {
+      reliefs.shutDoors = undefined;
+      return;
+    }
+    const reach = dpi * 0.5;
+    for (const d of sceneDoors(items, reliefs.byImage, dpi)) {
+      if (d.open) {
+        continue;
+      }
+      const len = Math.hypot(d.b.x - d.a.x, d.b.y - d.a.y) || 1;
+      const [nx, ny] = [-(d.b.y - d.a.y) / len, (d.b.x - d.a.x) / len];
+      const [mx, my] = [(d.a.x + d.b.x) / 2, (d.a.y + d.b.y) / 2];
+      const [plus, minus] = [fogAt(mx + nx * reach, my + ny * reach), fogAt(mx - nx * reach, my - ny * reach)];
+      if (plus !== minus) {
+        fogShut.set(d.key, plus ? -1 : 1);
+      }
+    }
+    reliefs.shutDoors = [...fogShut.keys()].sort();
+  };
+  /**
+   * The doors, as open as their fog doors. To a player, none under the fog,
+   * and a secret one, shut, none: it's the wall (not cut, see doorCut.ts).
+   * One the fog leaves as wall (see fogShut): a board against the wall's
+   * face on its clear side.
+   */
+  const showDoors = () => {
+    if (!scene) {
+      return;
+    }
+    const player = options.playerView;
+    const fogAt = player && lastFog ? lastFog.at : null;
+    // A door stands on the fog's edge (it's in a wall): hidden only if it's under the fog on both its sides.
+    const reach = scene.dpi * 0.5;
+    const hidden = (d: { a: { x: number; y: number }; b: { x: number; y: number } }) => {
+      if (!fogAt) {
+        return false;
+      }
+      const len = Math.hypot(d.b.x - d.a.x, d.b.y - d.a.y) || 1;
+      const [nx, ny] = [-(d.b.y - d.a.y) / len, (d.b.x - d.a.x) / len];
+      const [mx, my] = [(d.a.x + d.b.x) / 2, (d.a.y + d.b.y) / 2];
+      return fogAt(mx + nx * reach, my + ny * reach) && fogAt(mx - nx * reach, my - ny * reach);
+    };
+    view.setDoors(
+      sceneDoors(items, reliefs.byImage, scene.dpi)
+        .filter((d) => !hidden(d) && !(player && d.secret && !d.open))
+        .map((d) => {
+          const side = player ? fogShut.get(d.key) : undefined;
+          if (!side) {
+            return d;
+          }
+          // Its wall's face on the clear side, as far as the relief has it.
+          const [image, index] = [d.key.slice(0, d.key.lastIndexOf(":")), Number(d.key.slice(d.key.lastIndexOf(":") + 1))];
+          const relief = reliefs.byImage.get(image);
+          const door = relief?.data.doors?.[index];
+          const opening = relief && door ? doorOpening(relief, door) : null;
+          const face = opening ? (side === 1 ? opening.doorway.p : opening.doorway.m) : 0.15;
+          return { ...d, panel: side * face * d.cell };
+        })
+    );
+  };
   OBR.scene.fog.onChange((fog) => {
     fogFilled = fog.filled;
     fogColor = fog.style.color;
@@ -2520,6 +2592,8 @@ async function start() {
           view.setFog(lastFog);
         }
       }
+      // The doors the fog leaves as wall (see readFogShut): the terrain built so.
+      readFogShut();
       // The fog doesn't touch the terrain: it's drawn whole, and the view leaves out what's under the fog
       // as it draws (see VistazoView.setFog), live, a light moving with a dragged token too.
       const t0 = stamp();
@@ -2578,6 +2652,7 @@ async function start() {
         view.settleNext();
       }
       time("vistazo.setScene", () => view.setScene(scene!));
+      showDoors();
       showDistances();
     } catch (error) {
       console.error("Rising Ranges: 3D Glance couldn't draw the scene", error);
@@ -2704,6 +2779,10 @@ async function start() {
       root: $("reMap"),
       map: $<HTMLCanvasElement>("reMapCanvas"),
       unit: (h) => formatDistance(scale, Math.abs(h)),
+      onDoors: (image, relief) => {
+        reliefs.byImage.set(image, relief);
+        showDoors();
+      },
       onRelief: (image, relief, lite, heights, moving, settle) => {
         reliefs.byImage.set(image, relief);
         // A brush let go, where it can be drawn so: the scene kept, built again from it (see settles).

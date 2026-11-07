@@ -16,6 +16,8 @@ export type WallContext = {
   levels: boolean;
   box: { x0: number; y0: number; w: number; h: number } | null;
   colors: MapColors | null;
+  /** Where the map's read for a scene point (see VistazoScene.mapAt); none: where it is. */
+  remap?: (x: number, y: number) => [number, number];
 };
 
 /** One mesh's walls (inside or at the map's edge, of one style): their faces' corners, colours and texture coordinates, and their level lines. */
@@ -35,9 +37,11 @@ export function wallBuffers(list: Wall[], c: WallContext): WallBuffers[] {
   // The fold's strip: how far into the map it reaches, in view units.
   const band = VIEW_CELL * 0.75;
   const styleOf = (wall: Wall): WallStyle | "skin" => (wall.skin && c.box ? "skin" : (wall.style ?? WALL_STYLE));
+  const read = (x: number, y: number): [number, number] => (c.remap ? c.remap(x, y) : [x, y]);
   const uvAt = (x: number, y: number): [number, number] => {
     const t = c.box!;
-    return [(x / u - t.x0) / t.w, 1 - (y / u - t.y0) / t.h];
+    const [sx, sy] = read(x / u, y / u);
+    return [(sx - t.x0) / t.w, 1 - (sy - t.y0) / t.h];
   };
   const styles = new Set(list.map(styleOf));
   const out: WallBuffers[] = [];
@@ -55,7 +59,7 @@ export function wallBuffers(list: Wall[], c: WallContext): WallBuffers[] {
     for (const wall of walls) {
       const s = 1 - c.shade * (1 - (0.45 + 0.55 * wall.lit));
       // Taken from the map, its colour is in the texture: the vertices only shade it.
-      const rgb = fromMap ? [255, 255, 255] : c.colors ? colorAt(c.colors, wall.mx, wall.my) : STONE;
+      const rgb = fromMap ? [255, 255, 255] : c.colors ? colorAt(c.colors, ...read(wall.mx, wall.my)) : STONE;
       const top = rgb.map((v) => (v / 255) * s * 0.92);
       const bottom = top.map((v) => v * 0.62);
       const [ax, ay, bx, by] = [wall.ax * u, wall.ay * u, wall.bx * u, wall.by * u];
@@ -87,7 +91,7 @@ export function wallBuffers(list: Wall[], c: WallContext): WallBuffers[] {
         // Blended from the map: its colours along it (every half cell), the higher side's (a little
         // into it) at the top, running into the lower side's at the foot; its grain in its material.
         const reach = 0.3 * (VIEW_CELL / u);
-        const tone = (x: number, y: number, shade: number) => (c.colors ? softColorAt(c.colors, x, y) : rgb).map((v) => (v / 255) * s * shade);
+        const tone = (x: number, y: number, shade: number) => (c.colors ? softColorAt(c.colors, ...read(x, y)) : rgb).map((v) => (v / 255) * s * shade);
         const point = (f: number) => {
           const [x, y] = [wall.ax + (wall.bx - wall.ax) * f, wall.ay + (wall.by - wall.ay) * f];
           return {

@@ -135,7 +135,8 @@ export function openGenerate(o: { root: HTMLElement; t: T; editor: ReliefEditor;
     // The plan stretched onto this map, if its size differs.
     const { w, h } = editor.data;
     const st = (p: Pt): Pt => (read ? [(p[0] * w) / read.w, (p[1] * h) / read.h] : p);
-    uvtt = read && read.walls.length ? { source: "smoke", walls: read.walls.map((l) => l.map(st)), portals: read.portals.map(([a, b]) => [st(a), st(b)] as [Pt, Pt]), openings: false, rooms: [] } : null;
+    const portals = read ? read.portals.map(([a, b]) => [st(a), st(b)] as [Pt, Pt]) : [];
+    uvtt = read && read.walls.length ? { source: "smoke", walls: read.walls.map((l) => l.map(st)), portals, openings: false, rooms: [], doors: portals.map(([a, b]) => ({ a, b })) } : null;
     $("planName").textContent = uvtt ? chosen.name : t("relief.gen.planBad");
     ready();
   };
@@ -192,7 +193,7 @@ export function openGenerate(o: { root: HTMLElement; t: T; editor: ReliefEditor;
     };
     const request: GenRequest = {
       pic,
-      plan: { walls: plan.walls, portals: plan.portals, openings: plan.openings, rooms: plan.rooms },
+      plan: { walls: plan.walls, portals: plan.portals, openings: plan.openings, rooms: plan.rooms, doors: plan.doors },
       base: replace ? emptyRelief(w, h) : editor.data,
       names,
       unit,
@@ -218,6 +219,7 @@ export function openGenerate(o: { root: HTMLElement; t: T; editor: ReliefEditor;
           ["walls", c.walls + c.hedges],
           ["objects", c.objects],
           ["solids", c.solids],
+          ["doors", c.doors],
           ["stairs", c.stairs],
         ] as const
       )

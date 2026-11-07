@@ -1,4 +1,5 @@
 import { planInSquares, uvttRelief, type Picture, type UvttCounts } from "../trace/uvtt";
+import { placeDoors } from "../trace/doors";
 import type { FogPlan } from "../trace/fogPlan";
 import type { ReliefData } from "../types";
 
@@ -14,7 +15,7 @@ export type GenTemplates = Record<"group" | "rooms" | "walls" | "hedges" | "obje
 
 export type GenRequest = {
   pic: Picture;
-  plan: Pick<FogPlan, "walls" | "portals" | "openings" | "rooms">;
+  plan: Pick<FogPlan, "walls" | "portals" | "openings" | "rooms" | "doors">;
   base: ReliefData;
   names: GenTemplates;
   /** The scene's squares a cell of the relief takes (a map scaled up: more than one); the work is done in squares. */
@@ -39,7 +40,7 @@ self.onmessage = (event: MessageEvent<GenRequest>) => {
       object: fill(t.object),
       stair: fill(t.stair),
       solid: fill(t.solid),
-    }, { wallH: options.wallH });
+    }, { wallH: options.wallH, doors: placeDoors(lines.doors, plan.rooms) });
     post({ kind: "done", data, counts });
   } catch (error) {
     post({ kind: "error", message: error instanceof Error ? error.message : String(error) });

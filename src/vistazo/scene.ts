@@ -13,9 +13,11 @@ import { weatherOf, type Weather } from "./weather";
 import { isTokenHeightMarker, tokenHeightsFromMarkers } from "../tokenHeight/markers";
 import { onFloor } from "../tokenHeight/lift";
 import { getTokenRadius } from "../render/iconAnchor";
-import { anchorOf } from "../relief/anchor";
+import { anchorOf, cellToScene, sceneToCell } from "../relief/anchor";
 import type { Relief } from "../relief/relief";
-import type { UnderLook } from "../relief/types";
+import type { Door, UnderLook } from "../relief/types";
+import { cutDoorsKept, doorwayTop, doorwaysOf, readAt } from "../relief/doorCut";
+import { fogDoorOpen } from "../relief/trace/fogPlan";
 import { reliefTerrain } from "../relief/vistazo";
 import { stackReliefs } from "../relief/stack";
 import { time } from "../timing";
@@ -173,6 +175,14 @@ type Terrain = {
   unfilled?: MultiPolygon[];
   /** Each map image's (with a relief) first shape's number in the scene (Piece.si, Bridge.si): its own shape i is that + i. */
   firstShape: Record<string, number>;
+  /**
+   * Where the map's colours and picture are read for a scene point: in a
+   * doorway cut through a wall, along the wall where it runs on (see
+   * doorCut.ts Doorway); none, where it is.
+   */
+  mapAt?: (x: number, y: number) => [number, number];
+  /** The top of the wall a doorway is cut through, at a scene point in one (grid units): none elsewhere. As the wall stood, for what goes by it (the fog's curtains). */
+  doorwayTop?: (x: number, y: number) => number | undefined;
 };
 
 /** How far apart each image's shapes are numbered in the scene (see Terrain.firstShape): more than any relief has. */
@@ -290,14 +300,19 @@ export function buildScene(
   const altitude = settings.enableAltitude ?? true;
   // Characters, and mounts with them (a horse is a creature too).
   const tokenItems = items.filter((item): item is Image => isImage(item) && (item.layer === "CHARACTER" || item.layer === "MOUNT"));
-  const key = terrainKeyOf(items, tokenItems, dpi, terrainOff, `${reliefs.key}${reliefs.surfaced ? "+surfaced" : ""}`);
+  // A secret door shut is the wall to a player: not cut (see doorCut.ts), till its fog door opens.
+  // And one by the fog, shut (see Reliefs.shutDoors).
+  const byFog = new Set(playerView ? (reliefs.shutDoors ?? []) : []);
+  const shut = (door: Door, i: number, image: string) => playerView && ((door.secret === true && !(door.link && fogDoorOpen(door.link, items))) || byFog.has(`${image}:${i}`));
+  const shutKey = playerView ? [...reliefs.byImage].map(([image, r]) => (r.data.doors ?? []).map((d, i) => (shut(d, i, image) ? 1 : 0)).join("")).join(",") : "";
+  const key = terrainKeyOf(items, tokenItems, dpi, terrainOff, `${reliefs.key}${reliefs.surfaced ? "+surfaced" : ""}|${shutKey}`);
   const reused = !!previous && previous.terrainKey === key;
   if (reused && !terrainOff) {
     // The same terrain, but a relief changed where it is (a brush let go): those over it follow (see stack.ts).
     const maps = items.filter((item): item is Image => isImage(item) && item.layer === "MAP" && item.visible && reliefs.byImage.has(item.id)).sort((a, b) => a.zIndex - b.zIndex);
     stackReliefs(maps.map((item) => ({ id: item.id, relief: reliefs.byImage.get(item.id)!, anchor: anchorOf(item) })), dpi);
   }
-  const terrain = reused ? previous! : buildTerrain(key, items, tokenItems, dpi, terrainOff, reliefs.byImage, !!reliefs.surfaced);
+  const terrain = reused ? previous! : buildTerrain(key, items, tokenItems, dpi, terrainOff, reliefs.byImage, !!reliefs.surfaced, shut);
   const { measuredAt } = terrain;
 
   const bandSet = onGrid(bandSetFromMetadata(metadata), gridType);
@@ -355,6 +370,8 @@ export function buildScene(
     bridges: terrain.bridges,
     unfilled: terrain.unfilled,
     firstShape: terrain.firstShape,
+    mapAt: terrain.mapAt,
+    doorwayTop: terrain.doorwayTop,
     dpi,
     scale,
     squareGrid: gridType === "SQUARE",
@@ -377,6 +394,11 @@ export function buildScene(
 export type Reliefs = {
   byImage: Map<string, Relief>;
   key: string;
+  /**
+   * The player view's doors left as wall (not cut, see doorCut.ts), "image:index": shut, with the fog on
+   * a side of them (its picture can't cut so fine a thing cleanly on its edge). See vistazo/main.ts.
+   */
+  shutDoors?: string[];
   /** Being edited: every piece with its surface (see reliefTerrain). */
   surfaced?: boolean;
 };
@@ -393,7 +415,8 @@ function buildTerrain(
   dpi: number,
   terrainOff: boolean,
   reliefs: Map<string, Relief>,
-  surfaced: boolean
+  surfaced: boolean,
+  shut: (door: Door, i: number, image: string) => boolean = () => false
 ): Terrain {
   const mapItems = items.filter((item): item is Image => isImage(item) && item.layer === "MAP" && item.visible).sort((a, b) => a.zIndex - b.zIndex);
   const maps = mapItems.map((item) => mapImage(item, dpi));
@@ -417,7 +440,45 @@ function buildTerrain(
   const withRelief = terrainOff ? [] : mapItems.filter((item) => reliefs.has(item.id));
   // Each over those under it (see stack.ts): a prop's relief stands on the map's.
   stackReliefs(withRelief.map((item) => ({ id: item.id, relief: reliefs.get(item.id)!, anchor: anchorOf(item) })), dpi);
-  const parts = withRelief.map((item) => time("scene.reliefTerrain", () => reliefTerrain(reliefs.get(item.id)!, anchorOf(item), dpi, surfaced)));
+  // Its doors cut through its walls (see doorCut.ts), the map read past their doorways.
+  const cuts = withRelief.map((item) => cutDoorsKept(reliefs.get(item.id)!, (door, i) => shut(door, i, item.id)));
+  const parts = withRelief.map((item, k) => time("scene.reliefTerrain", () => reliefTerrain(cuts[k], anchorOf(item), dpi, surfaced)));
+  const reads = withRelief
+    .map((item, k) => ({ anchor: anchorOf(item), ways: doorwaysOf(cuts[k]) }))
+    .filter((r) => r.ways.length > 0)
+    .map((r) => {
+      // Their box (scene px), a cell more: most points aren't near any.
+      const pts = r.ways.flatMap((w) => [w.o, [w.o[0] + w.u[0] * w.len, w.o[1] + w.u[1] * w.len] as [number, number]]).map(([x, y]) => cellToScene(r.anchor, dpi, x, y));
+      const pad = dpi * 2;
+      return { ...r, box: [Math.min(...pts.map((p) => p.x)) - pad, Math.min(...pts.map((p) => p.y)) - pad, Math.max(...pts.map((p) => p.x)) + pad, Math.max(...pts.map((p) => p.y)) + pad] };
+    });
+  const mapAt =
+    reads.length > 0
+      ? (x: number, y: number): [number, number] => {
+          for (const r of reads) {
+            if (x < r.box[0] || y < r.box[1] || x > r.box[2] || y > r.box[3]) continue;
+            const [cx, cy] = sceneToCell(r.anchor, dpi, x, y);
+            const [rx, ry] = readAt(r.ways, cx, cy);
+            if (rx !== cx || ry !== cy) {
+              const p = cellToScene(r.anchor, dpi, rx, ry);
+              return [p.x, p.y];
+            }
+          }
+          return [x, y];
+        }
+      : undefined;
+  const doorwayTopAt =
+    reads.length > 0
+      ? (x: number, y: number): number | undefined => {
+          for (const r of reads) {
+            if (x < r.box[0] || y < r.box[1] || x > r.box[2] || y > r.box[3]) continue;
+            const [cx, cy] = sceneToCell(r.anchor, dpi, x, y);
+            const top = doorwayTop(r.ways, cx, cy);
+            if (top !== undefined) return top;
+          }
+          return undefined;
+        }
+      : undefined;
   // Each image's shapes numbered apart (the first's as they are): two images' shape 4 aren't the same one.
   const firstShape: Record<string, number> = {};
   parts.forEach((part, k) => {
@@ -524,5 +585,7 @@ function buildTerrain(
     bridges: parts.flatMap((part) => part.bridges),
     unfilled: parts.flatMap((part) => part.unfilled),
     firstShape,
+    mapAt,
+    doorwayTop: doorwayTopAt,
   };
 }

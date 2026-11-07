@@ -30,20 +30,24 @@ import {
 } from "./shapes";
 import { placePrefab, type PrefabId } from "./prefabs";
 import { groupPicked, tidyGroups, ungroup } from "./groups";
+import { addDoor, doorAt, doorEndAt, doorPoint, doorsOf, duplicateDoor, linkDoor, removeDoor } from "./doorsEdit";
+import { DOOR_H, type PlanDoor } from "../trace/doors";
 
 // The relief editor without its page: the tool in hand, what's picked, and
 // what the pointer and the keys do to the relief (in cells). The page (see
 // page.ts) draws it and holds the panel; it hears of each change through the
 // host. Ported from the mockup's editor F (dev-tests/tmp/mockup).
 
-export type ToolId = "rect" | "ellipse" | "lasso" | "paintShape" | "polygon" | "stamp" | "edit" | "cut" | "brush";
+export type ToolId = "rect" | "ellipse" | "lasso" | "paintShape" | "polygon" | "stamp" | "door" | "edit" | "cut" | "brush";
 
 export type Selection =
   | { kind: "shape"; i: number; more?: number[] }
   | { kind: "vertex"; i: number }
   /** Several picked: vertices, and height points (`points`). */
   | { kind: "verts"; list: number[]; points?: number[] }
-  | { kind: "point"; i: number };
+  | { kind: "point"; i: number }
+  /** A door (see types.ts Door). */
+  | { kind: "door"; i: number };
 
 /** A pointer event's keys, and how many clicks it is (2: a double click). */
 export type Mods = { shift?: boolean; alt?: boolean; ctrl?: boolean; clicks?: number };
@@ -66,6 +70,13 @@ export interface EditorHost {
   toScreen(x: number, y: number): [number, number];
   /** The editor's own settings changed (the brush's, the last soft edge): kept. */
   saveSettings(): void;
+  /**
+   * Only the doors changed (see types.ts Door): kept and shown; `terrain`, where they cut through their
+   * walls may have too (where they are, their doorways' heights, which are secret): the terrain built again.
+   */
+  doorsChanged(terrain: boolean): void;
+  /** The scene's fog doors over this map (cells), for a door drawn on one to be linked to it. */
+  fogDoors(): PlanDoor[];
 }
 
 /**
@@ -140,6 +151,12 @@ export class ReliefEditor {
   skinPick: number | null = null;
   skinBox: { start: { x: number; y: number }; end: { x: number; y: number } } | null = null;
   arrowEnd: { s: Shape; end: "a" | "b" } | null = null;
+  /** The door whose face's picture is being taken from the map (a rectangle dragged over it), if one is. */
+  doorPick: number | null = null;
+  /** A door being drawn (the door tool), from its hinge. */
+  doorDraw: { a: Pt; b: Pt } | null = null;
+  /** A picked door dragged: whole, or by an end; `moved` once it has (a step to undo then). */
+  doorGrab: { i: number; end: "a" | "b" | "body"; from: { x: number; y: number }; start: [Pt, Pt]; moved: boolean } | null = null;
   brushing = false;
   /** The next click takes the flattening brush's level from the map (the eyedropper; Alt+click too). */
   levelPick = false;
@@ -155,7 +172,7 @@ export class ReliefEditor {
   /** Picking vertices, the pointer on a side (not on a vertex nor a point): where a click adds one. */
   ghost: { x: number; y: number } | null = null;
   /** Why the last combining changed nothing. */
-  notice: "nothingShared" | "nothingLeft" | null = null;
+  notice: "nothingShared" | "nothingLeft" | "noFogDoor" | null = null;
 
   private undoStack: string[] = [];
   private redoStack: string[] = [];
@@ -177,6 +194,11 @@ export class ReliefEditor {
     tidyGroups(this);
     time("editor.derive", () => this.relief.derive());
     this.host.changed();
+  }
+
+  /** Only the doors changed: kept and shown; the terrain built again unless only their leaves' looks did (`terrain` false). */
+  doorsChanged(terrain = true) {
+    this.host.doorsChanged(terrain);
   }
 
   /**
@@ -402,6 +424,8 @@ export class ReliefEditor {
   setTool(tool: ToolId) {
     this.tool = tool;
     this.skinPick = null;
+    this.doorPick = null;
+    this.doorDraw = null;
     this.cursor = null;
     this.ghost = null;
     if (this.drawing) {
@@ -431,7 +455,7 @@ export class ReliefEditor {
 
   down(p: { x: number; y: number }, mods: Mods = {}) {
     // Taking a shape's wall picture: a rectangle dragged over the map, or a click on another shape.
-    if (this.skinPick !== null) {
+    if (this.skinPick !== null || this.doorPick !== null) {
       this.skinBox = { start: p, end: p };
       return;
     }
@@ -440,6 +464,24 @@ export class ReliefEditor {
     if (arrowEnd) {
       this.pushUndo();
       this.arrowEnd = arrowEnd;
+      return;
+    }
+    // The picked door's ends, likewise; with Elegir, a door (picked, and dragged whole).
+    const doorEnd = !this.drawing && !mods.alt && !this.isBrush() ? doorEndAt(this, p) : null;
+    const doorHit = !doorEnd && this.tool === "edit" && !this.drawing && !mods.alt && !mods.ctrl ? doorAt(this, p) : -1;
+    if (doorEnd || doorHit >= 0) {
+      const i = doorEnd ? (this.sel as { i: number }).i : doorHit;
+      const d = doorsOf(this)[i];
+      this.sel = { kind: "door", i };
+      this.xf = null;
+      this.doorGrab = { i, end: doorEnd ?? "body", from: p, start: [[d.a[0], d.a[1]], [d.b[0], d.b[1]]], moved: false };
+      this.host.showProps();
+      this.host.redraw();
+      return;
+    }
+    if (this.tool === "door") {
+      const q = this.gridded(p);
+      this.doorDraw = { a: [q.x, q.y], b: [q.x, q.y] };
       return;
     }
     if (this.isBrush()) {
@@ -643,6 +685,27 @@ export class ReliefEditor {
   }
 
   move(p: { x: number; y: number }, mods: Mods = {}, held = false) {
+    if (held && this.doorGrab) {
+      this.dragDoor(p, mods);
+      return;
+    }
+    if (held && this.doorDraw) {
+      this.doorDraw.b = doorPoint(this, this.doorDraw.a, p, mods);
+      this.host.redraw();
+      return;
+    }
+    if (!held && !this.drawing && this.skinPick === null && this.doorPick === null && !this.isBrush() && doorEndAt(this, p)) {
+      this.cursor = p;
+      this.host.setCursor("grab");
+      this.host.redraw();
+      return;
+    }
+    if (this.tool === "door" && this.skinPick === null && this.doorPick === null) {
+      this.cursor = this.gridded(p);
+      this.host.setCursor("crosshair");
+      this.host.redraw();
+      return;
+    }
     if (held && this.arrowEnd) {
       this.arrowEnd.s.ramp![this.arrowEnd.end] = [p.x, p.y];
       this.changed();
@@ -666,7 +729,7 @@ export class ReliefEditor {
       }
       return;
     }
-    if (this.skinPick !== null) {
+    if (this.skinPick !== null || this.doorPick !== null) {
       this.host.setCursor("crosshair");
       if (held && this.skinBox) {
         this.skinBox.end = p;
@@ -774,8 +837,38 @@ export class ReliefEditor {
 
   up() {
     this.brushing = false;
+    if (this.doorGrab) {
+      const grab = this.doorGrab;
+      this.doorGrab = null;
+      const d = doorsOf(this)[grab.i];
+      // Moved off its fog door, it's still that one's; moved onto one, unlinked, it's linked. Let go: its
+      // terrain built again whole (not lightly, as while it was dragged).
+      if (grab.moved && d) {
+        if (!d.link) {
+          linkDoor(this, d);
+        }
+        this.doorsChanged();
+      }
+      this.host.showProps();
+      this.host.redraw();
+      return;
+    }
+    if (this.doorDraw) {
+      const { a, b } = this.doorDraw;
+      this.doorDraw = null;
+      if (addDoor(this, a, b)) {
+        this.doorsChanged();
+        this.host.showProps();
+      }
+      this.host.redraw();
+      return;
+    }
     if (this.skinBox) {
-      this.takeSkin();
+      if (this.doorPick !== null) {
+        this.takeDoorPicture();
+      } else {
+        this.takeSkin();
+      }
       return;
     }
     if (this.arrowEnd) {
@@ -852,6 +945,55 @@ export class ReliefEditor {
       this.host.redraw();
     }
     this.drag = null;
+  }
+
+  /** The picked door dragged: an end where the pointer is (Shift: by 15 degrees from the other), or all of it as far as it's gone. */
+  private dragDoor(p: { x: number; y: number }, mods: Mods) {
+    const grab = this.doorGrab!;
+    const d = doorsOf(this)[grab.i];
+    if (!d) {
+      return;
+    }
+    const [a, b] = grab.start;
+    let next: [Pt, Pt];
+    if (grab.end === "body") {
+      const [dx, dy] = [this.onGrid(p.x - grab.from.x), this.onGrid(p.y - grab.from.y)];
+      next = [[a[0] + dx, a[1] + dy], [b[0] + dx, b[1] + dy]];
+    } else if (grab.end === "a") {
+      next = [doorPoint(this, b, p, mods), b];
+    } else {
+      next = [a, doorPoint(this, a, p, mods)];
+    }
+    if (next[0][0] === d.a[0] && next[0][1] === d.a[1] && next[1][0] === d.b[0] && next[1][1] === d.b[1]) {
+      return;
+    }
+    if (!grab.moved) {
+      grab.moved = true;
+      this.pushUndo();
+    }
+    [d.a, d.b] = next;
+    this.doorsChanged();
+    this.host.redraw();
+  }
+
+  /** The rectangle dragged over the map: the picked door's face (a click: nothing, still asked). */
+  private takeDoorPicture() {
+    const { start: a, end: b } = this.skinBox!;
+    this.skinBox = null;
+    const d = doorsOf(this)[this.doorPick!];
+    const [x0, y0, x1, y1] = [Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y)];
+    if (!d || x1 - x0 < 0.2 || y1 - y0 < 0.2) {
+      this.host.redraw();
+      return;
+    }
+    this.doorPick = null;
+    this.pushUndo();
+    const r2 = (v: number) => Math.round(v * 100) / 100;
+    d.picture = [r2(x0), r2(y0), r2(x1), r2(y1)];
+    d.look = "picture";
+    this.doorsChanged(false);
+    this.host.showProps();
+    this.host.redraw();
   }
 
   /** The wall picture's rectangle (or the shape clicked on) given to the shape it was asked for. */
@@ -935,8 +1077,9 @@ export class ReliefEditor {
 
   /** A key pressed: whether the editor took it. */
   key(e: KeyPress): boolean {
-    if (this.skinPick !== null && e.key === "Escape") {
+    if ((this.skinPick !== null || this.doorPick !== null) && e.key === "Escape") {
       this.skinPick = null;
+      this.doorPick = null;
       this.skinBox = null;
       this.host.showProps();
       this.host.redraw();
@@ -983,6 +1126,9 @@ export class ReliefEditor {
       this.host.redraw();
       return true;
     }
+    if (sel.kind === "door") {
+      return this.doorKey(e, sel.i);
+    }
     if (e.ctrl && e.code === "KeyD") {
       duplicate(this);
       this.changed();
@@ -1021,10 +1167,39 @@ export class ReliefEditor {
     return false;
   }
 
+  /** A key with a door picked: Supr (gone), Ctrl+D (a copy), the arrows (moved), Z/X (its opening taller or lower). */
+  private doorKey(e: KeyPress, i: number): boolean {
+    const d = doorsOf(this)[i];
+    if (!d) {
+      return false;
+    }
+    const nudge = ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] } as Record<string, Pt>)[e.key];
+    const step = e.code === "KeyZ" && !e.ctrl ? 0.25 : e.code === "KeyX" && !e.ctrl ? -0.25 : 0;
+    if (e.key === "Delete") {
+      removeDoor(this, i);
+    } else if (e.ctrl && e.code === "KeyD") {
+      duplicateDoor(this, i);
+    } else if (nudge && !e.ctrl) {
+      this.pushUndo();
+      const by = e.shift ? 1 : 0.25;
+      d.a = [d.a[0] + nudge[0] * by, d.a[1] + nudge[1] * by];
+      d.b = [d.b[0] + nudge[0] * by, d.b[1] + nudge[1] * by];
+    } else if (step) {
+      this.pushUndo();
+      d.h = Math.max(0.25, Math.min(20, (d.h ?? DOOR_H) + step));
+    } else {
+      return false;
+    }
+    this.doorsChanged();
+    this.host.showProps();
+    this.host.redraw();
+    return true;
+  }
+
   /** What's picked a step (a quarter) higher or lower: a shape, a ramp's two ends, an inclined shape's corners and height points, vertices, a point. */
   raise(step: number) {
     const sel = this.sel;
-    if (!sel) {
+    if (!sel || sel.kind === "door") {
       return;
     }
     this.pushUndo();
@@ -1045,6 +1220,13 @@ export class ReliefEditor {
   remove() {
     const sel = this.sel;
     if (!sel) {
+      return;
+    }
+    if (sel.kind === "door") {
+      removeDoor(this, sel.i);
+      this.doorsChanged();
+      this.host.showProps();
+      this.host.redraw();
       return;
     }
     this.pushUndo();
@@ -1081,7 +1263,7 @@ export class ReliefEditor {
   /** What the selection's heights are: the things Z/X and the panel change. */
   targets(): { h: number }[] {
     const sel = this.sel;
-    if (!sel) {
+    if (!sel || sel.kind === "door") {
       return [];
     }
     const data = this.data;
@@ -1161,6 +1343,10 @@ export class ReliefEditor {
   }
 
   cursorFor(p: { x: number; y: number }): string {
+    const door = this.tool === "edit" ? doorAt(this, p) : -1;
+    if (door >= 0) {
+      return this.sel?.kind === "door" && door === this.sel.i ? "move" : "pointer";
+    }
     const grab = this.grabAt(p);
     if (grab?.kind === "rotate") {
       return "grab";

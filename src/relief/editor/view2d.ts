@@ -57,6 +57,8 @@ const C = {
   /** The pen's snap ring, closing the outline. */
   close: "#7cffb0",
   shade: "rgba(0,0,0,0.35)",
+  /** A door's line (see drawDoors). */
+  door: "#ffb35c",
   labelBg: "rgba(20,20,24,0.8)",
   white: "#fff",
   dark: "#222",
@@ -358,6 +360,89 @@ export class MapView {
     time("editor.2d.relief", () => this.drawRelief());
     time("editor.2d.shapes", () => this.drawShapes());
     time("editor.2d.marks", () => this.drawMarks());
+    this.drawDoors();
+  }
+
+  /**
+   * The doors: a thick line from hinge to end (dashed if it's no fog door's),
+   * the hinge a dot, and where it goes open (its swing's arc, or back along
+   * the wall); the picked one with its ends to drag. One being drawn, too.
+   */
+  private drawDoors() {
+    const ctx = this.ctx;
+    const ed = this.editor;
+    const picked = ed.sel?.kind === "door" ? ed.sel.i : -1;
+    const line = (a: Pt, b: Pt, color: string, width: number, dash: number[] = []) => {
+      ctx.beginPath();
+      ctx.moveTo(...this.toScreen(...a));
+      ctx.lineTo(...this.toScreen(...b));
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.setLineDash(dash);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    };
+    (ed.data.doors ?? []).forEach((d, i) => {
+      const color = i === picked ? C.pick : C.door;
+      const [ax, ay] = this.toScreen(...d.a);
+      const [bx, by] = this.toScreen(...d.b);
+      const len = Math.hypot(bx - ax, by - ay);
+      const shut = Math.atan2(by - ay, bx - ax);
+      // Where it goes open, faint.
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      if ((d.opens ?? "swing") === "swing") {
+        const open = shut + (d.side * d.swing * Math.PI) / 180;
+        ctx.beginPath();
+        ctx.arc(ax, ay, len, shut, open, d.side < 0);
+        ctx.lineTo(ax, ay);
+        ctx.stroke();
+      } else if (d.opens === "slide") {
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(ax - (bx - ax), ay - (by - ay));
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      line(d.a, d.b, C.shade, 7, d.link ? [] : [7, 4]);
+      line(d.a, d.b, color, 4, d.link ? [] : [7, 4]);
+      ctx.beginPath();
+      ctx.arc(ax, ay, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      if (i === picked) {
+        for (const [[x, y], fill] of [[[ax, ay], C.dark], [[bx, by], C.pick]] as const) {
+          ctx.beginPath();
+          ctx.arc(x, y, 6, 0, Math.PI * 2);
+          ctx.fillStyle = fill;
+          ctx.fill();
+          ctx.strokeStyle = C.white;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+      }
+    });
+    if (ed.doorDraw) {
+      line(ed.doorDraw.a, ed.doorDraw.b, C.pick, 4);
+    }
+    // The picked door's picture, where it's taken from (one being dragged: see drawMarks).
+    const pic = picked >= 0 && !ed.skinBox ? ed.data.doors?.[picked]?.picture : undefined;
+    if (pic && ed.data.doors?.[picked]?.look === "picture") {
+      const [ax, ay] = this.toScreen(pic[0], pic[1]);
+      const [bx, by] = this.toScreen(pic[2], pic[3]);
+      ctx.strokeStyle = C.stand;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 3]);
+      ctx.strokeRect(ax, ay, bx - ax, by - ay);
+      ctx.setLineDash([]);
+      // Its top: the leaf's.
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, ay);
+      ctx.stroke();
+    }
   }
 
   /** An outline and its holes, as one path (filled even-odd, a hole stays empty). */

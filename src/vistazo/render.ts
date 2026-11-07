@@ -18,7 +18,9 @@ import { foggedOf, type Fog } from "./fog";
 import { visibleBox } from "./visibleBox";
 import { CLOUD_GLSL, CLOUD_ZONES, buildWeather, cloudNoise, cloudShadowOf, setWeatherTime } from "./weather";
 import { buildTemplate, templateTip, type Template } from "./templates";
-import { QUALITY, STONE, TEXTURE_MAX, VIEW_CELL, type Camera, type DistanceLine, type Options, type Reach, type Texture, type TokenText, type TokenView, type Wall, tintOf } from "./view/types";
+import { doorMesh, type DoorMap, type DoorView } from "./doors";
+
+import { LIGHT, QUALITY, STONE, TEXTURE_MAX, VIEW_CELL, type Camera, type DistanceLine, type Options, type Reach, type Texture, type TokenText, type TokenView, type Wall, tintOf } from "./view/types";
 import { isShared, patternTexture } from "./view/patterns";
 import { floorOf, mediaElement, propsKey, propToken, raised, skinAcross, skinPoint, visibleOnScreen } from "./view/helpers";
 import { computeWalls, type Region } from "./view/walls";
@@ -142,6 +144,9 @@ export class VistazoView {
   /** Volume templates placed here (see setTemplates), and the meshes drawn for them. */
   private templates: Template[] = [];
   private templateGroup = new THREE.Group();
+  /** The reliefs' doors (see doors.ts), and the list they're built from. */
+  private doorGroup = new THREE.Group();
+  private doors: DoorView[] = [];
   /** Each template's handles (its origin; a cone's or a line's tip too), to drag it here. */
   private handles: TokenView[] = [];
   /** The tokens a template reaches (see setAffected): ringed. */
@@ -318,7 +323,7 @@ export class VistazoView {
     this.renderer = renderer;
     this.glCamera.matrixAutoUpdate = false;
     this.movingGroup.matrixAutoUpdate = false;
-    this.world.add(this.terrainGroup, this.underGroup, this.movingGroup, this.pickGroup, this.edgeGroup, this.tokenGroup, this.weatherGroup, this.underBridgeGroup, this.waterGroup, this.templateGroup);
+    this.world.add(this.terrainGroup, this.underGroup, this.movingGroup, this.pickGroup, this.edgeGroup, this.tokenGroup, this.weatherGroup, this.underBridgeGroup, this.waterGroup, this.templateGroup, this.doorGroup);
     this.overlay = document.createElement("div");
     this.overlay.className = "ov";
     this.lines = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -997,7 +1002,8 @@ export class VistazoView {
         for (const side of [1, -1]) {
           const [qx, qy] = [x + nx * near * side, y + ny * near * side];
           if (!fog.at(qx, qy)) {
-            return scene.heightAt(qx, qy) ?? 0;
+            // Over a doorway, as high as its wall: the doorway's cut isn't seen through into the fog.
+            return Math.max(scene.heightAt(qx, qy) ?? 0, scene.doorwayTop?.(qx, qy) ?? -Infinity);
           }
         }
         return null;
@@ -1585,6 +1591,8 @@ export class VistazoView {
         const colors: MapColors = { x0, y0, w, h, small: pixels, soft: softPixels(small.canvas, w, h, scene.dpi) };
         this.mapColors = colors;
         this.colors = (x, y) => colorAt(colors, x, y);
+        // The doors that take the map's colours, in them now.
+        this.buildDoors();
         this.softColors = (x, y) => softColorAt(colors, x, y);
         await pause();
         if (key !== this.colorsFor) {
@@ -1673,6 +1681,8 @@ export class VistazoView {
         material.needsUpdate = true;
       }
     }
+    // The doors that take the map's picture, with it now.
+    this.buildDoors();
     this.render();
   }
 
@@ -1884,7 +1894,13 @@ export class VistazoView {
   /** The map texture's coordinates at a view-unit point. */
   private uvAt(x: number, y: number): [number, number] {
     const t = this.texture!;
-    return [(x / this.u - t.x0) / t.w, 1 - (y / this.u - t.y0) / t.h];
+    const [sx, sy] = this.read(x / this.u, y / this.u);
+    return [(sx - t.x0) / t.w, 1 - (sy - t.y0) / t.h];
+  }
+
+  /** Where the map's read for a scene point: past a doorway, along its wall (see VistazoScene.mapAt). */
+  private read(x: number, y: number): [number, number] {
+    return this.scene?.mapAt ? this.scene.mapAt(x, y) : [x, y];
   }
 
   /** The scene drawn (`now`: its terrain worked out here, not waited for from the worker). */
@@ -2235,7 +2251,7 @@ export class VistazoView {
         n++;
       }
     }
-    const rgb = this.colors ? this.colors(cx / n, cy / n) : STONE;
+    const rgb = this.colors ? this.colors(...this.read(cx / n, cy / n)) : STONE;
     const tint = (shade: number) => new THREE.Color(...(rgb.map((v) => (v / 255) * shade) as [number, number, number]));
     const tile = VIEW_CELL * 2;
 
@@ -2262,7 +2278,7 @@ export class VistazoView {
     under.setAttribute("uv", new THREE.BufferAttribute(underUv, 2));
     const belly = new THREE.Mesh(
       under,
-      fogCut(new THREE.MeshBasicMaterial({ map: skin ? this.mapTexture : blend || plain ? null : patternTexture(kind), color: skin ? new THREE.Color(0.6, 0.6, 0.6) : tint(0.6), side: THREE.DoubleSide }), this.fogUniforms)
+      foggedToo(new THREE.MeshBasicMaterial({ map: skin ? this.mapTexture : blend || plain ? null : patternTexture(kind), color: skin ? new THREE.Color(0.6, 0.6, 0.6) : tint(0.6), side: THREE.DoubleSide }), this.fogUniforms)
     );
     if (blend) {
       grained(belly.material as THREE.MeshBasicMaterial);
@@ -2276,6 +2292,29 @@ export class VistazoView {
     const sideColors: number[] = [];
     const soft = this.softColors;
     const tone = ([x, y]: number[], shade: number) => (soft ? soft(x, y) : rgb).map((v) => (v / 255) * shade);
+    const scene = this.scene!;
+    const reach = scene.dpi * 0.3;
+    /**
+     * A door's lintel's side (see relief/doorCut.ts) at a point and height (grid units), facing out
+     * (nx, ny): as the wall's on either side of it is (see wallBuffers), its top the wall's colour (read
+     * in it past a jamb: the map in the doorway is its threshold), its foot the floor's outside, shaded
+     * down to the floor and by the light. Not a lintel's (not in a doorway): null.
+     */
+    const lintelTone = (x: number, y: number, z: number, nx: number, ny: number): number[] | null => {
+      const [ix, iy] = [x - nx * reach, y - ny * reach];
+      const [rx, ry] = this.read(ix, iy);
+      if (rx === ix && ry === iy) {
+        return null;
+      }
+      const [ox, oy] = [x + nx * reach, y + ny * reach];
+      const lit = Math.max(0, nx * LIGHT[0] + ny * LIGHT[1]);
+      const s = 1 - this.options.shade * (1 - (0.45 + 0.55 * lit));
+      const top = (soft ? soft(rx, ry) : rgb).map((v) => (v / 255) * s * 0.92);
+      const foot = (soft ? soft(ox, oy) : rgb).map((v) => (v / 255) * s * 0.62);
+      const floor = scene.heightAt(ox, oy) ?? 0;
+      const f = Math.max(0, Math.min(1, (bridge.top - z) / (bridge.top - floor || 1)));
+      return top.map((v, i) => v + (foot[i] - v) * f);
+    };
     // The fold's strip, as a wall's.
     const band = VIEW_CELL * 0.75;
     // Its sides' stretches: a side each, cut every half cell if it isn't flat (to follow its top).
@@ -2326,7 +2365,16 @@ export class VistazoView {
       }
       positions.push(ax, ay, za0, bx, by, zb0, bx, by, zb1, ax, ay, za0, bx, by, zb1, ax, ay, za1);
       if (blend) {
-        const [a0, b0, b1, a1] = [tone([sax, say], 0.6), tone([sbx, sby], 0.6), tone([sbx, sby], 0.85), tone([sax, say], 0.85)];
+        // Facing out of the slab (round a hole, into it).
+        const sl = Math.hypot(sbx - sax, sby - say) || 1;
+        let [nx, ny] = [-(sby - say) / sl, (sbx - sax) / sl];
+        if (inShape((sax + sbx) / 2 + nx * 0.5, (say + sby) / 2 + ny * 0.5, bridge.shape)) {
+          [nx, ny] = [-nx, -ny];
+        }
+        const lintel = (x: number, y: number, z: number) => lintelTone(x, y, z / k, nx, ny);
+        const [la0, lb0, lb1, la1] = [lintel(sax, say, za0), lintel(sbx, sby, zb0), lintel(sbx, sby, zb1), lintel(sax, say, za1)];
+        const [a0, b0, b1, a1] =
+          la0 && lb0 && lb1 && la1 ? [la0, lb0, lb1, la1] : [tone([sax, say], 0.6), tone([sbx, sby], 0.6), tone([sbx, sby], 0.85), tone([sax, say], 0.85)];
         sideColors.push(...a0, ...b0, ...b1, ...a0, ...b1, ...a1);
       }
       if (skin) {
@@ -2352,7 +2400,7 @@ export class VistazoView {
     this.terrainGroup.add(
       new THREE.Mesh(
         sides,
-        fogCut(
+        foggedToo(
           blend
             ? grained(new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }))
             : new THREE.MeshBasicMaterial({
@@ -2722,6 +2770,50 @@ export class VistazoView {
   }
 
   /** The volume templates to draw (only in this view), moving with the weather's frames. */
+  /** The reliefs' doors, open or shut as their fog doors are. */
+  setDoors(doors: DoorView[]) {
+    this.doors = doors;
+    this.buildDoors();
+    this.requestApply();
+  }
+
+  private buildDoors() {
+    this.clear(this.doorGroup);
+    const scene = this.scene;
+    if (!scene) {
+      return;
+    }
+    // What a leaf takes from the map (see DoorMap): its picture as the walls have it, its colours.
+    const box = this.uvBox();
+    const map: DoorMap = {
+      texture: this.plainTexture ?? this.mapTexture,
+      uv: (x, y) => [(x - box.x0) / box.w, 1 - (y - box.y0) / box.h],
+      color: this.colors,
+      grain: grained,
+    };
+    for (const door of this.doors) {
+      // Its floor: in its opening's middle (its hinge is on the wall's end).
+      let mx = (door.a.x + door.b.x) / 2, my = (door.a.y + door.b.y) / 2;
+      if (door.panel !== undefined) {
+        // A board against the wall (see DoorView.panel): its floor out past the wall's face.
+        const len = Math.hypot(door.b.x - door.a.x, door.b.y - door.a.y) || 1;
+        const out = door.panel + Math.sign(door.panel || 1) * door.cell * 0.3;
+        mx += (-(door.b.y - door.a.y) / len) * out;
+        my += ((door.b.x - door.a.x) / len) * out;
+      }
+      this.doorGroup.add(doorMesh(door, this.u, this.k, scene.heightAt(mx, my) ?? 0, VIEW_CELL, map));
+    }
+    // Under the player view's fog as the walls they're in: not drawn where it hides, darkened where it covers.
+    const cut = new Set<THREE.Material>();
+    this.doorGroup.traverse((o) => {
+      if (o instanceof THREE.Mesh) {
+        for (const m of Array.isArray(o.material) ? o.material : [o.material]) cut.add(m);
+      }
+    });
+    for (const m of cut) foggedToo(m as THREE.MeshBasicMaterial, this.fogUniforms);
+  }
+
+
   setTemplates(templates: Template[]) {
     this.templates = templates;
     this.buildTemplates();
@@ -3748,7 +3840,17 @@ function fogged(material: THREE.MeshBasicMaterial, uniforms: Record<string, { va
   layer(material, "fogged", uniforms, FOG_GLSL, "#ifdef RR_FOG\nif (fogHidden(vLayerAt.xy)) discard;\noutgoingLight = paintFog(outgoingLight, vLayerAt.xy);\n#endif");
 }
 
-/** Not drawn under the player view's fog (anything else on the terrain: a slab's sides, its belly). */
+/**
+ * As fogged, always (not only with RR_FOG on, as the terrain's own materials are, see layers): not drawn
+ * where the fog hides, darkened where it covers; the material given back (a slab's sides, its belly; a
+ * door's leaf).
+ */
+function foggedToo<M extends THREE.MeshBasicMaterial>(material: M, uniforms: Record<string, { value: unknown }>): M {
+  layer(material, "foggedtoo", uniforms, FOG_GLSL, "if (fogHidden(vLayerAt.xy)) discard;\noutgoingLight = paintFog(outgoingLight, vLayerAt.xy);");
+  return material;
+}
+
+/** Not drawn under the player view's fog (lines). */
 function fogCut<M extends THREE.MeshBasicMaterial | THREE.LineBasicMaterial>(material: M, uniforms: Record<string, { value: unknown }>): M {
   layer(material, "fogcut", uniforms, FOG_GLSL, "if (fogHidden(vLayerAt.xy)) discard;");
   return material;

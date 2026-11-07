@@ -1,5 +1,5 @@
 import { G, cellKey, cellOf } from "./relief";
-import type { Affine, Detail, Group, HeightPoint, ReliefData, Shape, Vert } from "./types";
+import type { Affine, Detail, Door, Group, HeightPoint, Pt, ReliefData, Shape, Vert } from "./types";
 
 // A relief as it's kept (JSON): versioned; vertices and points as [x, y, h]
 // rounded to hundredths of a cell; the painted ground in 32nds of a level
@@ -22,6 +22,7 @@ export type StoredRelief = {
   points: ([number, number, number] | [number, number, number, string])[];
   ground?: string;
   groups?: Group[];
+  doors?: Door[];
 };
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
@@ -47,6 +48,9 @@ export function toStored(data: ReliefData): StoredRelief {
   };
   if (data.groups?.length) {
     stored.groups = data.groups.map((g) => ({ ...g }));
+  }
+  if (data.doors?.length) {
+    stored.doors = data.doors.map((d) => ({ ...d, a: [r2(d.a[0]), r2(d.a[1])], b: [r2(d.b[0]), r2(d.b[1])] }));
   }
   if (data.ground.some((g) => Math.round(g * GROUND_SCALE) !== 0)) {
     const q = new Int16Array(data.ground.length);
@@ -82,7 +86,16 @@ export function fromStored(stored: unknown): ReliefData | null {
     return detail ? { ...rest, detail: readDetail(detail) } : { ...rest };
   });
   const groups = (s.groups ?? []).map((g) => ({ ...g }));
-  return { w: s.w, h: s.h, verts, shapes, points, ground, ...(groups.length > 0 ? { groups } : {}) };
+  const doors = (Array.isArray(s.doors) ? s.doors : []).filter(isDoor).map((d) => ({ ...d, a: [d.a[0], d.a[1]] as Pt, b: [d.b[0], d.b[1]] as Pt }));
+  return { w: s.w, h: s.h, verts, shapes, points, ground, ...(groups.length > 0 ? { groups } : {}), ...(doors.length > 0 ? { doors } : {}) };
+}
+
+const isPair = (p: unknown): p is Pt => Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]);
+
+/** A kept door that's whole (one from a newer version may have more, kept as it is). */
+function isDoor(d: unknown): d is Door {
+  const door = d as Door | null;
+  return !!door && isPair(door.a) && isPair(door.b) && (door.side === 1 || door.side === -1) && Number.isFinite(door.swing);
 }
 
 /** An empty relief for a map `w` × `h` cells. */

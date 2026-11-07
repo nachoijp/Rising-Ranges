@@ -45,6 +45,7 @@ self.onmessage = (event: MessageEvent<TerrainMessage>) => {
     const scene = buildScene(recipe.metadata, recipe.items, recipe.dpi, recipe.scale, recipe.gridType, previous, recipe.hexCenter, recipe.playerView, {
       byImage,
       key: recipe.reliefKey,
+      shutDoors: recipe.shutDoors,
       surfaced: recipe.surfaced,
     });
     previous = scene;

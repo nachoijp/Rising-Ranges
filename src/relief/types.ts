@@ -94,6 +94,50 @@ export type Shape = {
  */
 export type Group = { id: string; name: string; parent?: string };
 
+/**
+ * The fog door a door is the 3D one of, whose open or shut it shows (and
+ * sets): one of Owlbear's dynamic fog doors (the fog shape and which of its
+ * doors), or a Smoke & Spectre! door line.
+ */
+export type DoorLink = { kind: "obr"; item: string; index: number } | { kind: "smoke"; item: string };
+
+/**
+ * A door's leaf's look: as the walls' (planks, bricks, stones, earth; the
+ * map's colour plainly or blended; the map's picture on its line stretched
+ * up it, or a rectangle of the map's as its face, see Door.picture), or its
+ * own: iron, bars, glass.
+ */
+export type DoorLook = "wood" | "stone" | "rubble" | "earth" | "flat" | "blend" | "stretch" | "picture" | "metal" | "bars" | "glass";
+
+/** How a door opens: swung round its hinge, slid into the wall, lifted (a portcullis), or gone. */
+export type DoorOpens = "swing" | "slide" | "lift" | "vanish";
+
+/**
+ * A door: not terrain of its own. The wall runs on over it as drawn; in
+ * the scene (the Vistazo, the heights measured) it's cut through, as high
+ * as the doorway `h` (grid units; none: DOOR_H), and its leaf drawn in 3D
+ * in the doorway, hinged at `a`; shut, it reaches to `b`. Swinging, it
+ * turns `swing` degrees to the `side` of a→b (1: the side its normal
+ * (−dy, dx) points to, y down; −1: the other); sliding, it goes back past
+ * `a`. Its leaf `thick` thick (cells). Secret: to a player, shut, it isn't
+ * cut, it's the wall. Open or shut is its fog door's, read live.
+ */
+export type Door = {
+  a: Pt;
+  b: Pt;
+  side: 1 | -1;
+  swing: number;
+  h?: number;
+  thick?: number;
+  link?: DoorLink;
+  name?: string;
+  look?: DoorLook;
+  opens?: DoorOpens;
+  secret?: true;
+  /** Its face's picture (look "picture"): a rectangle of the map, x0, y0, x1, y1 (cells), its top the leaf's. */
+  picture?: [number, number, number, number];
+};
+
 /** A whole terrain: the map's size in cells, its shapes, and the painted ground (gw × gh points, G apart). */
 export type ReliefData = {
   w: number;
@@ -104,4 +148,6 @@ export type ReliefData = {
   ground: Float32Array;
   /** The editor's groups of shapes, if it has any. */
   groups?: Group[];
+  /** Its doors, if it has any (see Door). */
+  doors?: Door[];
 };

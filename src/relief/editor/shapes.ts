@@ -259,7 +259,7 @@ export function prune(ed: ReliefEditor) {
 export function keepPick(ed: ReliefEditor, f: () => void) {
   const sel = ed.sel;
   f();
-  if (sel?.kind === "shape" && sel.i < ed.data.shapes.length) {
+  if ((sel?.kind === "shape" && sel.i < ed.data.shapes.length) || (sel?.kind === "door" && sel.i < (ed.data.doors?.length ?? 0))) {
     ed.sel = sel;
   }
 }

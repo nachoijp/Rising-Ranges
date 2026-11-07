@@ -22,7 +22,8 @@
 // All in cells of the map (x right, y down). The picture is optional: with
 // none, every wall gets the usual thickness.
 
-import type { Group, Pt, ReliefData, Shape } from "../types";
+import type { Door, Group, Pt, ReliefData, Shape } from "../types";
+import { openingFor } from "./doors";
 import { solidAreas } from "./solids";
 import type { Loop } from "./vector";
 
@@ -65,10 +66,12 @@ export type UvttOptions = {
   rooms?: boolean;
   /** The group its own group goes in, if any. */
   parent?: string;
+  /** Doors to add (see trace/fogPlan placeDoors). */
+  doors?: Door[];
 };
 
 /** What was made, for the editor to say. */
-export type UvttCounts = { rooms: number; walls: number; hedges: number; objects: number; stairs: number; solids: number; measured: number; thickness: number };
+export type UvttCounts = { rooms: number; walls: number; hedges: number; objects: number; stairs: number; solids: number; doors: number; measured: number; thickness: number };
 
 type V = { x: number; y: number };
 
@@ -761,8 +764,12 @@ export function stationsOf(pic: Picture, lab: Float32Array, line: Pt[], closed: 
     const f = (s - segStart) / len;
     const cx = a[0] + (b[0] - a[0]) * f, cy = a[1] + (b[1] - a[1]) * f;
     const nx = -(b[1] - a[1]) / len, ny = (b[0] - a[0]) / len;
-    // A door there (its own, or the room next door's on an edge that doesn't quite meet it): a way through.
-    if (open(cx, cy)) continue;
+    // A door there (its own, or the room next door's on an edge that doesn't quite meet it): wall, the door
+    // cut through it in the scene (see doorCut.ts).
+    if (open(cx, cy)) {
+      scores[k] = Infinity;
+      continue;
+    }
     for (let i = 0; i < K; i++) {
       labAt(pic, lab, cx + nx * (-R + i / 32), cy + ny * (-R + i / 32), px);
       for (let c = 0; c < 3; c++) cum[i + 1][c] = cum[i][c] + px[c];
@@ -891,7 +898,9 @@ export type UvttPlan = {
 /** Everything worked out, before it's made shapes (the bench draws this). */
 export function planOf(u: Pick<Uvtt, "walls" | "portals">, pic: Picture | null, scale: [number, number] = [1, 1], stairs = true, o: PlanOptions = {}): UvttPlan {
   const sc = (l: Pt[]) => l.map((p): Pt => [p[0] * scale[0], p[1] * scale[1]]);
-  const graph = planGraph(u.walls.map(sc), u.portals.map((p) => sc(p) as [Pt, Pt]), o.openings);
+  // Its doors are wall: the wall runs on over a door, cut through only in the scene (see doorCut.ts), as
+  // open as its fog door is.
+  const graph = planGraph([...u.walls.map(sc), ...u.portals.map(sc)], [], o.openings);
   const lab = pic ? (o.lab ?? labOf(pic)) : null;
   const runs = wallRuns(graph).map((run) => {
     let line = straighten(
@@ -1012,7 +1021,7 @@ export function uvttRelief(plan: UvttPlan, base: ReliefData, names: UvttNames, o
     if (holes.length) s.holes = holes.map(indices);
     shapes.push(s);
   };
-  const counts: UvttCounts = { rooms: 0, walls: 0, hedges: 0, objects: 0, stairs: 0, solids: 0, measured: 0, thickness: plan.thickness };
+  const counts: UvttCounts = { rooms: 0, walls: 0, hedges: 0, objects: 0, stairs: 0, solids: 0, doors: o.doors?.length ?? 0, measured: 0, thickness: plan.thickness };
   if (plan.solids.length) {
     const g = sub(names.solids);
     plan.solids.forEach((l) => add([l.ring, ...l.holes], { kind: "flat", h: wallH, rel: false, name: names.solid(++counts.solids), group: g }));
@@ -1049,7 +1058,14 @@ export function uvttRelief(plan: UvttPlan, base: ReliefData, names: UvttNames, o
   }
   counts.measured = plan.runs.filter((r) => r.m.sure).length;
   return {
-    data: { ...base, verts, shapes: [...base.shapes, ...shapes], groups: [...(base.groups ?? []), ...groups] },
+    data: {
+      ...base,
+      verts,
+      shapes: [...base.shapes, ...shapes],
+      groups: [...(base.groups ?? []), ...groups],
+      // The doorways lower than the walls (a lintel over each).
+      ...(o.doors?.length || base.doors?.length ? { doors: [...(base.doors ?? []), ...(o.doors ?? []).map((d) => ({ ...d, h: d.h ?? openingFor(wallH) }))] } : {}),
+    },
     counts,
   };
 }

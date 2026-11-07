@@ -4,6 +4,8 @@ import { cellToScene, type Anchor } from "./anchor";
 import { mapAnchors, reliefZones } from "./measure";
 import { area, inShape, type Box } from "./geom";
 import { Relief } from "./relief";
+// Measured with every door a way through (see doorCut.ts).
+import { cutDoors } from "./doorCut";
 import type { Pt } from "./types";
 import { stackReliefs, type Stacked } from "./stack";
 import { startReliefService } from "./store";
@@ -141,7 +143,7 @@ export function reliefShapes(): (TerrainShape & { follow: string })[] {
 export function startReliefs() {
   startReliefService((image, data) => {
     if (data) {
-      reliefs.set(image, new Relief(data));
+      reliefs.set(image, cutDoors(new Relief(data)));
     } else {
       reliefs.delete(image);
     }
