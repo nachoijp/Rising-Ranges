@@ -50,26 +50,34 @@ const unionOf = (rings: Point[][]): MultiPolygon =>
 /** What of `world` is under the fog (for its curtains: see VistazoView.buildFogFloor). null if it can't be worked out. */
 export function foggedOf(fog: Pick<Fog, "filled" | "layers" | "lit">, world: MultiPolygon): MultiPolygon | null {
   try {
-    let fogged: MultiPolygon = fog.filled ? world : [];
-    for (const { ring, cut } of fog.layers) {
-      const shape: MultiPolygon = [[closed(ring)]];
-      if (cut) {
-        fogged = fogged.length > 0 ? polygonClipping.difference(fogged, shape) : fogged;
-      } else {
-        fogged = fogged.length > 0 ? polygonClipping.union(fogged, shape) : shape;
+    // The shapes' part, the same while only lights move (often: a token dragged): kept.
+    const key = `${fog.filled}|${fog.layers.map(({ ring, cut }) => `${cut ? "-" : "+"}${ring.join(" ")}`).join("|")}`;
+    if (shapesFogged?.key !== key || shapesFogged.world !== world) {
+      let fogged: MultiPolygon = fog.filled ? world : [];
+      for (const { ring, cut } of fog.layers) {
+        const shape: MultiPolygon = [[closed(ring)]];
+        if (cut) {
+          fogged = fogged.length > 0 ? polygonClipping.difference(fogged, shape) : fogged;
+        } else {
+          fogged = fogged.length > 0 ? polygonClipping.union(fogged, shape) : shape;
+        }
       }
+      shapesFogged = { key, world, fogged: fogged.length > 0 ? polygonClipping.intersection(fogged, world) : [] };
     }
-    const lit: MultiPolygon =
-      fog.lit.length === 0 ? [] : polygonClipping.union([fog.lit[0].rings.map(closed)], ...fog.lit.slice(1).map((area): MultiPolygon => [area.rings.map(closed)]));
-    if (fogged.length > 0 && lit.length > 0) {
-      fogged = polygonClipping.difference(fogged, lit);
+    const fogged = shapesFogged.fogged;
+    if (fogged.length === 0 || fog.lit.length === 0) {
+      return fogged;
     }
-    return fogged.length > 0 ? polygonClipping.intersection(fogged, world) : [];
+    const lit: MultiPolygon = polygonClipping.union([fog.lit[0].rings.map(closed)], ...fog.lit.slice(1).map((area): MultiPolygon => [area.rings.map(closed)]));
+    return lit.length > 0 ? polygonClipping.difference(fogged, lit) : fogged;
   } catch (error) {
     console.error("Rising Ranges: 3D Glance couldn't work out what the fog covers", error);
     return null;
   }
 }
+
+/** The last fog shapes' part of foggedOf, for the world it was worked out in. */
+let shapesFogged: { key: string; world: MultiPolygon; fogged: MultiPolygon } | null = null;
 
 type Point = [number, number];
 type Segment = [number, number, number, number];
@@ -84,6 +92,21 @@ function toScene(item: Item, x: number, y: number): Point {
   const sy = y * item.scale.y;
   return [item.position.x + sx * Math.cos(angle) - sy * Math.sin(angle), item.position.y + sx * Math.sin(angle) + sy * Math.cos(angle)];
 }
+
+type Box = [number, number, number, number];
+
+function boxOf(ring: Point[]): Box {
+  let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const [x, y] of ring) {
+    x0 = Math.min(x0, x);
+    y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x);
+    y1 = Math.max(y1, y);
+  }
+  return [x0, y0, x1, y1];
+}
+
+const inBox = (x: number, y: number, [x0, y0, x1, y1]: Box) => x >= x0 && x <= x1 && y >= y0 && y <= y1;
 
 function inRing(x: number, y: number, ring: Point[]): boolean {
   let inside = false;
@@ -246,11 +269,14 @@ export function fogOver(filled: boolean, items: Item[], local: Item[], color = "
       console.error("Rising Ranges: 3D Glance couldn't work out what the secondary lights clear", error);
     }
   }
+  // Each outline with its box: most points asked are nowhere near most outlines (asked often: the curtains).
+  const layerBoxes = layers.map((layer) => boxOf(layer.ring));
+  const litBoxes = lit.map((area) => area.rings.map(boxOf));
   const at: FogAt = (x, y) => {
     // The topmost shape over the point says; none, the fill.
     let covered = filled;
     for (let i = layers.length - 1; i >= 0; i--) {
-      if (inRing(x, y, layers[i].ring)) {
+      if (inBox(x, y, layerBoxes[i]) && inRing(x, y, layers[i].ring)) {
         covered = !layers[i].cut;
         break;
       }
@@ -258,7 +284,19 @@ export function fogOver(filled: boolean, items: Item[], local: Item[], color = "
     if (!covered) {
       return false;
     }
-    return !lit.some((area) => inRing(x, y, area.rings[0]) && !area.rings.slice(1).some((hole) => inRing(x, y, hole)));
+    for (let k = 0; k < lit.length; k++) {
+      const [boxes, rings] = [litBoxes[k], lit[k].rings];
+      if (inBox(x, y, boxes[0]) && inRing(x, y, rings[0])) {
+        let hole = false;
+        for (let h = 1; h < rings.length && !hole; h++) {
+          hole = inBox(x, y, boxes[h]) && inRing(x, y, rings[h]);
+        }
+        if (!hole) {
+          return false;
+        }
+      }
+    }
+    return true;
   };
   return { at, filled, layers, lit, color };
 }

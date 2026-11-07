@@ -71,6 +71,7 @@ import "@fontsource/roboto/500.css";
 import "@fontsource/roboto/600.css";
 import "@fontsource/roboto/700.css";
 import { isMapImage } from "../relief/measure";
+import { mayOpen, setFogDoor } from "./doorControl";
 
 // Before any other key listener: an open dropdown's keys are its own (see dropdown.ts).
 enhanceSelects();
@@ -1245,7 +1246,12 @@ async function start() {
   // anything; a player what the room's permissions let them, for its layer (characters only their own,
   // with "owner only" on).
   let roomPermissions: Permission[] = await OBR.room.getPermissions().catch(() => []);
-  OBR.room.onPermissionsChange((next) => (roomPermissions = next));
+  /** The doors shown again (who may open them follows the permissions): set once they can be (see showDoors). */
+  let doorsAgain: (() => void) | null = null;
+  OBR.room.onPermissionsChange((next) => {
+    roomPermissions = next;
+    doorsAgain?.();
+  });
   const may = (item: Item, action: "CREATE" | "UPDATE" | "DELETE") => isGM || mayDo(item, action, (p) => roomPermissions.includes(p), OBR.player.id);
   const canMove = (item: Item) => may(item, "UPDATE");
   /** The scene's items by id, for what an attachment takes from its parents (see util/attachments.ts). */
@@ -1769,8 +1775,14 @@ async function start() {
     view.setOptions(change);
     showOptions();
     if ("playerView" in change) {
-      watchLocal(options.playerView);
-      refresh();
+      // Turned on: drawn once this client's own sight (Smoke & Spectre!'s local lights) is known, not
+      // first without it (all under the fog, its doors cut) and then built again; nothing drawn meanwhile
+      // (see refresh).
+      awaitingSight = options.playerView;
+      void watchLocal(options.playerView).then(() => {
+        awaitingSight = false;
+        refresh();
+      });
     }
     // The lines to the props come and go with these.
     if ("propDistances" in change || "showProps" in change) {
@@ -1885,6 +1897,8 @@ async function start() {
   let selection: string[] = (await OBR.player.getSelection()) ?? [];
   /** The token being dragged (here, or with the Medición tool): its rings stay where the drag began, as on the map. */
   let draggingId: string | null = null;
+  /** The player view just turned on, its sight (local items) not read yet: nothing drawn meanwhile (see set, refresh). */
+  let awaitingSight = false;
   /**
    * What's measured from, as the map shows one Medición on each screen: this client's own while it
    * measures (a token it drags, here or with the map's Medición; that Medición; its free point here),
@@ -2151,7 +2165,13 @@ async function start() {
       if (options.playerView) {
         lastFog = fogNow();
         view.setFog(lastFog);
-        showDoors();
+        // Which doors the fog leaves as wall, as it opens round the light: their boards follow (the
+        // terrain's cut follows on the drop, built again). Drawn again only when that changed.
+        const before = [...fogShut].join();
+        readFogShut();
+        if ([...fogShut].join() !== before) {
+          showDoors();
+        }
       }
     });
   };
@@ -2483,6 +2503,24 @@ async function start() {
    * One the fog leaves as wall (see fogShut): a board against the wall's
    * face on its clear side.
    */
+  doorsAgain = () => showDoors();
+  // A button over each door this player may open or shut (see doorControl.ts): written to its fog door.
+  view.setDoorControls({
+    // In the player view, as a player (the GM too: what they'd have, not what the GM may).
+    can: (door) => {
+      const asPlayer = !isGM || options.playerView;
+      return !!door.link && mayOpen(door.link, items, sceneMetadata, !asPlayer, (item) => mayDo(item, "UPDATE", (p) => roomPermissions.includes(p), OBR.player.id));
+    },
+    label: (door) => t(door.open ? "vistazo.door.shut" : "vistazo.door.open"),
+    toggle: (door) => {
+      if (door.link) {
+        setFogDoor(door.link, !door.open).catch((error) => {
+          console.error("Rising Ranges: couldn't open or shut the door", error);
+          message(t("vistazo.door.failed"));
+        });
+      }
+    },
+  });
   const showDoors = () => {
     if (!scene) {
       return;
@@ -2527,7 +2565,7 @@ async function start() {
   // Followed only for the player view: every local item comes with each change, and the Medición
   // redraws its own (the ruler, a free point's cells) on every move of the pointer.
   let unwatchLocal: (() => void) | null = null;
-  const watchLocal = (on: boolean) => {
+  const watchLocal = (on: boolean): Promise<void> => {
     if (on && !unwatchLocal) {
       unwatchLocal = OBR.scene.local.onChange((next) => {
         localItems = next;
@@ -2538,17 +2576,22 @@ async function start() {
         }
       });
       // What changed while it wasn't followed.
-      void OBR.scene.local.getItems().then((next) => {
-        localItems = next;
-        localSight = sightKey(next);
-        later();
-      }, () => {});
+      return OBR.scene.local.getItems().then(
+        (next) => {
+          localItems = next;
+          localSight = sightKey(next);
+          // What changed since it was last read, drawn.
+          later();
+        },
+        () => {}
+      );
     } else if (!on && unwatchLocal) {
       unwatchLocal();
       unwatchLocal = null;
     }
+    return Promise.resolve();
   };
-  watchLocal(options.playerView);
+  void watchLocal(options.playerView);
 
   /** Only the relief's heights changed since it was drawn (a brush), within this box (scene px): moved where they are (see VistazoView.reheight). */
   let heightsOnly: Region | null = null;
@@ -2569,6 +2612,10 @@ async function start() {
   /** Shapes being dragged whole (see VistazoView.moveShapes): till they're let go. */
   let dragging = false;
   const refresh = () => {
+    // The player view just turned on: not till its sight is known (see set).
+    if (awaitingSight) {
+      return;
+    }
     try {
       // A brush's dab: the heights moved where they are, nothing built again (or all of it, if that can't be).
       if (heightsOnly && scene && builtWith === `${reliefs.key}${reliefs.surfaced}`) {
@@ -2651,7 +2698,8 @@ async function start() {
         settling = false;
         view.settleNext();
       }
-      time("vistazo.setScene", () => view.setScene(scene!));
+      // What OBR moved (a drop on the map) slides there; what's being dragged here is already where it is.
+      time("vistazo.setScene", () => view.setScene(scene!, { except: new Set([...live.keys(), ...(draggingId ? [draggingId] : [])]) }));
       showDoors();
       showDistances();
     } catch (error) {

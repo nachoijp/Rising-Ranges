@@ -25,6 +25,8 @@
 import type { Door, Group, Pt, ReliefData, Shape } from "../types";
 import { openingFor } from "./doors";
 import { solidAreas } from "./solids";
+import type { MultiPolygon } from "polygon-clipping";
+import polygonClipping from "../../terrain/clip";
 import type { Loop } from "./vector";
 
 /** A map's picture: RGBA, `px` pixels per cell. */
@@ -1047,13 +1049,39 @@ export function uvttRelief(plan: UvttPlan, base: ReliefData, names: UvttNames, o
   }
   if (plan.stairs.length) {
     const g = sub(names.stairs);
+    // A stair's box (the picture's stripes) can run into the walls and rock round it: cut to what's
+    // between them (else it stands in the wall, seen through the fog over it).
+    const closed = (ring: Pt[]): Pt[] => [...ring, ring[0]];
+    const blockers = [
+      ...walls.flatMap((r) => (r.parts?.map((p) => p.rings) ?? [r.rings]).map((rings) => rings.map(closed))),
+      ...plan.solids.map((l) => [l.ring, ...l.holes].map(closed)),
+    ]
+      .filter((poly) => poly[0] && poly[0].length >= 4)
+      // With its box: only those that reach a stair are cut from it.
+      .map((poly) => ({ poly, box: boxOf(poly[0]) }));
     for (const st of plan.stairs) {
       const my = (st.y0 + st.y1) / 2, mx = (st.x0 + st.x1) / 2;
       const ramp = st.axis === "x" ? { a: [st.x0, my] as Pt, b: [st.x1, my] as Pt, from: 0, to: 1, steps: st.steps } : { a: [mx, st.y0] as Pt, b: [mx, st.y1] as Pt, from: 0, to: 1, steps: st.steps };
-      add(
-        [[[st.x0, st.y0], [st.x1, st.y0], [st.x1, st.y1], [st.x0, st.y1]]],
-        { kind: "ramp", h: 1, rel: false, ramp, name: names.stair(++counts.stairs), group: g },
-      );
+      const box: Pt[] = [[st.x0, st.y0], [st.x1, st.y0], [st.x1, st.y1], [st.x0, st.y1]];
+      let pieces: Pt[][][] = [[box]];
+      const near = blockers.filter((b) => b.box[0] < st.x1 && b.box[2] > st.x0 && b.box[1] < st.y1 && b.box[3] > st.y0);
+      if (near.length) {
+        try {
+          pieces = polygonClipping
+            .difference([closed(box)], ...near.map((b): MultiPolygon => [b.poly]))
+            .map((poly) => poly.map((ring) => ring.slice(0, -1) as Pt[]))
+            .filter((poly) => Math.abs(areaOf(poly[0])) >= STAIR_PIECE_MIN);
+        } catch {
+          pieces = [[box]];
+        }
+      }
+      // Wholly in the walls: none (a false find).
+      if (pieces.length === 0) continue;
+      // Its name once, whatever pieces the walls cut it into.
+      const name = names.stair(++counts.stairs);
+      for (const poly of pieces) {
+        add(poly, { kind: "ramp", h: 1, rel: false, ramp, name, group: g });
+      }
     }
   }
   counts.measured = plan.runs.filter((r) => r.m.sure).length;
@@ -1068,6 +1096,23 @@ export function uvttRelief(plan: UvttPlan, base: ReliefData, names: UvttNames, o
     },
     counts,
   };
+}
+
+/** A stair's piece left between walls smaller than this (cells²) is dropped (a sliver past a wall's end). */
+const STAIR_PIECE_MIN = 0.25;
+
+/** A ring's box: x0, y0, x1, y1. */
+function boxOf(ring: Pt[]): [number, number, number, number] {
+  let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const [x, y] of ring) [x0, y0, x1, y1] = [Math.min(x0, x), Math.min(y0, y), Math.max(x1, x), Math.max(y1, y)];
+  return [x0, y0, x1, y1];
+}
+
+/** A ring's signed area. */
+function areaOf(ring: Pt[]): number {
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) a += (ring[j][0] + ring[i][0]) * (ring[j][1] - ring[i][1]);
+  return a / 2;
 }
 
 /** How far to either side of a wall's line (squares) rock is looked for, and the share of it along rock that makes it the rock's own edge. */

@@ -17,9 +17,9 @@ import type { DoorLink, Pt } from "../types";
 //
 // The edges along the map's own border are left out: they're its edge, not a wall.
 
-const SMOKE = "com.battle-system.smoke/";
+export const SMOKE = "com.battle-system.smoke/";
 const FORECAST = "rodeo.owlbear.forecast-item";
-const DOORS = "rodeo.owlbear.dynamic-fog/doors";
+export const DOORS = "rodeo.owlbear.dynamic-fog/doors";
 
 export type { PlanDoor } from "./doors";
 import type { PlanDoor } from "./doors";

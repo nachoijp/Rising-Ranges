@@ -33,6 +33,30 @@ import { since, stamp, time } from "../timing";
 export type { Camera, DistanceLine, Options, Quality, Reach, TokenText, WallStyle } from "./view/types";
 export { tintOf };
 
+/** Who may open or shut a door from the Vistazo (`can`), its button's name (`label`), and doing it (`toggle`). */
+export type DoorControls = { can: (door: DoorView) => boolean; label: (door: DoorView) => string; toggle: (door: DoorView) => void };
+
+/**
+ * A door's button: the door, its element and what it shows (`look`), where it is (scene px, grid units
+ * up), on screen, how big a cell looks there, shown, and past a wall (undefined: not worked out, it
+ * couldn't show).
+ */
+type DoorButton = { door: DoorView; el: HTMLButtonElement; look: string; x: number; y: number; z: number; screen: { x: number; y: number }; cellPx: number; shown: boolean; behind?: boolean };
+
+/** How near the pointer (px) a door's button shows whole. */
+const DOOR_NEAR_PX = 70;
+
+/** How far (cells) a dropped token slides to its place; farther, it's just there (a jump across the map). */
+const SLIDE_MAX_CELLS = 40;
+/** A cell's size on screen (px) where door buttons start to show, and where they're whole. */
+const DOOR_FADE: [number, number] = [26, 46];
+
+/** A door's button's icons: shut, and open (its leaf swung out of its frame). */
+const DOOR_SHUT_ICON =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 21V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v17" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M3 21h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="15" cy="12.5" r="1.3" fill="currentColor"/></svg>';
+const DOOR_OPEN_ICON =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 21V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v17" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" opacity=".45"/><path d="M6 3.5l7 2.5v15.5l-7-1.5z" fill="currentColor" fill-opacity=".25" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M3 21h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="11" cy="13" r="1.2" fill="currentColor"/></svg>';
+
 // The Vistazo's 3D view. The terrain is drawn with WebGL (three.js): each
 // piece lies at its height with the map as its texture, walls go down to
 // whatever is lower beside it, and the GPU's depth buffer sorts it all out.
@@ -147,6 +171,19 @@ export class VistazoView {
   /** The reliefs' doors (see doors.ts), and the list they're built from. */
   private doorGroup = new THREE.Group();
   private doors: DoorView[] = [];
+  /** Tokens sliding to where they've been dropped (see moveTokens), and the frame that moves them on. */
+  private slides = new Map<TokenView, { from: Token; to: Token; t0: number; ms: number }>();
+  private slideFrame = 0;
+  /** Who may open or shut which door, and how (see setDoorControls); null: no buttons. */
+  private doorControls: DoorControls | null = null;
+  /** Each door's button, over its doorway's middle (see placeDoorButtons). */
+  private doorButtons: DoorButton[] = [];
+  /** The eye where the door buttons were last placed (see placeDoorButtons): to tell one's past a wall when the pointer nears it. */
+  private doorEye: DOMPoint | null = null;
+  /** The door buttons' own layer (the tokens' is rebuilt whole). */
+  private readonly doorOverlay: HTMLElement;
+  /** Where the pointer is over the stage (px), for the door buttons near it; null: off it. */
+  private pointerAt: { x: number; y: number } | null = null;
   /** Each template's handles (its origin; a cone's or a line's tip too), to drag it here. */
   private handles: TokenView[] = [];
   /** The tokens a template reaches (see setAffected): ringed. */
@@ -167,6 +204,12 @@ export class VistazoView {
   private fogTexture: THREE.CanvasTexture | null = null;
   /** The fog's floor and curtains (see buildFogFloor). */
   private fogFloor: THREE.Group | null = null;
+  /** The fog's materials (see fogMaterials). */
+  private fogMaterialSet: { floor: THREE.MeshBasicMaterial; curtain: THREE.MeshBasicMaterial; lid: THREE.MeshBasicMaterial } | null = null;
+  /** Each fog edge's curtain and lid (positions), by the edge, for the terrain they were worked out on (see buildFogFloor). */
+  private curtains: { owner: string; edges: Map<string, [number[], number[]]> } = { owner: "", edges: new Map() };
+  /** Counts the terrain's changes (built, reheighted, shapes moved): what was worked out from it is stale. */
+  private terrainEdits = 0;
   /** Where each light's soft clearing is drawn before it's cut out of the fog (see lightMask). */
   private fogScratch: HTMLCanvasElement | null = null;
   /** The fog sharp: what's hidden, no soft edges (see drawFog, fogHidden). */
@@ -329,8 +372,19 @@ export class VistazoView {
     this.lines = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     this.lines.classList.add("lines");
     this.tokenOverlay = document.createElement("div");
-    this.overlay.append(this.lines, this.tokenOverlay);
+    this.doorOverlay = document.createElement("div");
+    this.overlay.append(this.lines, this.tokenOverlay, this.doorOverlay);
     stage.prepend(this.canvas, this.overlay);
+    // The door buttons near the pointer show (see showDoorButtons): no drawing for it.
+    stage.addEventListener("pointermove", (event) => {
+      const r = this.overlay.getBoundingClientRect();
+      this.pointerAt = { x: event.clientX - r.left, y: event.clientY - r.top };
+      this.showDoorButtons();
+    });
+    stage.addEventListener("pointerleave", () => {
+      this.pointerAt = null;
+      this.showDoorButtons();
+    });
     new ResizeObserver(() => this.measure()).observe(stage);
   }
 
@@ -349,6 +403,7 @@ export class VistazoView {
     if (!this.scene || scene.terrainKey !== this.terrainKey) {
       return false;
     }
+    this.terrainEdits++;
     const u = this.u;
     const k = this.k;
     const pieces = this.terrainGroup.children.filter((child) => child.userData.piece) as THREE.Mesh[];
@@ -435,6 +490,7 @@ export class VistazoView {
    */
   moveShapes(shapes: number[], map: [number, number, number, number, number, number]): "started" | "moved" | false {
     let started = false;
+    this.terrainEdits++;
     const scene = this.scene;
     if (!scene) {
       return false;
@@ -547,6 +603,7 @@ export class VistazoView {
    * in a group of their own till the next whole build.
    */
   fillUnder(pieces: Piece[]) {
+    this.terrainEdits++;
     const scene = this.scene;
     if (!scene || pieces.length === 0) {
       return;
@@ -624,7 +681,11 @@ export class VistazoView {
     return this.renderer !== null;
   }
 
-  setScene(scene: VistazoScene) {
+  /**
+   * `slide`: the tokens moved in it slide there from where they were (a drop on the map, which Owlbear
+   * only tells once it's done), all but those in `except` (shown where they are as they're dragged).
+   */
+  setScene(scene: VistazoScene, slide?: { except: Set<string> }) {
     const settling = this.settling;
     this.settling = false;
     this.scene = scene;
@@ -638,7 +699,7 @@ export class VistazoView {
     const base = Math.min(this.minH - 1, ...scene.tokens.map((t) => t.terrain + t.own - 1));
     if (scene.terrainKey === this.terrainKey && base === this.base && !settling) {
       // Only tokens moved (a drag): put them where they are now, without building them again.
-      if (!time("3d.moveTokens", () => this.moveTokens(scene))) {
+      if (!time("3d.moveTokens", () => this.moveTokens(scene, slide?.except))) {
         time("3d.tokens", () => this.buildTokens());
       }
       // The grid changed in Owlbear (square to hex, the hex cells moved): the ground's lines follow.
@@ -764,7 +825,7 @@ export class VistazoView {
     if (!this.fogFrame) {
       this.fogFrame = requestAnimationFrame(() => {
         this.fogFrame = 0;
-        this.drawFog();
+        time("3d.fog", () => this.drawFog());
         this.requestApply();
       });
     }
@@ -983,23 +1044,41 @@ export class VistazoView {
     this.dropFogFloor();
     const u = this.u;
     const k = this.k;
-    const color = new THREE.Color(fog.color);
+    const materials = this.fogMaterials();
+    for (const material of Object.values(materials)) {
+      material.color.set(fog.color);
+    }
     const group = new THREE.Group();
     const { x0, y0, x1, y1 } = scene.bounds;
-    const floorMaterial = new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide });
     // Only where the terrain isn't drawn (a pit by the fog, or under a light's soft edge, shows); the
     // curtains reach well below it, so at a fog shape's sharp edge (its texels blur it) no gap shows.
-    layer(floorMaterial, "fogfloor", this.fogUniforms, FOG_GLSL, "if (!fogHidden(vLayerAt.xy)) discard;");
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry((x1 - x0) * u, (y1 - y0) * u), floorMaterial);
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry((x1 - x0) * u, (y1 - y0) * u), materials.floor);
     floor.position.set(((x0 + x1) / 2) * u, ((y0 + y1) / 2) * u, 0);
     group.add(floor);
-    const fogged = foggedOf(fog, scene.world);
+    const fogged = time("3d.fog.fogged", () => foggedOf(fog, scene.world));
+    // Each edge's curtain kept for the next time: a light moving changes its own outline, not the rooms'.
+    // Good while the terrain is the same (see terrainEdits; not the scene object: a token dragged makes a
+    // new one each frame): an edge the same, its fog on the same side, has the same ground beside it
+    // (anything new near it would have cut it).
+    const owner = `${this.terrainEdits},${u},${k},${this.minH}`;
+    if (this.curtains.owner !== owner) {
+      this.curtains = { owner, edges: new Map() };
+    }
+    const kept = this.curtains.edges;
+    const edges = new Map<string, [number[], number[]]>();
     if (fogged && fogged.length > 0) {
       const step = scene.dpi * 0.25;
       const near = scene.dpi * 0.05;
-      // The ground's height just off the edge on its clear side (0 off the map; null: neither side clear).
-      const clearHeight = (x: number, y: number, nx: number, ny: number): number | null => {
-        for (const side of [1, -1]) {
+      // The fog cuts what's drawn by its picture, a few texels a square (see drawFog): along the curtain's
+      // top that cut wanders a little either side of the edge, and where it falls short, the cut top of a
+      // wall leaves a hole into its hollow. A lid of the fog's colour over the curtain's clear side, drawn
+      // only where the picture hides (so never over what shows), closes it.
+      const texel = 1 / Math.min(1024 / Math.max(x1 - x0 || 1, y1 - y0 || 1), 16 / scene.dpi);
+      const lid = Math.max(scene.dpi * 0.1, texel * 2);
+      // The ground's height just off the edge on its clear side (0 off the map; null: neither side
+      // clear), that side asked first.
+      const clearHeight = (x: number, y: number, nx: number, ny: number, first: number): number | null => {
+        for (const side of [first, -first]) {
           const [qx, qy] = [x + nx * near * side, y + ny * near * side];
           if (!fog.at(qx, qy)) {
             // Over a doorway, as high as its wall: the doorway's cut isn't seen through into the fog.
@@ -1008,7 +1087,6 @@ export class VistazoView {
         }
         return null;
       };
-      const positions: number[] = [];
       const bottom = (Math.min(0, this.minH) - 1) * k;
       for (const polygon of fogged) {
         for (const ring of polygon) {
@@ -1020,6 +1098,18 @@ export class VistazoView {
               continue;
             }
             const [nx, ny] = [-(by - ay) / length, (bx - ax) / length];
+            // Its clear side (its lid's too).
+            const clear = fog.at((ax + bx) / 2 + nx * near, (ay + by) / 2 + ny * near) ? -1 : 1;
+            const key = `${ax},${ay},${bx},${by},${clear}`;
+            const known = kept.get(key) ?? edges.get(key);
+            if (known) {
+              edges.set(key, known);
+              continue;
+            }
+            const positions: number[] = [];
+            const lids: number[] = [];
+            edges.set(key, [positions, lids]);
+            const [cx, cy] = [nx * lid * clear, ny * lid * clear];
             const n = Math.max(1, Math.ceil(length / step));
             // In steps: each sample's height held up to where the ground's height changes on the way
             // to the next (found by halving), then straight up or down: a slant between a plateau's
@@ -1032,18 +1122,26 @@ export class VistazoView {
               }
               const [lo, hi] = [bottom, Math.max(0, h) * k];
               positions.push(x0 * u, y0 * u, lo, x1 * u, y1 * u, lo, x1 * u, y1 * u, hi, x0 * u, y0 * u, lo, x1 * u, y1 * u, hi, x0 * u, y0 * u, hi);
+              if (h > 0) {
+                const [x2, y2, x3, y3] = [x1 + cx, y1 + cy, x0 + cx, y0 + cy];
+                lids.push(x0 * u, y0 * u, hi, x1 * u, y1 * u, hi, x2 * u, y2 * u, hi, x0 * u, y0 * u, hi, x2 * u, y2 * u, hi, x3 * u, y3 * u, hi);
+              }
             };
             let last: [number, number, number | null] | null = null;
+            // At a corner, read a little inside the edge: straight off its end lies on the next edge,
+            // fog on both sides, and the curtain's last stretch would be missing (a gap into the wall).
+            const inset = Math.min(near, length / 2) / length;
             for (let j = 0; j <= n; j++) {
               const [x, y] = [ax + ((bx - ax) * j) / n, ay + ((by - ay) * j) / n];
-              const h = clearHeight(x, y, nx, ny);
+              const f = Math.min(Math.max(j / n, inset), 1 - inset);
+              const h = clearHeight(ax + (bx - ax) * f, ay + (by - ay) * f, nx, ny, clear);
               if (last) {
                 const [lx, ly, lh] = last;
                 let [t0, t1] = [0, 1];
                 if (h !== null && lh !== null && Math.abs(h - lh) > 1e-3) {
                   for (let it = 0; it < 7; it++) {
                     const t = (t0 + t1) / 2;
-                    const mh = clearHeight(lx + (x - lx) * t, ly + (y - ly) * t, nx, ny) ?? 0;
+                    const mh = clearHeight(lx + (x - lx) * t, ly + (y - ly) * t, nx, ny, clear) ?? 0;
                     if (Math.abs(mh - lh) <= Math.abs(mh - h)) {
                       t0 = t;
                     } else {
@@ -1061,14 +1159,43 @@ export class VistazoView {
           }
         }
       }
-      if (positions.length > 0) {
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
-        group.add(new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide })));
+    }
+    this.curtains.edges = edges;
+    for (const [which, material] of [[0, materials.curtain], [1, materials.lid]] as const) {
+      let size = 0;
+      for (const edge of edges.values()) {
+        size += edge[which].length;
       }
+      if (size === 0) {
+        continue;
+      }
+      const all = new Float32Array(size);
+      let at = 0;
+      for (const edge of edges.values()) {
+        all.set(edge[which], at);
+        at += edge[which].length;
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(all, 3));
+      group.add(new THREE.Mesh(geometry, material));
     }
     this.fogFloor = group;
     this.world.add(group);
+  }
+
+  /** The fog floor's, curtains' and lids' materials: made once (the floor is redone as lights move). */
+  private fogMaterials() {
+    if (!this.fogMaterialSet) {
+      const make = (cut: boolean) => {
+        const material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+        if (cut) {
+          layer(material, "fogfloor", this.fogUniforms, FOG_GLSL, "if (!fogHidden(vLayerAt.xy)) discard;");
+        }
+        return material;
+      };
+      this.fogMaterialSet = { floor: make(true), curtain: make(false), lid: make(true) };
+    }
+    return this.fogMaterialSet;
   }
 
   private dropFogFloor() {
@@ -1077,9 +1204,7 @@ export class VistazoView {
     }
     this.world.remove(this.fogFloor);
     this.fogFloor.traverse((child) => {
-      const mesh = child as THREE.Mesh;
-      mesh.geometry?.dispose();
-      (mesh.material as THREE.Material | undefined)?.dispose();
+      (child as THREE.Mesh).geometry?.dispose();
     });
     this.fogFloor = null;
   }
@@ -1905,6 +2030,7 @@ export class VistazoView {
 
   /** The scene drawn (`now`: its terrain worked out here, not waited for from the worker). */
   private build(now = false) {
+    this.terrainEdits++;
     const scene = this.scene;
     if (!scene) {
       return;
@@ -2459,6 +2585,7 @@ export class VistazoView {
   }
 
   private buildTokens() {
+    this.slides.clear();
     const scene = this.scene;
     if (!scene) {
       return;
@@ -2774,7 +2901,126 @@ export class VistazoView {
   setDoors(doors: DoorView[]) {
     this.doors = doors;
     this.buildDoors();
+    this.buildDoorButtons();
     this.requestApply();
+  }
+
+  /** Who may open or shut which door, and how: a button over each such door, shown near the pointer. */
+  setDoorControls(controls: DoorControls | null) {
+    this.doorControls = controls;
+    this.buildDoorButtons();
+    this.requestApply();
+  }
+
+  private buildDoorButtons() {
+    const controls = this.doorControls;
+    const scene = this.scene;
+    const kept = new Map(this.doorButtons.map((b) => [b.door.key, b]));
+    this.doorButtons = [];
+    if (controls && scene) {
+      for (const door of this.doors) {
+        if (!controls.can(door)) {
+          continue;
+        }
+        // The same button kept, as it was, where it was (shown; focused: Enter again shuts what it
+        // opened), only what changed written: not hidden till the next frame (it'd blink as a click
+        // changes its door), nor moved in the page (it'd lose its focus).
+        const before = kept.get(door.key);
+        kept.delete(door.key);
+        const el = before?.el ?? document.createElement("button");
+        if (!before) {
+          el.type = "button";
+          el.className = "doorbtn";
+          el.onpointerdown = (event) => event.stopPropagation();
+          this.doorOverlay.append(el);
+        }
+        const label = controls.label(door);
+        const look = `${door.open}|${label}`;
+        if (before?.look !== look) {
+          el.classList.toggle("open", door.open);
+          el.innerHTML = door.open ? DOOR_OPEN_ICON : DOOR_SHUT_ICON;
+          el.setAttribute("aria-label", label);
+          el.title = label;
+        }
+        el.onclick = (event) => {
+          event.stopPropagation();
+          controls.toggle(door);
+        };
+        const [mx, my] = [(door.a.x + door.b.x) / 2, (door.a.y + door.b.y) / 2];
+        // On its lintel: its doorway's top over its floor, a little up (clear of the leaf). Its floor read
+        // beside it, not in it: a doorway left as wall (the player view's, see DoorView.panel) reads the
+        // wall's top there.
+        const len = Math.hypot(door.b.x - door.a.x, door.b.y - door.a.y) || 1;
+        const [nx, ny] = [(-(door.b.y - door.a.y) / len) * door.cell * 0.6, ((door.b.x - door.a.x) / len) * door.cell * 0.6];
+        const sides = [scene.heightAt(mx + nx, my + ny), scene.heightAt(mx - nx, my - ny)].filter((h): h is number => h !== undefined);
+        const floor = sides.length > 0 ? Math.min(...sides) : (scene.heightAt(mx, my) ?? 0);
+        this.doorButtons.push({ door, el, look, x: mx, y: my, z: floor + door.h + 0.15, screen: before?.screen ?? { x: 0, y: 0 }, cellPx: before?.cellPx ?? 0, shown: before?.shown ?? false, behind: before?.behind });
+      }
+    }
+    for (const gone of kept.values()) {
+      gone.el.remove();
+    }
+  }
+
+  /** The door buttons where their doors are on screen (with the tokens: see apply). */
+  private placeDoorButtons(camM: DOMMatrix, eye: DOMPoint) {
+    const u = this.u;
+    const k = this.k;
+    for (const button of this.doorButtons) {
+      const { door } = button;
+      const p = camM.transformPoint(new DOMPoint(button.x * u, button.y * u, button.z * k));
+      const f = this.persp / Math.max(1, this.persp - p.z);
+      button.screen = { x: this.width / 2 + p.x * f, y: this.height / 2 + p.y * f };
+      // How close it's seen, the same for every door: a cell's size on screen where it is (not its
+      // doorway's, which a narrow door, or one seen edge on, would make look far).
+      button.cellPx = door.cell * u * this.fit * this.camera.zoom * f;
+      button.el.style.transform = `translate(${button.screen.x}px,${button.screen.y}px)`;
+      // Behind the eye: never. Past a wall: worked out only for one that could show (seen close
+      // enough, or the pointer near it: see showDoorButtons), not for every door every frame.
+      button.behind = this.persp - p.z <= 1 ? true : button.cellPx > DOOR_FADE[0] ? this.doorBehind(button, eye) : undefined;
+    }
+    this.doorEye = eye;
+    this.showDoorButtons();
+  }
+
+  /** Whether a wall stands between a door's button and the eye (not its own: from a cell out on the eye's side). */
+  private doorBehind(button: DoorButton, eye: DOMPoint): boolean {
+    const { door } = button;
+    const u = this.u;
+    const len = Math.hypot(door.b.x - door.a.x, door.b.y - door.a.y) || 1;
+    const [nx, ny] = [-(door.b.y - door.a.y) / len, (door.b.x - door.a.x) / len];
+    const toward = Math.sign((eye.x / u - button.x) * nx + (eye.y / u - button.y) * ny) || 1;
+    const out = door.cell * 0.6 * toward;
+    return this.blocked((button.x + nx * out) * u, (button.y + ny * out) * u, button.z * this.k, eye);
+  }
+
+  /**
+   * Each door button as clear as the camera's close (every door alike: fading out between DOOR_FADE's
+   * cell sizes on screen), whole near the pointer, out of the way behind a wall (focus still shows one).
+   */
+  private showDoorButtons() {
+    const at = this.pointerAt;
+    const [far, close] = DOOR_FADE;
+    for (const button of this.doorButtons) {
+      const near = !!at && Math.hypot(at.x - button.screen.x, at.y - button.screen.y) < DOOR_NEAR_PX;
+      if (near && button.behind === undefined && this.doorEye) {
+        button.behind = this.doorBehind(button, this.doorEye);
+      }
+      const seen = Math.min(1, Math.max(0, (button.cellPx - far) / (close - far)));
+      const clear = button.behind !== false ? 0 : near ? 1 : seen;
+      const value = clear.toFixed(2);
+      if (button.el.style.getPropertyValue("--clear") !== value) {
+        button.el.style.setProperty("--clear", value);
+        // Out of the keyboard's way when it can't be seen.
+        button.el.tabIndex = button.behind !== false ? -1 : 0;
+      }
+      // Clicked only once there to see.
+      const shown = clear >= 0.5;
+      if (shown !== button.shown) {
+        button.shown = shown;
+        button.el.classList.toggle("shown", shown);
+      }
+    }
   }
 
   private buildDoors() {
@@ -3147,7 +3393,7 @@ export class VistazoView {
    * one went from flying to standing or back, a prop changed): then they're
    * built again.
    */
-  private moveTokens(scene: VistazoScene): boolean {
+  private moveTokens(scene: VistazoScene, slideExcept?: Set<string>): boolean {
     const views = this.tokenViews.filter((view) => !view.prop);
     const propViews = this.tokenViews.filter((view) => view.prop);
     if (views.length !== scene.tokens.length || propViews.length !== (this.propsMode === "none" ? 0 : scene.props.length)) {
@@ -3170,39 +3416,90 @@ export class VistazoView {
     if (views.some((view) => !byId.has(view.token.id) || raised(view.token) !== raised(byId.get(view.token.id)!) || (view.token.own < 0) !== (byId.get(view.token.id)!.own < 0) || view.token.radius !== byId.get(view.token.id)!.radius)) {
       return false;
     }
-    const u = this.u;
-    const k = this.k;
+    const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
     for (const view of views) {
       const token = byId.get(view.token.id)!;
       const moved = token.x !== view.token.x || token.y !== view.token.y || token.own !== view.token.own || token.terrain !== view.token.terrain;
-      view.token = token;
       view.el.classList.toggle("gmhidden", token.hidden);
+      // Sliding there already (the scene drawn again meanwhile): left to get there, not started over.
+      const sliding = this.slides.get(view);
+      if (sliding && sliding.to.x === token.x && sliding.to.y === token.y && sliding.to.own === token.own && sliding.to.terrain === token.terrain) {
+        sliding.to = token;
+        continue;
+      }
+      // Sliding elsewhere: on from where it's got to.
+      const from = view.token;
+      this.slides.delete(view);
+      view.token = token;
       if (!moved) {
         continue;
       }
-      const zFloor = floorOf(token) * k;
-      view.zTok = (token.terrain + token.own) * k;
-      if (view.seat) {
-        moveBase(view.seat, token.x * u, token.y * u, zFloor + 1);
+      const far = Math.hypot(token.x - from.x, token.y - from.y) / scene.dpi;
+      if (slideExcept && !slideExcept.has(token.id) && !reduced && far > 0.1 && far < SLIDE_MAX_CELLS) {
+        // From where it was shown, a moment (longer the farther), easing in.
+        this.slides.set(view, { from, to: token, t0: performance.now(), ms: Math.min(450, 160 + far * 40) });
+        // Shown where it was till then (its token, read by the rest, as it's shown: see stepSlides).
+        view.token = from;
+        continue;
       }
-      if (view.painted) {
-        [view.painted.x, view.painted.y, view.painted.z] = [token.x, token.y, zFloor];
-        this.basesMoved = true;
-      }
-      const stem = view.marks?.stem;
-      if (stem) {
-        const position = stem.geometry.getAttribute("position") as THREE.BufferAttribute;
-        position.setXYZ(0, token.x * u, token.y * u, view.zTok);
-        position.setXYZ(1, token.x * u, token.y * u, zFloor);
-        position.needsUpdate = true;
-        stem.computeLineDistances();
-      }
-      this.writeLabel(view);
+      this.placeView(view);
+    }
+    if (this.slides.size > 0) {
+      this.slideFrame ||= requestAnimationFrame(() => this.stepSlides());
     }
     if (this.basesMoved) {
       this.paintBases();
     }
     return true;
+  }
+
+  /** The tokens sliding to where they've been dropped, one frame further (see moveTokens). */
+  private stepSlides() {
+    this.slideFrame = 0;
+    const now = performance.now();
+    for (const [view, slide] of this.slides) {
+      const t = Math.min(1, (now - slide.t0) / slide.ms);
+      // Ease-out: quick off, settling in.
+      const e = 1 - (1 - t) ** 3;
+      const { from, to } = slide;
+      view.token = t >= 1 ? to : { ...to, x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e, terrain: from.terrain + (to.terrain - from.terrain) * e, own: from.own + (to.own - from.own) * e };
+      this.placeView(view);
+      if (t >= 1) {
+        this.slides.delete(view);
+      }
+    }
+    if (this.basesMoved) {
+      this.paintBases();
+    }
+    if (this.slides.size > 0) {
+      this.slideFrame = requestAnimationFrame(() => this.stepSlides());
+    }
+    this.requestApply();
+  }
+
+  /** A token's base, line and label where its token says (see moveTokens). */
+  private placeView(view: TokenView) {
+    const u = this.u;
+    const k = this.k;
+    const token = view.token;
+    const zFloor = floorOf(token) * k;
+    view.zTok = (token.terrain + token.own) * k;
+    if (view.seat) {
+      moveBase(view.seat, token.x * u, token.y * u, zFloor + 1);
+    }
+    if (view.painted) {
+      [view.painted.x, view.painted.y, view.painted.z] = [token.x, token.y, zFloor];
+      this.basesMoved = true;
+    }
+    const stem = view.marks?.stem;
+    if (stem) {
+      const position = stem.geometry.getAttribute("position") as THREE.BufferAttribute;
+      position.setXYZ(0, token.x * u, token.y * u, view.zTok);
+      position.setXYZ(1, token.x * u, token.y * u, zFloor);
+      position.needsUpdate = true;
+      stem.computeLineDistances();
+    }
+    this.writeLabel(view);
   }
 
   // ---------- Camera ----------
@@ -3388,6 +3685,7 @@ export class VistazoView {
       el.classList.toggle("hidden", view.hidden);
     }
     since("3d.apply.tokens", placed);
+    this.placeDoorButtons(camM, eye);
     this.drawLines();
     this.onCamera();
   }
