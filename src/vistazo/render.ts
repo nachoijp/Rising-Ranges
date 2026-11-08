@@ -64,8 +64,6 @@ const MOTION_SETTLE_MS = 300;
 /** Frames slower than this (ms) lose sharpness while moving; faster than that, they get it back. */
 const MOTION_SLOW_MS = 28;
 const MOTION_FAST_MS = 18;
-/** The least of its sharpness kept while moving (each way: a quarter of the pixels). */
-const MOTION_LEAST = 0.5;
 
 /** How far (cells) a dropped token slides to its place; farther, it's just there (a jump across the map). */
 const SLIDE_MAX_CELLS = 40;
@@ -3436,7 +3434,8 @@ export class VistazoView {
   private wantsSmooth(): boolean {
     let slow = false;
     try {
-      slow = localStorage.getItem(SLOW_DEVICE) === "1";
+      // Found slow at a quality that gives that up (not high: smoothed as chosen).
+      slow = this.look.slow && localStorage.getItem(SLOW_DEVICE) === "1";
     } catch {
       // Not kept: as the quality says.
     }
@@ -3482,7 +3481,8 @@ export class VistazoView {
   /** Device pixels to a screen pixel now: the quality's, less while something moves on a slow card (see trackMotion). */
   private pixelRatio(): number {
     const full = Math.min(this.look.pixels, window.devicePixelRatio || 1);
-    return this.motion.on ? Math.max(0.35, full * this.motion.scale) : full;
+    // Never under the quality's least (another quality chosen meanwhile: its own).
+    return this.motion.on ? Math.max(0.35, full * Math.max(this.look.least, this.motion.scale)) : full;
   }
 
   /**
@@ -3524,7 +3524,7 @@ export class VistazoView {
     }
     // A slow device (frames well over 40 ms, moving, for a while: the opening's tilt in tells it): its edges
     // no longer smoothed, from now on and next time too (see wantsSmooth).
-    if (this.smooth) {
+    if (this.smooth && this.look.slow) {
       this.longGaps.push(gap);
       if (this.longGaps.length >= SLOW_FRAMES) {
         const mean = this.longGaps.reduce((a, b) => a + b, 0) / this.longGaps.length;
@@ -3542,7 +3542,7 @@ export class VistazoView {
     // Judged on a few frames, not too often (each change sizes the canvas again).
     if (m.gaps.length >= 6 && now - m.since > 300) {
       const mean = m.gaps.reduce((a, b) => a + b, 0) / m.gaps.length;
-      const next = mean > MOTION_SLOW_MS ? Math.max(MOTION_LEAST, m.scale * 0.75) : mean < MOTION_FAST_MS ? Math.min(1, m.scale * 1.2) : m.scale;
+      const next = mean > MOTION_SLOW_MS ? Math.max(this.look.least, m.scale * 0.75) : mean < MOTION_FAST_MS ? Math.min(1, m.scale * 1.2) : m.scale;
       if (next !== m.scale) {
         m.scale = next;
         m.since = now;

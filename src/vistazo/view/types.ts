@@ -99,11 +99,17 @@ export type Reach = {
 // "stone" is brick courses (its name from before "rubble", irregular stones, was added; kept for what's saved).
 export type Quality = "low" | "medium" | "high";
 
-/** Each quality's sharpness (most device pixels to a screen pixel), weather (share, ms a frame), motion, and its edges smoothed (multisampled). */
-export const QUALITY: Record<Quality, { pixels: number; amount: number; frameMs: number; motion: boolean; smooth: boolean }> = {
-  high: { pixels: 2, amount: 1, frameMs: 33, motion: true, smooth: true },
-  medium: { pixels: 1.5, amount: 0.65, frameMs: 40, motion: true, smooth: true },
-  low: { pixels: 1, amount: 0.35, frameMs: 66, motion: false, smooth: false },
+/**
+ * Each quality's sharpness (most device pixels to a screen pixel), weather (share, ms a frame), motion,
+ * and its edges smoothed (multisampled). What gives up some of the picture to keep up, by quality (high
+ * none: as chosen, however the device copes): `least`, the share of its sharpness kept at least while
+ * the camera moves on a slow card (1: never less); `slow`, whether a device found slow loses its
+ * smoothed edges.
+ */
+export const QUALITY: Record<Quality, { pixels: number; amount: number; frameMs: number; motion: boolean; smooth: boolean; least: number; slow: boolean }> = {
+  high: { pixels: 2, amount: 1, frameMs: 33, motion: true, smooth: true, least: 1, slow: false },
+  medium: { pixels: 1.5, amount: 0.65, frameMs: 40, motion: true, smooth: true, least: 0.75, slow: true },
+  low: { pixels: 1, amount: 0.35, frameMs: 66, motion: false, smooth: false, least: 0.5, slow: false },
 };
 
 export type WallStyle = "blend" | "flat" | "stretch" | "fold" | "stone" | "rubble" | "earth" | "wood";
