@@ -10,6 +10,8 @@ import { bridgeHighest, bridgeTop, inShape, type Bridge, type VistazoScene } fro
 export const FILL_SIZE = 192;
 /** How far past a bridge's outline its fill reaches (cells): over its drawn edge, which the outline seldom follows exactly. */
 export const FILL_GROW = 0.15;
+/** A bridge's fill's texels for each cell, at most (see fillFrame). */
+const FILL_PER_CELL = 32;
 /** A bridge's underside's texels for each cell (at most its fill's): a small one (a statue's arm) takes a few, not FILL_SIZE². */
 const UNDER_PER_CELL = 8;
 
@@ -18,7 +20,11 @@ export function fillFrame(shape: MultiPolygon, grow: number): { x0: number; y0: 
   const points = shape.flat(2);
   const [sx0, sx1] = [Math.min(...points.map((p) => p[0])) - grow, Math.max(...points.map((p) => p[0])) + grow];
   const [sy0, sy1] = [Math.min(...points.map((p) => p[1])) - grow, Math.max(...points.map((p) => p[1])) + grow];
-  const step = Math.max(1e-6, sx1 - sx0, sy1 - sy0) / (FILL_SIZE - 8);
+  // FILL_SIZE across at most; a small one (a doorway's lintel) only FILL_PER_CELL a cell: the fill's a
+  // blur of the map round it, not its detail (and every texel of it costs, a few hundred of them a map).
+  const cell = grow / FILL_GROW;
+  const span = Math.max(1e-6, sx1 - sx0, sy1 - sy0);
+  const step = span / Math.max(8, Math.min(FILL_SIZE - 8, Math.ceil((span / cell) * FILL_PER_CELL)));
   const [x0, y0] = [sx0 - step * 4, sy0 - step * 4];
   const [cols, rows] = [Math.ceil((sx1 - sx0) / step) + 8, Math.ceil((sy1 - sy0) / step) + 8];
   return { x0, y0, step, cols, rows };

@@ -75,6 +75,8 @@ export class Relief {
   version = 0;
   private buckets: Map<number, Layer[]> | null = null;
   private rasters = new Map<string, Raster>();
+  /** Each shape's own pieces by what they're made from (see piecesOf): kept while that stays (a drag moves one shape, not the rest). */
+  private ownPieces = new Map<string, { pieces: Piece[]; used: number }>();
   private deriving = false;
   private kin: string | undefined;
   /** The terrain under it, of the map images below its own (see stack.ts); none for the lowest. */
@@ -87,7 +89,18 @@ export class Relief {
    */
   clear = true;
 
-  constructor(data: ReliefData) {
+  /** The relief this one's made from (a doorway-cut copy's original, see doorCut.ts), or itself: what's kept from working out (see vistazo.ts) is kept by it. */
+  readonly source: Relief;
+
+  /** `from`: a relief this one's a variant of (a doorway-cut copy): what it has worked out is shared. */
+  constructor(data: ReliefData, from?: Relief) {
+    this.source = from?.source ?? this;
+    if (from) {
+      this.rasters = from.rasters;
+      this.ownPieces = from.ownPieces;
+      // Counting on from its own: what either uses is kept as recent (see derive's forgetting).
+      this.version = from.version;
+    }
     this.data = data;
     this.gw = Math.round(data.w / G) + 1;
     this.gh = Math.round(data.h / G) + 1;
@@ -304,7 +317,7 @@ export class Relief {
     try {
       this.data.shapes.forEach((s, si) => {
         this.kin = s.kin;
-        const own = this.piecesOf(s, si);
+        const own = this.piecesKept(s, si);
         this.pieces.push(...own);
         const [ring, holes] = this.coordsOf(s);
         if (own.length === 0 || ring.length < 3) {
@@ -371,6 +384,36 @@ export class Relief {
   rampEnds(s: Shape): [number, number] {
     const { a, b, from, to } = s.ramp!;
     return s.rel ? [quarter(this.groundAt(...a)) + from, quarter(this.groundAt(...b)) + to] : [from, to];
+  }
+
+  /**
+   * A shape's pieces, as piecesOf makes them, kept while what they're made from stays: its kind, height,
+   * arrow, corners (where and how high), its height points. Not a relative one's: those read what's
+   * under them, which may have changed.
+   */
+  private piecesKept(s: Shape, si: number): Piece[] {
+    if (s.rel) {
+      return this.piecesOf(s, si);
+    }
+    const verts = this.data.verts;
+    const corners = [s.ring, ...(s.holes ?? [])].map((loop) => loop.map((i) => `${verts[i].x},${verts[i].y},${verts[i].h}`).join(" ")).join("/");
+    const points = s.kind === "flat" || (s.kind === "ramp" && s.ramp) ? "" : this.data.points.filter((_, k) => this.pointOwners[k] === si).map((p) => `${p.x},${p.y},${p.h}`).join(" ");
+    const key = `${si}|${s.kind}|${s.h}|${s.ramp ? JSON.stringify(s.ramp) : ""}|${corners}|${points}`;
+    const known = this.ownPieces.get(key);
+    if (known) {
+      known.used = this.version;
+      return known.pieces;
+    }
+    const pieces = this.piecesOf(s, si);
+    this.ownPieces.set(key, { pieces, used: this.version });
+    if (this.ownPieces.size > 2 * (this.data.shapes.length + 50)) {
+      for (const [k, v] of this.ownPieces) {
+        if (v.used < this.version - 2) {
+          this.ownPieces.delete(k);
+        }
+      }
+    }
+    return pieces;
   }
 
   /** What a shape makes: one piece, or (stairs) one a step. */

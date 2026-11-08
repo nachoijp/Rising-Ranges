@@ -220,16 +220,117 @@ function litArea(light: Light, segments: Segment[]): Point[] {
   }
   const sorted = (cone ? angles.map((a) => middle + Math.atan2(Math.sin(a - middle), Math.cos(a - middle))) : angles.map((a) => (a + Math.PI * 4) % (Math.PI * 2))).sort((a, b) => a - b);
   const area: Point[] = cone ? [[cx, cy]] : [];
+  // Many walls: each ray asks only those on the cells it crosses, nearest first (see SegmentGrid).
+  const grid = near.length > GRID_FROM ? new SegmentGrid(near, cx, cy) : null;
   for (const a of sorted) {
     const dx = Math.cos(a);
     const dy = Math.sin(a);
     let reach = radius;
-    for (const segment of near) {
-      reach = Math.min(reach, hit(cx, cy, dx, dy, segment));
+    if (grid) {
+      reach = grid.cast(cx, cy, dx, dy, radius);
+    } else {
+      for (const segment of near) {
+        reach = Math.min(reach, hit(cx, cy, dx, dy, segment));
+      }
     }
     area.push([cx + dx * reach, cy + dy * reach]);
   }
   return area;
+}
+
+/** How many walls in reach before a light's rays go by a grid (see SegmentGrid): fewer, each ray asks them all. */
+const GRID_FROM = 48;
+
+/**
+ * Walls on a grid of squares (each in every square it crosses), for rays from a point: a ray walks the
+ * squares it crosses from there, nearest first, asking only their walls, and stops once the nearest it
+ * met is before the square's far side (nothing further can be nearer).
+ */
+class SegmentGrid {
+  private readonly x0: number;
+  private readonly y0: number;
+  private readonly size: number;
+  private readonly cols: number;
+  private readonly rows: number;
+  private readonly cells: number[][];
+  /** Which ray last asked each wall (one asked once a ray, however many squares it's in). */
+  private readonly asked: Uint32Array;
+  private ray = 0;
+
+  constructor(private readonly segments: Segment[], cx: number, cy: number) {
+    let [x0, y0, x1, y1] = [cx, cy, cx, cy];
+    for (const [ax, ay, bx, by] of segments) {
+      x0 = Math.min(x0, ax, bx);
+      y0 = Math.min(y0, ay, by);
+      x1 = Math.max(x1, ax, bx);
+      y1 = Math.max(y1, ay, by);
+    }
+    const side = Math.max(1, Math.min(128, Math.ceil(Math.sqrt(segments.length) * 2)));
+    this.size = Math.max(x1 - x0, y1 - y0, 1) / side;
+    [this.x0, this.y0] = [x0, y0];
+    this.cols = Math.max(1, Math.ceil((x1 - x0) / this.size) + 1);
+    this.rows = Math.max(1, Math.ceil((y1 - y0) / this.size) + 1);
+    this.cells = Array.from({ length: this.cols * this.rows }, () => []);
+    this.asked = new Uint32Array(segments.length);
+    segments.forEach(([ax, ay, bx, by], k) => {
+      // Each square its box reaches (a few extra for a slanting wall: asked, never wrong).
+      const [c0, c1] = [this.col(Math.min(ax, bx)), this.col(Math.max(ax, bx))];
+      const [r0, r1] = [this.row(Math.min(ay, by)), this.row(Math.max(ay, by))];
+      for (let r = r0; r <= r1; r++) {
+        for (let c = c0; c <= c1; c++) {
+          this.cells[r * this.cols + c].push(k);
+        }
+      }
+    });
+  }
+
+  private col(x: number) {
+    return Math.max(0, Math.min(this.cols - 1, Math.floor((x - this.x0) / this.size)));
+  }
+
+  private row(y: number) {
+    return Math.max(0, Math.min(this.rows - 1, Math.floor((y - this.y0) / this.size)));
+  }
+
+  /** How far a ray from (cx, cy) going (dx, dy) gets before a wall, at most `radius`. */
+  cast(cx: number, cy: number, dx: number, dy: number, radius: number): number {
+    const ray = ++this.ray;
+    let [c, r] = [this.col(cx), this.row(cy)];
+    const [stepC, stepR] = [dx > 0 ? 1 : -1, dy > 0 ? 1 : -1];
+    // How far along the ray to the next column's and row's line, and between lines.
+    const nextX = this.x0 + (c + (dx > 0 ? 1 : 0)) * this.size;
+    const nextY = this.y0 + (r + (dy > 0 ? 1 : 0)) * this.size;
+    let tX = Math.abs(dx) < 1e-12 ? Infinity : (nextX - cx) / dx;
+    let tY = Math.abs(dy) < 1e-12 ? Infinity : (nextY - cy) / dy;
+    const [dtX, dtY] = [Math.abs(dx) < 1e-12 ? Infinity : this.size / Math.abs(dx), Math.abs(dy) < 1e-12 ? Infinity : this.size / Math.abs(dy)];
+    let best = radius;
+    for (;;) {
+      for (const k of this.cells[r * this.cols + c]) {
+        if (this.asked[k] !== ray) {
+          this.asked[k] = ray;
+          const t = hit(cx, cy, dx, dy, this.segments[k]);
+          if (t < best) {
+            best = t;
+          }
+        }
+      }
+      const out = Math.min(tX, tY);
+      // The nearest wall met is before this square's far side, or the reach is: done.
+      if (best <= out || out >= radius) {
+        return best;
+      }
+      if (tX < tY) {
+        c += stepC;
+        tX += dtX;
+      } else {
+        r += stepR;
+        tY += dtY;
+      }
+      if (c < 0 || r < 0 || c >= this.cols || r >= this.rows) {
+        return best;
+      }
+    }
+  }
 }
 
 /**
@@ -244,12 +345,13 @@ export function fogOver(filled: boolean, items: Item[], local: Item[], color = "
     .sort((a, b) => a.zIndex - b.zIndex)
     .flatMap((item) => itemOutline(item).map((ring) => ({ ring, cut: !item.visible })));
   const segments = blockingSegments(all.filter(isWall));
+  const walls = wallsKey(segments);
   const lights = all.filter(isLight).filter((light) => light.visible && light.attenuationRadius > 0);
   const lit: LitArea[] = [];
   // Primary and auxiliary lights clear what they light, as far as the walls let them.
   for (const light of lights) {
     if (light.lightType !== "SECONDARY") {
-      lit.push({ rings: [litArea(light, segments)], light: lightOf(light) });
+      lit.push({ rings: [litKept(light, segments, walls)], light: lightOf(light) });
     }
   }
   // A secondary one (a campfire) only what of that a primary light sees: in its line of sight (its
@@ -258,10 +360,15 @@ export function fogOver(filled: boolean, items: Item[], local: Item[], color = "
   const seers = lights.filter((light) => light.lightType !== "SECONDARY" && light.lightType !== "AUXILIARY");
   if (secondary.length > 0 && seers.length > 0) {
     try {
-      const seen = unionOf(seers.map((light) => litArea({ ...light, attenuationRadius: SIGHT }, segments)));
+      // What the primary lights see, kept while they and the walls stay (see kept).
+      const seenKey = `seen|${seers.map((light) => lightKey(light, SIGHT)).join(";")}|${walls}`;
+      const seen = kept(seenKey, () => unionOf(seers.map((light) => litKept({ ...light, attenuationRadius: SIGHT }, segments, walls))));
       for (const light of secondary) {
-        const own: MultiPolygon = [[closed(litArea(light, segments))]];
-        for (const polygon of seen.length > 0 ? polygonClipping.intersection(own, seen) : []) {
+        const parts = kept(`part|${lightKey(light)}|${seenKey}`, () => {
+          const own: MultiPolygon = [[closed(litKept(light, segments, walls))]];
+          return seen.length > 0 ? polygonClipping.intersection(own, seen) : [];
+        });
+        for (const polygon of parts) {
           lit.push({ rings: polygon.map((ring) => ring.slice(0, -1)), light: lightOf(light) });
         }
       }
@@ -299,6 +406,52 @@ export function fogOver(filled: boolean, items: Item[], local: Item[], color = "
     return true;
   };
   return { at, filled, layers, lit, color };
+}
+
+/**
+ * What's been worked out for the fog's lights, by what it depends on (see litKept): asked again for
+ * every light whenever anything the fog depends on changes, and for every frame of a lit token's drag,
+ * though only one light moved. The most recent few hundred kept.
+ */
+const keptLight = new Map<string, unknown>();
+
+function kept<T>(key: string, make: () => T): T {
+  if (keptLight.has(key)) {
+    const value = keptLight.get(key) as T;
+    // Most recent last (what's dropped is the oldest).
+    keptLight.delete(key);
+    keptLight.set(key, value);
+    return value;
+  }
+  const value = make();
+  keptLight.set(key, value);
+  if (keptLight.size > KEPT_LIGHTS) {
+    keptLight.delete(keptLight.keys().next().value!);
+  }
+  return value;
+}
+
+const KEPT_LIGHTS = 300;
+
+/** A light as what its lit area depends on (where, how far, which way, how wide). */
+function lightKey(light: Light, radius = light.attenuationRadius): string {
+  return `${light.lightType}|${light.position.x},${light.position.y}|${radius}|${light.rotation}|${light.innerAngle}|${light.outerAngle}`;
+}
+
+/** The walls that block sight as a short key (a hash of their ends): the same walls, the same key. */
+function wallsKey(segments: Segment[]): string {
+  let h = 2166136261;
+  for (const segment of segments) {
+    for (const v of segment) {
+      h = Math.imul(h ^ Math.round(v * 16), 16777619);
+    }
+  }
+  return `${segments.length}:${(h >>> 0).toString(36)}`;
+}
+
+/** A light's lit area (see litArea), kept while it and the walls stay. */
+function litKept(light: Light, segments: Segment[], walls: string): Point[] {
+  return kept(`lit|${lightKey(light)}|${walls}`, () => litArea(light, segments));
 }
 
 /** The share of a light's reach each unit of its falloff fades (see lightOf). */

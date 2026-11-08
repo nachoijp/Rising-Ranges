@@ -5,6 +5,7 @@ import type { Bridge, Piece, StandEdge } from "../vistazo/scene";
 import { cellToScene, sceneToCell, type Anchor } from "./anchor";
 import { bbox, centroid, closed, inBox, inShape, open } from "./geom";
 import { ReliefMesh } from "./mesh";
+import { time } from "../timing";
 import type { Layer, Piece as ReliefPiece, Relief } from "./relief";
 import type { Pt, Skin } from "./types";
 
@@ -96,7 +97,11 @@ export function reliefTerrain(
   const pieces: Piece[] = [];
   // From the top down: each layer's pieces less what's over them (only those whose box reaches theirs:
   // not one growing union of all of them), within the map.
-  const above: { polygon: Pt[][]; box: { x0: number; y0: number; x1: number; y1: number } }[] = [];
+  const above: { polygon: Pt[][]; box: { x0: number; y0: number; x1: number; y1: number }; sig: string }[] = [];
+  // Each piece's part as last cut, by the piece and what was over it (see cutKept): a drag moves one
+  // shape, and only what's under it is cut again.
+  const kept = cutsOf(relief.source);
+  const reach = within ? JSON.stringify(within) : `${w}x${h}`;
   for (let li = relief.layers.length - 1; li >= 0; li--) {
     const layer = relief.layers[li];
     if (skip?.has(layer.si) || !near(layer.outer)) {
@@ -113,15 +118,27 @@ export function reliefTerrain(
     for (const piece of layer.pieces) {
       let parts: Pt[][][] = [[closed(piece.ring), ...piece.holes.map(closed)]];
       const pb = bbox(piece.ring);
-      const over = above.filter(({ box: b }) => b.x0 < pb.x1 && b.x1 > pb.x0 && b.y0 < pb.y1 && b.y1 > pb.y0).map((o) => [o.polygon]);
-      try {
-        parts = clip.intersection(parts, bounds) as Pt[][][];
-        if (over.length > 0) {
-          parts = clip.difference(parts, ...over) as Pt[][][];
+      const overing = above.filter(({ box: b }) => b.x0 < pb.x1 && b.x1 > pb.x0 && b.y0 < pb.y1 && b.y1 > pb.y0);
+      const key = `${loopsSig([piece.ring, ...piece.holes])}|${reach}|${overing.map((o) => o.sig).join(";")}`;
+      const known = kept.get(key);
+      if (known) {
+        known.used = kept.round;
+        parts = known.parts;
+      } else {
+        try {
+          // Within the map already (most): not cut to it.
+          const inside = !within && pb.x0 >= 0 && pb.y0 >= 0 && pb.x1 <= w && pb.y1 <= h;
+          if (!inside) {
+            parts = clip.intersection(parts, bounds) as Pt[][][];
+          }
+          if (overing.length > 0) {
+            parts = clip.difference(parts, ...overing.map((o) => [o.polygon])) as Pt[][][];
+          }
+        } catch (error) {
+          console.error("Rising Ranges: 3D Glance left out a part of the relief", error);
+          continue;
         }
-      } catch (error) {
-        console.error("Rising Ranges: 3D Glance left out a part of the relief", error);
-        continue;
+        kept.set(key, { parts, used: kept.round });
       }
       if (parts.length === 0) {
         continue;
@@ -179,19 +196,53 @@ export function reliefTerrain(
       }
       pieces.push(drawn);
     }
-    above.push({ polygon: [closed(layer.ring), ...layer.holes.map(closed)], box: bbox(layer.ring) });
+    above.push({ polygon: [closed(layer.ring), ...layer.holes.map(closed)], box: bbox(layer.ring), sig: loopsSig([layer.ring, ...layer.holes]) });
   }
+  kept.done();
   pieces.reverse();
-  // The ground: what no shape covers, at the painted ground's heights.
-  let ground: Pt[][][] = bounds;
-  try {
-    if (above.length > 0) {
-      ground = clip.difference(ground, ...above.map((o) => [o.polygon])) as Pt[][][];
-    }
-  } catch (error) {
-    console.error("Rising Ranges: 3D Glance couldn't cut the relief's ground", error);
-  }
   const plainGround = relief.data.ground.every((v) => v === 0) && !relief.layers.some((layer) => layer.soft > 0);
+  // The ground: what no shape covers, at the painted ground's heights. Cut a tile at a time (each less
+  // only the shapes over it, kept while they stay: a dragged shape cuts again only the tiles it's on),
+  // the tiles side by side as its parts (their sides between them at one height: no walls there). A
+  // ground that isn't flat is cut whole (kept too, while no shape over it changes).
+  let ground: Pt[][][] = [];
+  time("relief.ground", () => {
+    const tiles: Pt[][][] = [];
+    // Not on a ground that isn't flat: tiles cut fine apart might not meet corner to corner (cracks).
+    if (within || !plainGround) {
+      tiles.push(...bounds);
+    } else {
+      for (let ty = 0; ty < h; ty += GROUND_TILE) {
+        for (let tx = 0; tx < w; tx += GROUND_TILE) {
+          const [x1, y1] = [Math.min(w, tx + GROUND_TILE), Math.min(h, ty + GROUND_TILE)];
+          tiles.push([closed([[tx, ty], [x1, ty], [x1, y1], [tx, y1]])]);
+        }
+      }
+    }
+    for (const tile of tiles) {
+      const tb = bbox(tile[0]);
+      const over = above.filter(({ box: b }) => b.x0 < tb.x1 && b.x1 > tb.x0 && b.y0 < tb.y1 && b.y1 > tb.y0);
+      if (over.length === 0) {
+        ground.push(tile);
+        continue;
+      }
+      const key = `ground|${loopsSig(tile)}|${over.map((o) => o.sig).join(";")}`;
+      const known = kept.get(key);
+      if (known) {
+        known.used = kept.round;
+        ground.push(...known.parts);
+        continue;
+      }
+      try {
+        const parts = clip.difference([tile], ...over.map((o) => [o.polygon])) as Pt[][][];
+        kept.set(key, { parts, used: kept.round });
+        ground.push(...parts);
+      } catch (error) {
+        console.error("Rising Ranges: 3D Glance couldn't cut the relief's ground", error);
+        ground.push(tile);
+      }
+    }
+  });
   const groundScene = sceneOf(ground);
   if (groundScene.length > 0 && !see) {
     pieces.unshift({ height: 0, shape: groundScene, surface: plainGround && !surfaced ? undefined : surfaceOf(null) });
@@ -239,6 +290,40 @@ export function reliefTerrain(
     }
   }
   return { pieces, bridges, area: own, heightAt, unfilled };
+}
+
+/** The ground's tiles (cells across), cut apart (see reliefTerrain): a drag cuts again only those it's on. */
+const GROUND_TILE = 8;
+
+/** Outlines as text: the same outlines, the same text. */
+function loopsSig(loops: Pt[][]): string {
+  return loops.map((loop) => loop.map(([x, y]) => `${x},${y}`).join(" ")).join("/");
+}
+
+/** Cut pieces kept for a relief (see reliefTerrain): by their key, with the round they were last used in. */
+type Cuts = Map<string, { parts: Pt[][][]; used: number }> & { round: number; done: () => void };
+const cutsByRelief = new WeakMap<Relief, Cuts>();
+
+/** A relief's kept cuts, a new round begun: those unused for a few rounds forgotten when it's done. */
+function cutsOf(relief: Relief): Cuts {
+  let cuts = cutsByRelief.get(relief);
+  if (!cuts) {
+    const made = new Map() as Cuts;
+    made.round = 0;
+    made.done = () => {
+      if (made.size > 4 * (relief.data.shapes.length + 50)) {
+        for (const [key, value] of made) {
+          if (value.used < made.round - 3) {
+            made.delete(key);
+          }
+        }
+      }
+    };
+    cutsByRelief.set(relief, made);
+    cuts = made;
+  }
+  cuts.round++;
+  return cuts;
 }
 
 /** A picture's points in the scene, as the Vistazo has them. */

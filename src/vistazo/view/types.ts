@@ -99,11 +99,11 @@ export type Reach = {
 // "stone" is brick courses (its name from before "rubble", irregular stones, was added; kept for what's saved).
 export type Quality = "low" | "medium" | "high";
 
-/** Each quality's sharpness (most device pixels to a screen pixel), weather (share, ms a frame) and motion. */
-export const QUALITY: Record<Quality, { pixels: number; amount: number; frameMs: number; motion: boolean }> = {
-  high: { pixels: 2, amount: 1, frameMs: 33, motion: true },
-  medium: { pixels: 1.5, amount: 0.65, frameMs: 40, motion: true },
-  low: { pixels: 1, amount: 0.35, frameMs: 66, motion: false },
+/** Each quality's sharpness (most device pixels to a screen pixel), weather (share, ms a frame), motion, and its edges smoothed (multisampled). */
+export const QUALITY: Record<Quality, { pixels: number; amount: number; frameMs: number; motion: boolean; smooth: boolean }> = {
+  high: { pixels: 2, amount: 1, frameMs: 33, motion: true, smooth: true },
+  medium: { pixels: 1.5, amount: 0.65, frameMs: 40, motion: true, smooth: true },
+  low: { pixels: 1, amount: 0.35, frameMs: 66, motion: false, smooth: false },
 };
 
 export type WallStyle = "blend" | "flat" | "stretch" | "fold" | "stone" | "rubble" | "earth" | "wood";

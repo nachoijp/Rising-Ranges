@@ -146,7 +146,8 @@ export function cutDoors(relief: Relief, shut: (door: Door, i: number) => boolea
       });
     }
   }
-  const cut = new Relief({ ...data, verts, shapes } as ReliefData);
+  // Sharing what the relief has worked out (its shapes' pieces, outlines): most shapes are the same.
+  const cut = new Relief({ ...data, verts, shapes } as ReliefData, relief);
   doorways.set(cut, openings.map((o) => o.doorway));
   return cut;
 }

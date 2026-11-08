@@ -8,6 +8,8 @@ import { FineSurfaces, pieceBuffers, uvsOver, type PieceBuffers, type Surface } 
 import { computeTerrain, type TerrainBuffers, type TerrainContext } from "./view/terrainBuffers";
 import { BASE_TEX_WIDTH, binBases } from "./view/baseBins";
 import { FILL_GROW, fillFrame, fillGroups, undersideBuffers } from "./view/undersides";
+import type { BridgeFill } from "./view/bridgeFill";
+import { FillJobs, type FillFrame } from "./fillJob";
 import { TerrainJobs, type TerrainAnswer } from "./terrainJob";
 import { unpackWalls, type PackedWalls } from "./view/wallPack";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
@@ -45,6 +47,21 @@ type DoorButton = { door: DoorView; el: HTMLButtonElement; look: string; x: numb
 
 /** How near the pointer (px) a door's button shows whole. */
 const DOOR_NEAR_PX = 70;
+
+/** Kept on this device once it's found slow (see trackMotion): edges not smoothed (see wantsSmooth). */
+const SLOW_DEVICE = "rising-ranges/slow-device";
+/** A device whose frames take longer than this (ms) on average, moving, over this many of them, is slow. */
+const SLOW_FRAME_MS = 40;
+const SLOW_FRAMES = 30;
+
+/** Frames closer than this (ms): moving (see trackMotion). Still this long: drawn sharp again. */
+const MOTION_GAP_MS = 250;
+const MOTION_SETTLE_MS = 300;
+/** Frames slower than this (ms) lose sharpness while moving; faster than that, they get it back. */
+const MOTION_SLOW_MS = 28;
+const MOTION_FAST_MS = 18;
+/** The least of its sharpness kept while moving (each way: a quarter of the pixels). */
+const MOTION_LEAST = 0.5;
 
 /** How far (cells) a dropped token slides to its place; farther, it's just there (a jump across the map). */
 const SLIDE_MAX_CELLS = 40;
@@ -90,8 +107,8 @@ THREE.ColorManagement.enabled = false;
 const GROUND_CLIP = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0.5);
 
 export class VistazoView {
-  private readonly canvas: HTMLCanvasElement;
-  private readonly renderer: THREE.WebGLRenderer | null;
+  private canvas: HTMLCanvasElement;
+  private renderer: THREE.WebGLRenderer | null;
   private readonly world = new THREE.Scene();
   private readonly terrainGroup = new THREE.Group();
   /** A relief's shapes being dragged: their pieces, walls and pictures, moved whole (see moveShapes). */
@@ -171,6 +188,21 @@ export class VistazoView {
   /** The reliefs' doors (see doors.ts), and the list they're built from. */
   private doorGroup = new THREE.Group();
   private doors: DoorView[] = [];
+  /** The camera's matrix as last worked out, and what from (see camMatrix); counted each time it changes. */
+  private camKept: { panX: number; panY: number; s: number; tilt: number; yaw: number; cx: number; cy: number; cz: number; persp: number; m: DOMMatrix; eye: DOMPoint } | null = null;
+  private camVersion = 0;
+  private readonly projected = { x: 0, y: 0, z: 0 };
+  /** Lines of sight between tokens worked out (see inSight), by where both are and the terrain. */
+  private readonly sights = new Map<string, boolean>();
+  /** Each distance line's elements, by its token, and what they were last given (see drawLines). */
+  private readonly lineEls = new Map<string, { group: SVGGElement; back: SVGLineElement; front: SVGLineElement; text: SVGTextElement; written: string }>();
+  /** What each marker's element was last given (see placeOne): written again only when it changes. */
+  private readonly written = new WeakMap<TokenView, { transform: string; z: string; visible: string; css: string; turn: string; hiddenFor: string; hidden: boolean }>();
+  /** Drawn again frame after frame (see trackMotion): moving, how much of the sharpness it keeps, its frames' gaps. */
+  private motion = { on: false, scale: 1, last: 0, since: 0, settle: 0, gaps: [] as number[] };
+  /** Whether the renderer smooths edges (see wantsSmooth); a long run of moving frames' gaps, to tell a slow device. */
+  private smooth = true;
+  private longGaps: number[] = [];
   /** Tokens sliding to where they've been dropped (see moveTokens), and the frame that moves them on. */
   private slides = new Map<TokenView, { from: Token; to: Token; t0: number; ms: number }>();
   private slideFrame = 0;
@@ -290,6 +322,10 @@ export class VistazoView {
   private stillTexture: THREE.Texture | null = null;
   /** The materials of the pieces, to dim or see through without rebuilding. */
   private pieceMaterials: THREE.MeshBasicMaterial[] = [];
+  /** The same, as a set (a pooled one's in the list once). */
+  private pieceMaterialSet = new Set<THREE.MeshBasicMaterial>();
+  /** Pieces' materials shared and kept from build to build, by what they're made with (see pieceMaterial). */
+  private materialPool = new Map<string, { material: THREE.MeshBasicMaterial; used: number }>();
   /**
    * What the terrain's materials work out now, besides the bases (see layers): the Bandas, the clouds'
    * shadows, the fog.
@@ -311,6 +347,9 @@ export class VistazoView {
   private keepWalls: Wall[] | undefined;
   /** Bridges' fills worked out (see bridgeFill) from this map, by outline, and the last build that used them. */
   private fillCache = new Map<string, BridgeFill & { used: number }>();
+  /** Bridges' fills worked out away from the page (see fillJob); which call of buildUnderBridges is the last. */
+  private readonly fills = new FillJobs();
+  private underRound = 0;
   private builds = 0;
   /** The next scene's build is a brush's let go (see settleNext). */
   private settling = false;
@@ -353,17 +392,8 @@ export class VistazoView {
     this.options = options;
     this.canvas = document.createElement("canvas");
     this.canvas.className = "gl";
-    let renderer: THREE.WebGLRenderer | null = null;
-    try {
-      renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: true });
-      renderer.setPixelRatio(Math.min((QUALITY[options.quality] ?? QUALITY.high).pixels, window.devicePixelRatio || 1));
-      renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
-      // The map's edge's walls cut at the ground (see apply).
-      renderer.localClippingEnabled = true;
-    } catch (error) {
-      console.error("Rising Ranges: Vistazo couldn't start WebGL", error);
-    }
-    this.renderer = renderer;
+    this.smooth = this.wantsSmooth();
+    this.renderer = this.makeRenderer(this.canvas, this.smooth);
     this.glCamera.matrixAutoUpdate = false;
     this.movingGroup.matrixAutoUpdate = false;
     this.world.add(this.terrainGroup, this.underGroup, this.movingGroup, this.pickGroup, this.edgeGroup, this.tokenGroup, this.weatherGroup, this.underBridgeGroup, this.waterGroup, this.templateGroup, this.doorGroup);
@@ -1840,6 +1870,10 @@ export class VistazoView {
         (Array.isArray(material) ? material : material ? [material] : []).forEach((m) => {
           // The map texture and the patterns are shared: only a prop's own is let go.
           const own = (m as THREE.MeshBasicMaterial).map;
+          // A pooled one's kept for the next build (see pieceMaterial).
+          if (m.userData.pooled) {
+            return;
+          }
           if (own && own !== this.mapTexture && own !== this.plainTexture && own !== this.stillTexture && !isShared(own)) {
             own.dispose();
           }
@@ -1882,7 +1916,25 @@ export class VistazoView {
   }
 
   /** A top's or wall's material; `top`: the bases are painted on it (see based; a slab's, "deck"). */
-  private pieceMaterial(height: number, textured: boolean, fill?: [number, number, number], top: boolean | "deck" = false): THREE.MeshBasicMaterial {
+  /**
+   * `pooled`: shared by every piece it suits and kept from one build to the next (see materialPool), for
+   * a caller that doesn't change it after: a new material is worked out by three.js again (its shader
+   * rewritten, its program looked up), which over every piece of every build of a drag costs.
+   */
+  private pieceMaterial(height: number, textured: boolean, fill?: [number, number, number], top: boolean | "deck" = false, pooled = false): THREE.MeshBasicMaterial {
+    const poolKey = pooled ? `${height}|${textured}|${fill?.join(",") ?? ""}|${top}|${this.options.tint}|${this.options.relief}|${this.minH}|${this.maxH}|${textured ? (this.mapTexture?.uuid ?? "") : ""}` : "";
+    if (pooled) {
+      const known = this.materialPool.get(poolKey);
+      if (known) {
+        known.used = this.builds;
+        if (!this.pieceMaterialSet.has(known.material)) {
+          this.pieceMaterialSet.add(known.material);
+          this.pieceMaterials.push(known.material);
+        }
+        this.layers(known.material);
+        return known.material;
+      }
+    }
     const span = this.maxH - this.minH || 1;
     // Higher ground a little lighter: up to ±25% from the lowest to the highest.
     const lit = 1 + this.options.relief * 0.5 * ((height - this.minH) / span - 0.5);
@@ -1913,7 +1965,22 @@ export class VistazoView {
     fogged(material, this.fogUniforms);
     this.layers(material);
     this.pieceMaterials.push(material);
+    this.pieceMaterialSet.add(material);
+    if (pooled) {
+      material.userData.pooled = true;
+      this.materialPool.set(poolKey, { material, used: this.builds });
+    }
     return material;
+  }
+
+  /** The pooled materials no build has used for a while (see pieceMaterial), let go. */
+  private prunePool() {
+    for (const [key, entry] of this.materialPool) {
+      if (entry.used < this.builds - 2) {
+        this.materialPool.delete(key);
+        this.retired.push(entry.material);
+      }
+    }
   }
 
   /** The grid over the ground as the options and Owlbear's grid have it (none, square, hex flat-topped or pointy). */
@@ -2063,6 +2130,8 @@ export class VistazoView {
     this.clear(this.edgeGroup);
     this.surfaces = [];
     this.pieceMaterials = [];
+    this.pieceMaterialSet = new Set();
+    this.prunePool();
     const terrain = this.terrain!;
 
     // Each one's meshes marked with the relief shape it's of (for moving it whole).
@@ -2185,25 +2254,49 @@ export class VistazoView {
     // Slabs over one another (a statue's body and arms) filled as one, over their outlines' union: no two
     // copies of the same ground taking turns pixel by pixel (see fillGroups). The terrain's, or now.
     const groups = this.terrain?.undersides ?? fillGroups(scene).map((group) => ({ ...group, ...undersideBuffers(scene, group, this.k) }));
+    // This call's: a fill that comes back after another's begun is kept, not drawn (that one draws it).
+    const round = ++this.underRound;
     for (const group of groups) {
       const members = group.members.map((i) => scene.bridges[i]).filter((bridge) => bridge);
       if (members.length === 0) {
         continue;
       }
+      const key = JSON.stringify(group.shape);
+      const kept = this.fillCache.get(key);
+      if (kept) {
+        kept.used = this.builds;
+        this.drawUnder(group, members, kept, texture);
+        continue;
+      }
+      // Worked out away from the page (the map's pixels read here): drawn when it's back.
+      const read = fillPixels(group.shape, texture, scene.dpi * FILL_GROW);
+      if (!read) {
+        continue;
+      }
+      void this.fills.ask(group.shape, read.bytes, read.frame, scene.dpi * FILL_GROW).then((made) => {
+        if (!made) {
+          return;
+        }
+        const entry = { ...made, used: this.builds };
+        this.fillCache.set(key, entry);
+        if (round === this.underRound && this.texture === texture) {
+          this.drawUnder(group, members, entry, texture);
+          this.requestApply();
+        }
+      });
+    }
+  }
+
+  /** A group of bridges' fill under them, drawn (see buildUnderBridges). */
+  private drawUnder(group: TerrainBuffers["undersides"][number], members: Bridge[], kept: BridgeFill, texture: Texture) {
+    const map = this.stillTexture ?? this.mapTexture;
+    if (!map) {
+      return;
+    }
+    {
       // A mirroring one is alone in its group: its own frame.
       const bridge = members[0];
       const { center, along, across, halfAlong, halfAcross } = bridge.frame;
-      const key = JSON.stringify(group.shape);
-      let kept = this.fillCache.get(key);
-      if (!kept) {
-        const made = bridgeFill(group.shape, texture, scene.dpi * FILL_GROW);
-        if (!made) {
-          continue;
-        }
-        kept = { ...made, used: 0 };
-        this.fillCache.set(key, kept);
-      }
-      kept.used = this.builds;
       const fill = new THREE.DataTexture(kept.pixels, kept.cols, kept.rows, THREE.RGBAFormat);
       fill.magFilter = THREE.LinearFilter;
       fill.minFilter = THREE.LinearFilter;
@@ -2232,8 +2325,8 @@ export class VistazoView {
           uU: { value: this.u },
           uCell: { value: VIEW_CELL },
           uMirror: { value: bridge.under === "mirror" ? 1 : 0 },
-          uMap: { value: this.stillTexture ?? this.mapTexture },
-          uMapMatrix: { value: (this.stillTexture ?? this.mapTexture).matrix },
+          uMap: { value: map },
+          uMapMatrix: { value: map.matrix },
           uTex: { value: new THREE.Vector4(texture.x0, texture.y0, texture.w, texture.h) },
           uFrame: { value: new THREE.Vector4(center.x, center.y, along.x, along.y) },
           uAcross: { value: new THREE.Vector4(across.x, across.y, halfAlong, halfAcross) },
@@ -2254,7 +2347,7 @@ export class VistazoView {
       const surfaces = this.copiesIn(box);
       if (!surfaces) {
         material.dispose();
-        continue;
+        return;
       }
       const under = new THREE.Mesh(surfaces, material);
       under.renderOrder = 1;
@@ -2352,7 +2445,7 @@ export class VistazoView {
       position.needsUpdate = true;
     }
     // The bases of those on it painted on it, not those under it (see based).
-    const deck = new THREE.Mesh(top, this.pieceMaterial(bridge.top, true, undefined, "deck"));
+    const deck = new THREE.Mesh(top, this.pieceMaterial(bridge.top, true, undefined, "deck", true));
     deck.position.z = sloped ? 0 : bridge.top * k;
     this.terrainGroup.add(deck);
     this.keepSurface(top, deck.position.z);
@@ -2547,7 +2640,7 @@ export class VistazoView {
     const geometry = geometryOf(built.surface);
     if (built.kind === "top") {
       geometry.setAttribute("uv", new THREE.BufferAttribute(built.uv, 2));
-      const mesh = new THREE.Mesh(geometry, this.pieceMaterial(piece.height, true, undefined, true));
+      const mesh = new THREE.Mesh(geometry, this.pieceMaterial(piece.height, true, undefined, true, true));
       mesh.position.z = built.z;
       // Its corners can be moved up or down where they are (see reheight).
       mesh.userData.piece = piece;
@@ -2968,7 +3061,7 @@ export class VistazoView {
     const k = this.k;
     for (const button of this.doorButtons) {
       const { door } = button;
-      const p = camM.transformPoint(new DOMPoint(button.x * u, button.y * u, button.z * k));
+      const p = this.project(camM, button.x * u, button.y * u, button.z * k);
       const f = this.persp / Math.max(1, this.persp - p.z);
       button.screen = { x: this.width / 2 + p.x * f, y: this.height / 2 + p.y * f };
       // How close it's seen, the same for every door: a cell's size on screen where it is (not its
@@ -3268,11 +3361,144 @@ export class VistazoView {
     return this.look.motion;
   }
 
+  /** A WebGL renderer on a canvas, its edges smoothed (multisampled) or not. Null without WebGL. */
+  private makeRenderer(canvas: HTMLCanvasElement, smooth: boolean): THREE.WebGLRenderer | null {
+    try {
+      const renderer = new THREE.WebGLRenderer({ canvas, antialias: smooth, alpha: true });
+      renderer.setPixelRatio(Math.min(this.look.pixels, window.devicePixelRatio || 1));
+      renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+      // The map's edge's walls cut at the ground (see apply).
+      renderer.localClippingEnabled = true;
+      return renderer;
+    } catch (error) {
+      console.error("Rising Ranges: Vistazo couldn't start WebGL", error);
+      return null;
+    }
+  }
+
+  /**
+   * Whether edges are smoothed (multisampled): as the quality has it, unless this device was found slow
+   * (see trackMotion): on a weak graphics card smoothing costs as much as all the rest (twice, on a
+   * sharp screen).
+   */
+  private wantsSmooth(): boolean {
+    let slow = false;
+    try {
+      slow = localStorage.getItem(SLOW_DEVICE) === "1";
+    } catch {
+      // Not kept: as the quality says.
+    }
+    return this.look.smooth && !slow;
+  }
+
+  /**
+   * Edges smoothed or not as wanted now: if that changed, a new canvas and renderer in place of the old
+   * (it's chosen when a canvas's WebGL starts: no changing it after); what's drawn goes to the new one
+   * by itself (three.js sends each renderer what it lacks), its shaders made again.
+   */
+  private resmooth() {
+    const smooth = this.wantsSmooth();
+    if (smooth === this.smooth || !this.renderer) {
+      return;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.className = "gl";
+    const renderer = this.makeRenderer(canvas, smooth);
+    if (!renderer) {
+      return;
+    }
+    this.smooth = smooth;
+    const old = this.renderer;
+    this.canvas.replaceWith(canvas);
+    this.canvas = canvas;
+    this.renderer = renderer;
+    this.canvasSize = { w: 0, h: 0 };
+    this.retired.splice(0).forEach((material) => material.dispose());
+    old.dispose();
+    old.forceContextLoss();
+    this.measure();
+  }
+
   /** The canvas's sharpness for the quality now (redrawn at it). */
   private sharpen() {
-    this.renderer?.setPixelRatio(Math.min(this.look.pixels, window.devicePixelRatio || 1));
+    this.resmooth();
+    this.renderer?.setPixelRatio(this.pixelRatio());
     this.canvasSize = { w: 0, h: 0 };
     this.pauseVideos();
+  }
+
+  /** Device pixels to a screen pixel now: the quality's, less while something moves on a slow card (see trackMotion). */
+  private pixelRatio(): number {
+    const full = Math.min(this.look.pixels, window.devicePixelRatio || 1);
+    return this.motion.on ? Math.max(0.35, full * this.motion.scale) : full;
+  }
+
+  /**
+   * Drawn again frame after frame (the camera, a drag): moving. Then the picture's drawn with fewer
+   * pixels if frames come slow (a weak graphics card: most of its time is each pixel's), as few as it
+   * takes to keep up (half each way at least: a quarter of them); still for a moment, it's drawn sharp
+   * again. A card that keeps up never loses any.
+   */
+  private trackMotion() {
+    const m = this.motion;
+    const now = performance.now();
+    const gap = now - m.last;
+    m.last = now;
+    clearTimeout(m.settle);
+    m.settle = window.setTimeout(() => {
+      m.on = false;
+      m.gaps = [];
+      this.setRatio();
+      this.requestApply();
+    }, MOTION_SETTLE_MS);
+    if (gap > MOTION_GAP_MS) {
+      return;
+    }
+    if (!m.on) {
+      m.on = true;
+      m.since = now;
+      this.setRatio();
+    }
+    m.gaps.push(gap);
+    if (m.gaps.length > 12) {
+      m.gaps.shift();
+    }
+    // A slow device (frames well over 40 ms, moving, for a while: the opening's tilt in tells it): its edges
+    // no longer smoothed, from now on and next time too (see wantsSmooth).
+    if (this.smooth) {
+      this.longGaps.push(gap);
+      if (this.longGaps.length >= SLOW_FRAMES) {
+        const mean = this.longGaps.reduce((a, b) => a + b, 0) / this.longGaps.length;
+        this.longGaps = [];
+        if (mean > SLOW_FRAME_MS) {
+          try {
+            localStorage.setItem(SLOW_DEVICE, "1");
+          } catch {
+            // Not kept: this time only.
+          }
+          this.resmooth();
+        }
+      }
+    }
+    // Judged on a few frames, not too often (each change sizes the canvas again).
+    if (m.gaps.length >= 6 && now - m.since > 300) {
+      const mean = m.gaps.reduce((a, b) => a + b, 0) / m.gaps.length;
+      const next = mean > MOTION_SLOW_MS ? Math.max(MOTION_LEAST, m.scale * 0.75) : mean < MOTION_FAST_MS ? Math.min(1, m.scale * 1.2) : m.scale;
+      if (next !== m.scale) {
+        m.scale = next;
+        m.since = now;
+        m.gaps = [];
+        this.setRatio();
+      }
+    }
+  }
+
+  /** The canvas at the sharpness for now (see pixelRatio), sized again only if that changed. */
+  private setRatio() {
+    const ratio = this.pixelRatio();
+    if (this.renderer && Math.abs(this.renderer.getPixelRatio() - ratio) > 1e-3) {
+      this.renderer.setPixelRatio(ratio);
+    }
   }
 
   private pauseVideos() {
@@ -3547,10 +3773,35 @@ export class VistazoView {
     const cx = (c.focus ? c.focus.x : (scene.bounds.x0 + scene.bounds.x1) / 2) * u;
     const cy = (c.focus ? c.focus.y : (scene.bounds.y0 + scene.bounds.y1) / 2) * u;
     const cz = c.focus ? c.focus.z * this.k : 1.5 * VIEW_CELL;
-    return new DOMMatrix(
+    // The same camera as last asked (most frames of a drag, and every pointer move): the same matrix,
+    // not read again from a transform's text.
+    const kept = this.camKept;
+    if (kept && kept.panX === c.panX && kept.panY === c.panY && kept.s === s && kept.tilt === c.tilt && kept.yaw === c.yaw && kept.cx === cx && kept.cy === cy && kept.cz === cz && kept.persp === this.persp) {
+      return kept.m;
+    }
+    const m = new DOMMatrix(
       `translate(${c.panX}px,${c.panY}px) scale3d(${s},${s},${s}) rotateX(${c.tilt}deg) rotateZ(${c.yaw}deg) ` +
         `translate3d(${-cx}px,${-cy}px,${-cz}px)`
     );
+    const eye = m.inverse().transformPoint(new DOMPoint(0, 0, this.persp));
+    this.camKept = { panX: c.panX, panY: c.panY, s, tilt: c.tilt, yaw: c.yaw, cx, cy, cz, persp: this.persp, m, eye };
+    this.camVersion++;
+    return m;
+  }
+
+  /** Where the eye is (view units), for the camera camMatrix last gave. */
+  private eyeOf(): DOMPoint {
+    this.camMatrix();
+    return this.camKept!.eye;
+  }
+
+  /** A view point through the camera's matrix (affine: no new point made), into `projected`. */
+  private project(m: DOMMatrix, x: number, y: number, z: number) {
+    const q = this.projected;
+    q.x = m.m11 * x + m.m21 * y + m.m31 * z + m.m41;
+    q.y = m.m12 * x + m.m22 * y + m.m32 * z + m.m42;
+    q.z = m.m13 * x + m.m23 * y + m.m33 * z + m.m43;
+    return q;
   }
 
   /** The WebGL camera for the same view: camMatrix as its view, and a projection doing the stage's perspective. */
@@ -3603,8 +3854,7 @@ export class VistazoView {
       this.onCamera();
       return;
     }
-    const u = this.u;
-    const s = this.fit * c.zoom;
+    this.trackMotion();
     const camM = this.camMatrix();
     this.setGlCamera(camM);
 
@@ -3640,49 +3890,16 @@ export class VistazoView {
     this.render();
 
     // The tokens' 3D points on screen: the same matrix, then the perspective (eye at z = persp).
-    const eye = camM.inverse().transformPoint(new DOMPoint(0, 0, this.persp));
+    const eye = this.eyeOf();
     const placed = stamp();
-    for (const view of [...this.tokenViews, ...(this.point ? [this.point] : []), ...this.handles]) {
-      const { token, el, disc, img, zTok } = view;
-      const p = camM.transformPoint(new DOMPoint(token.x * u, token.y * u, zTok));
-      const f = this.persp / Math.max(1, this.persp - p.z);
-      // Lying flat, only its label is an element, on its middle; the free point's marker, easy to grab.
-      const marker = view === this.point || this.handles.includes(view);
-      const d = view.prop?.flat ? 0 : Math.max(marker ? 12 : 22, token.size * u * s * f);
-      view.screen = { x: this.width / 2 + p.x * f, y: this.height / 2 + p.y * f };
-      el.style.transform = `translate(${view.screen.x}px,${view.screen.y}px)`;
-      el.style.zIndex = String(10000 + Math.round(p.z));
-      // Behind the eye: not drawn.
-      el.style.visibility = this.persp - p.z > 1 ? "" : "hidden";
-      // The free point's marker sits on its point, whatever the anchor (it's no picture).
-      const isPoint = marker;
-      const onBase = !isPoint && ((view.prop && !view.prop.flat) || this.options.anchor === "base");
-      // By what of its picture shows (not its box, which may have empty margins or the figure off to
-      // one side): what it stands on over the token's point, its bottom there on its base, or the
-      // middle of what shows there (up and down) otherwise.
-      // Set by hand (the Elevation menu's base), it's that point of its picture instead.
-      const manual = view.prop?.flat || isPoint ? undefined : token.base;
-      const measured = view.prop?.flat || isPoint ? undefined : visibleBox(token.url, token.video, () => this.requestApply());
-      // The whole picture, only when its base is set by hand and it hasn't been read (the free point has no picture).
-      const found = measured ?? (manual ? { x0: 0, y0: 0, x1: 1, y1: 1, base: 0.5, aspect: token.item.image.width / token.item.image.height } : undefined);
-      const box = found && manual ? { ...found, base: manual.x, y1: manual.y } : found;
-      let left = -d / 2;
-      let top = onBase ? -d : -d / 2;
-      // And its label just over that part, not over its box's empty top.
-      let gap = 0;
-      if (box) {
-        const shown = visibleOnScreen(box, d, token);
-        left = -d / 2 - shown.base;
-        top = -d / 2 - (onBase ? shown.y1 : (shown.y0 + shown.y1) / 2);
-        gap = Math.max(0, d / 2 + shown.y0);
-      }
-      // Its labels drawn at its picture's scale, as Owlbear's are (--u: screen px a scene px).
-      disc.style.cssText = `width:${d}px;height:${d}px;left:${left}px;top:${top}px;--gap:${gap}px;--u:${d / Math.max(1, token.size)}`;
-      // Turned as on the map (not with the camera: that reads oddly on a standing token).
-      img.style.transform = `rotate(${token.rotation}deg) scale(${token.flipX ? -1 : 1},${token.flipY ? -1 : 1})`;
-      const lift = onBase ? (token.size * u) / 2 : 0;
-      view.hidden = this.blocked(token.x * u, token.y * u, zTok + lift + 4, eye);
-      el.classList.toggle("hidden", view.hidden);
+    for (const view of this.tokenViews) {
+      this.placeOne(view, camM, eye, false);
+    }
+    if (this.point) {
+      this.placeOne(this.point, camM, eye, true);
+    }
+    for (const view of this.handles) {
+      this.placeOne(view, camM, eye, true);
     }
     since("3d.apply.tokens", placed);
     this.placeDoorButtons(camM, eye);
@@ -3690,45 +3907,140 @@ export class VistazoView {
     this.onCamera();
   }
 
+  /**
+   * A token's (or a marker's) element where it is on screen, its picture's size and its base: only what
+   * changed written (each write makes the page work its styles out again). Whether the terrain hides it
+   * from the eye: worked out again only when it, the camera or the terrain moved (a drag: the dragged
+   * one, every frame; the others, kept).
+   */
+  private placeOne(view: TokenView, camM: DOMMatrix, eye: DOMPoint, marker: boolean) {
+    const u = this.u;
+    const s = this.fit * this.camera.zoom;
+    const { token, el, disc, img, zTok } = view;
+    const p = this.project(camM, token.x * u, token.y * u, zTok);
+    const f = this.persp / Math.max(1, this.persp - p.z);
+    // Lying flat, only its label is an element, on its middle; the free point's marker, easy to grab.
+    const d = view.prop?.flat ? 0 : Math.max(marker ? 12 : 22, token.size * u * s * f);
+    const sx = this.width / 2 + p.x * f;
+    const sy = this.height / 2 + p.y * f;
+    const pz = p.z;
+    view.screen = { x: sx, y: sy };
+    let w = this.written.get(view);
+    if (!w) {
+      w = { transform: "", z: "", visible: "?", css: "", turn: "", hiddenFor: "", hidden: false };
+      this.written.set(view, w);
+    }
+    const transform = `translate(${sx}px,${sy}px)`;
+    if (w.transform !== transform) {
+      el.style.transform = w.transform = transform;
+    }
+    const z = String(10000 + Math.round(pz));
+    if (w.z !== z) {
+      el.style.zIndex = w.z = z;
+    }
+    // Behind the eye: not drawn.
+    const visible = this.persp - pz > 1 ? "" : "hidden";
+    if (w.visible !== visible) {
+      el.style.visibility = w.visible = visible;
+    }
+    // The free point's marker sits on its point, whatever the anchor (it's no picture).
+    const onBase = !marker && ((view.prop && !view.prop.flat) || this.options.anchor === "base");
+    // By what of its picture shows (not its box, which may have empty margins or the figure off to
+    // one side): what it stands on over the token's point, its bottom there on its base, or the
+    // middle of what shows there (up and down) otherwise.
+    // Set by hand (the Elevation menu's base), it's that point of its picture instead.
+    const manual = view.prop?.flat || marker ? undefined : token.base;
+    const measured = view.prop?.flat || marker ? undefined : visibleBox(token.url, token.video, () => this.requestApply());
+    // The whole picture, only when its base is set by hand and it hasn't been read (the free point has no picture).
+    const found = measured ?? (manual ? { x0: 0, y0: 0, x1: 1, y1: 1, base: 0.5, aspect: token.item.image.width / token.item.image.height } : undefined);
+    const box = found && manual ? { ...found, base: manual.x, y1: manual.y } : found;
+    let left = -d / 2;
+    let top = onBase ? -d : -d / 2;
+    // And its label just over that part, not over its box's empty top.
+    let gap = 0;
+    if (box) {
+      const shown = visibleOnScreen(box, d, token);
+      left = -d / 2 - shown.base;
+      top = -d / 2 - (onBase ? shown.y1 : (shown.y0 + shown.y1) / 2);
+      gap = Math.max(0, d / 2 + shown.y0);
+    }
+    // Its labels drawn at its picture's scale, as Owlbear's are (--u: screen px a scene px).
+    const css = `width:${d}px;height:${d}px;left:${left}px;top:${top}px;--gap:${gap}px;--u:${d / Math.max(1, token.size)}`;
+    if (w.css !== css) {
+      disc.style.cssText = w.css = css;
+    }
+    // Turned as on the map (not with the camera: that reads oddly on a standing token).
+    const turn = `rotate(${token.rotation}deg) scale(${token.flipX ? -1 : 1},${token.flipY ? -1 : 1})`;
+    if (w.turn !== turn) {
+      img.style.transform = w.turn = turn;
+    }
+    const lift = onBase ? (token.size * u) / 2 : 0;
+    const hiddenFor = `${this.camVersion}|${this.terrainEdits}|${token.x},${token.y},${zTok + lift}|${this.options.edges}`;
+    if (w.hiddenFor !== hiddenFor) {
+      w.hiddenFor = hiddenFor;
+      w.hidden = this.blocked(token.x * u, token.y * u, zTok + lift + 4, eye);
+      el.classList.toggle("hidden", w.hidden);
+    }
+    view.hidden = w.hidden;
+  }
+
   /** The distance lines, from the origin token's point on screen to each other's, with their reading halfway. */
   private drawLines() {
     const svg = this.lines;
-    svg.replaceChildren();
     const origin = this.distanceOrigin === FREE_POINT ? this.point : this.tokenViews.find((view) => view.token.id === this.distanceOrigin);
-    if (!origin || !this.options.distances) {
-      return;
+    const shown = new Set<string>();
+    if (origin && this.options.distances) {
+      for (const line of this.distanceLines) {
+        const target = this.tokenViews.find((view) => view.token.id === line.id);
+        if (!target) {
+          continue;
+        }
+        shown.add(line.id);
+        // Each line's elements made once and kept (only what changed written again: a frame moves them).
+        let el = this.lineEls.get(line.id);
+        if (!el) {
+          const ns = "http://www.w3.org/2000/svg";
+          const group = document.createElementNS(ns, "g");
+          const back = document.createElementNS(ns, "line");
+          const front = document.createElementNS(ns, "line");
+          const text = document.createElementNS(ns, "text");
+          back.setAttribute("class", "casing");
+          group.append(back, front, text);
+          el = { group, back, front, text, written: "" };
+          this.lineEls.set(line.id, el);
+        }
+        if (el.group.parentNode !== svg) {
+          svg.appendChild(el.group);
+        }
+        const { x: x1, y: y1 } = origin.screen;
+        const { x: x2, y: y2 } = target.screen;
+        // Hidden from the camera: dashed. Out of the origin's sight (the terrain between them): faint, dotted.
+        const sight = this.inSight(origin, target) ? "" : " nosight";
+        const label = this.options.distanceLabels === "none" ? "" : this.options.distanceLabels === "full" ? `${line.band} · ${line.distance}` : line.distance;
+        const written = `${x1},${y1},${x2},${y2}|${target.hidden}|${sight}|${line.color}|${label}`;
+        if (el.written === written) {
+          continue;
+        }
+        el.written = written;
+        el.group.setAttribute("class", (target.hidden ? "dline hidden" : "dline") + sight);
+        for (const end of [el.back, el.front]) {
+          end.setAttribute("x1", String(x1));
+          end.setAttribute("y1", String(y1));
+          end.setAttribute("x2", String(x2));
+          end.setAttribute("y2", String(y2));
+        }
+        el.front.setAttribute("stroke", line.color);
+        el.text.setAttribute("x", String((x1 + x2) / 2));
+        el.text.setAttribute("y", String((y1 + y2) / 2));
+        el.text.textContent = label;
+        el.text.style.display = label ? "" : "none";
+      }
     }
-    const ns = "http://www.w3.org/2000/svg";
-    for (const line of this.distanceLines) {
-      const target = this.tokenViews.find((view) => view.token.id === line.id);
-      if (!target) {
-        continue;
+    for (const [id, el] of this.lineEls) {
+      if (!shown.has(id)) {
+        el.group.remove();
+        this.lineEls.delete(id);
       }
-      const { x: x1, y: y1 } = origin.screen;
-      const { x: x2, y: y2 } = target.screen;
-      const group = document.createElementNS(ns, "g");
-      // Hidden from the camera: dashed. Out of the origin's sight (the terrain between them): faint, dotted.
-      const sight = this.inSight(origin, target) ? "" : " nosight";
-      group.setAttribute("class", (target.hidden ? "dline hidden" : "dline") + sight);
-      const back = document.createElementNS(ns, "line");
-      const front = document.createElementNS(ns, "line");
-      for (const el of [back, front]) {
-        el.setAttribute("x1", String(x1));
-        el.setAttribute("y1", String(y1));
-        el.setAttribute("x2", String(x2));
-        el.setAttribute("y2", String(y2));
-      }
-      back.setAttribute("class", "casing");
-      front.setAttribute("stroke", line.color);
-      const text = document.createElementNS(ns, "text");
-      text.setAttribute("x", String((x1 + x2) / 2));
-      text.setAttribute("y", String((y1 + y2) / 2));
-      text.textContent = this.options.distanceLabels === "full" ? `${line.band} · ${line.distance}` : line.distance;
-      group.append(back, front);
-      if (this.options.distanceLabels !== "none") {
-        group.append(text);
-      }
-      svg.appendChild(group);
     }
   }
 
@@ -3773,6 +4085,22 @@ export class VistazoView {
    * terrain on the way (a hair kept clear of each end, where they stand).
    */
   private inSight(from: TokenView, to: TokenView): boolean {
+    // Kept while both are where they were and the terrain's the same (not the camera's business).
+    const key = `${this.terrainEdits}|${from.token.x},${from.token.y},${from.zTok}|${to.token.x},${to.token.y},${to.zTok}`;
+    const known = this.sights.get(key);
+    if (known !== undefined) {
+      return known;
+    }
+    const seen = this.sightBetween(from, to);
+    if (this.sights.size > 500) {
+      this.sights.clear();
+    }
+    this.sights.set(key, seen);
+    return seen;
+  }
+
+  /** Whether the terrain (or a slab) is between two tokens' eyes (see inSight). */
+  private sightBetween(from: TokenView, to: TokenView): boolean {
     const u = this.u;
     const k = this.k;
     const eye = 0.8 * k;
@@ -3845,162 +4173,24 @@ export const FREE_POINT = "rising-ranges/free-point";
 export const TEMPLATE_HANDLE = "rising-ranges/template:";
 
 
-/** A bridge's fill (see bridgeFill): RGBA bytes, cols × rows, over a box (scene units: x, y, width, height). */
-type BridgeFill = { pixels: Uint8Array; cols: number; rows: number; box: [number, number, number, number] };
-
 /**
- * What goes under a bridge in place of its drawing: over its box (`grow`
- * and a few texels wider; scene units), the map's colours; within `grow` of
- * its outline (and a texel and a half more, where its drawn edge is), those
- * round it run in and blended: averaged up a pyramid of halved grids till
- * every texel has some, then spread back down, each level filling what the
- * finer one lacked (pull-push). Its alpha: how much of the texel is within
- * `grow` of it (holes out), so it fades into the map over a texel. Null if
- * the map can't be read (the drawing is then left as it is).
+ * The map's pixels over a bridge's fill's box (see fillFromPixels, which works the fill out from them),
+ * and the box's frame. Null if the map can't be read (the drawing is then left as it is).
  */
-function bridgeFill(shape: MultiPolygon, map: Texture, grow: number): BridgeFill | null {
-  const { x0, y0, step, cols, rows } = fillFrame(shape, grow);
-  // Its sides (round it and its holes) as ax, ay, and the way to b, four numbers each.
-  const list: number[] = [];
-  for (const ring of shape.flat()) {
-    for (let i = 0; i + 1 < ring.length; i++) {
-      const [ex, ey] = [ring[i + 1][0] - ring[i][0], ring[i + 1][1] - ring[i][1]];
-      if (ex * ex + ey * ey > 1e-18) {
-        list.push(ring[i][0], ring[i][1], ex, ey);
-      }
-    }
-  }
-  const sides = new Float64Array(list);
-  // Each texel's middle inside or not (holes out): a row at a time, by where the sides cross it.
-  const within = new Uint8Array(cols * rows);
-  for (let r = 0; r < rows; r++) {
-    const y = y0 + (r + 0.5) * step;
-    const crossings: number[] = [];
-    for (let k = 0; k < sides.length; k += 4) {
-      const [ay, ey] = [sides[k + 1], sides[k + 3]];
-      if (ay > y !== ay + ey > y) {
-        crossings.push(sides[k] + ((y - ay) / ey) * sides[k + 2]);
-      }
-    }
-    crossings.sort((a, b) => a - b);
-    for (let c = 0, n = 0; c < cols; c++) {
-      const x = x0 + (c + 0.5) * step;
-      while (n < crossings.length && crossings[n] < x) {
-        n++;
-      }
-      within[r * cols + c] = n % 2;
-    }
-  }
-  // Only those near the outline need how near: the rest are well in or well out.
-  const band = grow + step * 2.5;
-  const near = new Uint8Array(cols * rows);
-  for (let k = 0; k < sides.length; k += 4) {
-    const [ax, ay, bx, by] = [sides[k], sides[k + 1], sides[k] + sides[k + 2], sides[k + 1] + sides[k + 3]];
-    const [c0, c1] = [Math.max(0, Math.floor((Math.min(ax, bx) - band - x0) / step)), Math.min(cols - 1, Math.ceil((Math.max(ax, bx) + band - x0) / step))];
-    const [r0, r1] = [Math.max(0, Math.floor((Math.min(ay, by) - band - y0) / step)), Math.min(rows - 1, Math.ceil((Math.max(ay, by) + band - y0) / step))];
-    for (let r = r0; r <= r1; r++) {
-      near.fill(1, r * cols + c0, r * cols + c1 + 1);
-    }
-  }
-  /** How far texel i (its middle at x, y) is from the outline: less than 0 inside. */
-  const reach = (i: number, x: number, y: number) => {
-    if (!near[i]) {
-      return within[i] ? -Infinity : Infinity;
-    }
-    let best = Infinity;
-    for (let k = 0; k < sides.length; k += 4) {
-      const [ax, ay, ex, ey] = [sides[k], sides[k + 1], sides[k + 2], sides[k + 3]];
-      const t = Math.max(0, Math.min(1, ((x - ax) * ex + (y - ay) * ey) / (ex * ex + ey * ey)));
-      best = Math.min(best, (ax + ex * t - x) ** 2 + (ay + ey * t - y) ** 2);
-    }
-    return within[i] ? -Math.sqrt(best) : Math.sqrt(best);
-  };
-  let bytes: Uint8ClampedArray;
+function fillPixels(shape: MultiPolygon, map: Texture, grow: number): { bytes: Uint8ClampedArray; frame: FillFrame } | null {
+  const frame = fillFrame(shape, grow);
+  const { x0, y0, step, cols, rows } = frame;
   try {
     const canvas = document.createElement("canvas");
     [canvas.width, canvas.height] = [cols, rows];
-    const ctx = canvas.getContext("2d")!;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
     const [kx, ky] = [map.canvas.width / map.w, map.canvas.height / map.h];
     ctx.drawImage(map.canvas, (x0 - map.x0) * kx, (y0 - map.y0) * ky, cols * step * kx, rows * step * ky, 0, 0, cols, rows);
-    bytes = ctx.getImageData(0, 0, cols, rows).data;
+    return { bytes: ctx.getImageData(0, 0, cols, rows).data, frame };
   } catch (error) {
     console.error("Rising Ranges: 3D Glance couldn't read the map under a slab, leaving its drawing", error);
     return null;
   }
-  // Level 0: each texel's colour (weighted) and how much it counts: the map's, away from the outline; none near it.
-  const inside = new Float32Array(cols * rows);
-  let level = { cols, rows, rgbw: new Float32Array(cols * rows * 4) };
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const i = r * cols + c;
-      const d = reach(i, x0 + (c + 0.5) * step, y0 + (r + 0.5) * step) - grow;
-      inside[i] = Math.max(0, Math.min(1, 0.5 - d / step));
-      const w = d > step * 1.5 && bytes[i * 4 + 3] >= 128 ? 1 : 0;
-      level.rgbw.set([bytes[i * 4] * w, bytes[i * 4 + 1] * w, bytes[i * 4 + 2] * w, w], i * 4);
-    }
-  }
-  // Pull: halved grids, each texel the weighted average of the (up to) four under it, counting at most fully.
-  const levels = [level];
-  while (level.cols > 1 || level.rows > 1) {
-    const next = { cols: Math.ceil(level.cols / 2), rows: Math.ceil(level.rows / 2), rgbw: new Float32Array(Math.ceil(level.cols / 2) * Math.ceil(level.rows / 2) * 4) };
-    for (let r = 0; r < level.rows; r++) {
-      for (let c = 0; c < level.cols; c++) {
-        const [from, to] = [(r * level.cols + c) * 4, ((r >> 1) * next.cols + (c >> 1)) * 4];
-        for (let k = 0; k < 4; k++) {
-          next.rgbw[to + k] += level.rgbw[from + k];
-        }
-      }
-    }
-    for (let i = 0; i < next.rgbw.length; i += 4) {
-      const w = next.rgbw[i + 3];
-      if (w > 1) {
-        for (let k = 0; k < 4; k++) {
-          next.rgbw[i + k] /= w;
-        }
-      }
-    }
-    levels.push(next);
-    level = next;
-  }
-  // Push: what each level lacks taken from the coarser one, read between its texels (no blocks).
-  for (let l = levels.length - 2; l >= 0; l--) {
-    const [fine, coarse] = [levels[l], levels[l + 1]];
-    const read = (x: number, y: number, k: number) => {
-      const cx = Math.max(0, Math.min(coarse.cols - 1, x));
-      const cy = Math.max(0, Math.min(coarse.rows - 1, y));
-      const [ix, iy] = [Math.floor(cx), Math.floor(cy)];
-      const [jx, jy] = [Math.min(coarse.cols - 1, ix + 1), Math.min(coarse.rows - 1, iy + 1)];
-      const [fx, fy] = [cx - ix, cy - iy];
-      const v = (x: number, y: number) => {
-        const i = (y * coarse.cols + x) * 4;
-        // Colour as a share of what counted there (the coarsest have counted fully after their push).
-        return coarse.rgbw[i + 3] > 0 ? coarse.rgbw[i + k] / coarse.rgbw[i + 3] : 0;
-      };
-      return (v(ix, iy) * (1 - fx) + v(jx, iy) * fx) * (1 - fy) + (v(ix, jy) * (1 - fx) + v(jx, jy) * fx) * fy;
-    };
-    for (let r = 0; r < fine.rows; r++) {
-      for (let c = 0; c < fine.cols; c++) {
-        const i = (r * fine.cols + c) * 4;
-        const w = fine.rgbw[i + 3];
-        if (w >= 1) {
-          continue;
-        }
-        const [x, y] = [(c + 0.5) / 2 - 0.5, (r + 0.5) / 2 - 0.5];
-        for (let k = 0; k < 3; k++) {
-          fine.rgbw[i + k] += (1 - w) * read(x, y, k);
-        }
-        fine.rgbw[i + 3] = 1;
-      }
-    }
-  }
-  const pixels = new Uint8Array(cols * rows * 4);
-  for (let i = 0; i < cols * rows; i++) {
-    for (let k = 0; k < 3; k++) {
-      pixels[i * 4 + k] = Math.round(levels[0].rgbw[i * 4 + k]);
-    }
-    pixels[i * 4 + 3] = Math.round(inside[i] * 255);
-  }
-  return { pixels, cols, rows, box: [x0, y0, cols * step, rows * step] };
 }
 
 /** A material with a blended wall's grain (see WALL_GRAIN) over its colour, where it is in the view. */

@@ -62,7 +62,7 @@ import { dragSender, othersWatching } from "./remoteObr";
 import { DragPath } from "../util/dragPath";
 import { saveDraggedToken } from "../util/saveDrag";
 import "./vistazo.css";
-import { since, stamp, time } from "../timing";
+import { record, since, stamp, time } from "../timing";
 import { enhanceSelects } from "./dropdown";
 import { fillSliders } from "./slider";
 // Roboto, as the extension's other pages (PluginThemeProvider): not every computer has it.
@@ -2163,7 +2163,7 @@ async function start() {
     liveFogFrame = requestAnimationFrame(() => {
       liveFogFrame = 0;
       if (options.playerView) {
-        lastFog = fogNow();
+        lastFog = time("vistazo.liveFog", fogNow);
         view.setFog(lastFog);
         // Which doors the fog leaves as wall, as it opens round the light: their boards follow (the
         // terrain's cut follows on the drop, built again). Drawn again only when that changed.
@@ -2222,6 +2222,9 @@ async function start() {
   }
   /** A token shown here at `position` (and `own` height, if given) before the scene says so. */
   function showTokenAt(tokenId: string, position: Vector2, own?: number) {
+    time("vistazo.dragMove", () => showTokenAtNow(tokenId, position, own));
+  }
+  function showTokenAtNow(tokenId: string, position: Vector2, own?: number) {
     if (!scene?.tokens.some((t) => t.id === tokenId) && !scene?.props.some((p) => p.id === tokenId)) {
       return;
     }
@@ -2611,7 +2614,8 @@ async function start() {
   let builtWith = "";
   /** Shapes being dragged whole (see VistazoView.moveShapes): till they're let go. */
   let dragging = false;
-  const refresh = () => {
+  const refresh = () => time("vistazo.refresh", refreshNow);
+  const refreshNow = () => {
     // The player view just turned on: not till its sight is known (see set).
     if (awaitingSight) {
       return;
@@ -2632,15 +2636,15 @@ async function start() {
       }
       // The player view's fog, worked out again only when what it depends on changed (not on every token move).
       if (options.playerView) {
-        const key = JSON.stringify([fogFilled, sightKey(items), localSight, items.filter((item) => item.layer === "FOG").map((item) => [item.id, item.visible, item.zIndex, item.position, item.rotation, item.scale, item.lastModified])]);
+        const key = time("vistazo.fogKey", () => JSON.stringify([fogFilled, sightKey(items), localSight, items.filter((item) => item.layer === "FOG").map((item) => [item.id, item.visible, item.zIndex, item.position, item.rotation, item.scale, item.lastModified])]));
         if (key !== fogKey || !lastFog || liveLit()) {
           fogKey = key;
-          lastFog = fogNow();
+          lastFog = time("vistazo.fogOver", fogNow);
           view.setFog(lastFog);
         }
       }
       // The doors the fog leaves as wall (see readFogShut): the terrain built so.
-      readFogShut();
+      time("vistazo.fogShut", readFogShut);
       // The fog doesn't touch the terrain: it's drawn whole, and the view leaves out what's under the fog
       // as it draws (see VistazoView.setFog), live, a light moving with a dragged token too.
       const t0 = stamp();
@@ -2700,8 +2704,8 @@ async function start() {
       }
       // What OBR moved (a drop on the map) slides there; what's being dragged here is already where it is.
       time("vistazo.setScene", () => view.setScene(scene!, { except: new Set([...live.keys(), ...(draggingId ? [draggingId] : [])]) }));
-      showDoors();
-      showDistances();
+      time("vistazo.doors", showDoors);
+      time("vistazo.distances", showDistances);
     } catch (error) {
       console.error("Rising Ranges: 3D Glance couldn't draw the scene", error);
     } finally {
@@ -2958,6 +2962,8 @@ async function start() {
     true
   );
   OBR.scene.items.onChange((next) => {
+    // How many items each change brings (the whole scene's list each time), and how often.
+    record("vistazo.itemsChange (avg = items)", next.length);
     items = next;
     if (landing.size > 0) {
       landed();
