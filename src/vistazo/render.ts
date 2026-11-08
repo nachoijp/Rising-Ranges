@@ -206,6 +206,8 @@ export class VistazoView {
   /** The reliefs' doors (see doors.ts), and the list they're built from. */
   private doorGroup = new THREE.Group();
   private doors: DoorView[] = [];
+  /** What the doors were last built from (see setDoors). */
+  private doorsKey = "";
   /** The camera's matrix as last worked out, and what from (see camMatrix); counted each time it changes. */
   private camKept: { panX: number; panY: number; s: number; tilt: number; yaw: number; cx: number; cy: number; cz: number; persp: number; m: DOMMatrix; eye: DOMPoint } | null = null;
   private camVersion = 0;
@@ -3038,6 +3040,13 @@ export class VistazoView {
 
   /** The reliefs' doors, open or shut as their fog doors are. */
   setDoors(doors: DoorView[]) {
+    // The same as drawn (most scene refreshes): nothing built again, nothing drawn. Built again too when
+    // what they stand on changed (the terrain, its scale).
+    const key = `${this.u}|${this.k}|${this.terrainKey}|${this.terrainEdits}|${JSON.stringify(doors)}`;
+    if (key === this.doorsKey) {
+      return;
+    }
+    this.doorsKey = key;
     this.doors = doors;
     this.buildDoors();
     this.buildDoorButtons();
@@ -3150,8 +3159,11 @@ export class VistazoView {
       const value = clear.toFixed(2);
       if (button.el.style.getPropertyValue("--clear") !== value) {
         button.el.style.setProperty("--clear", value);
-        // Out of the keyboard's way when it can't be seen.
-        button.el.tabIndex = button.behind !== false ? -1 : 0;
+      }
+      // Out of the keyboard's way behind a wall (a far one, faded, still takes it: focus shows it).
+      const tab = button.behind === true ? -1 : 0;
+      if (button.el.tabIndex !== tab) {
+        button.el.tabIndex = tab;
       }
       // Clicked only once there to see.
       const shown = clear >= 0.5;

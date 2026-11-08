@@ -1844,10 +1844,14 @@ async function start() {
       // Turned on: drawn once this client's own sight (Smoke & Spectre!'s local lights) is known, not
       // first without it (all under the fog, its doors cut) and then built again; nothing drawn meanwhile
       // (see refresh).
+      // The last turn's alone (on, off and on again quickly: the first one's answer isn't the sight).
       awaitingSight = options.playerView;
+      const asked = ++sightAsked;
       void watchLocal(options.playerView).then(() => {
-        awaitingSight = false;
-        refresh();
+        if (asked === sightAsked) {
+          awaitingSight = false;
+          refresh();
+        }
       });
     }
     // The lines to the props come and go with these.
@@ -1967,6 +1971,8 @@ async function start() {
   let draggingId: string | null = null;
   /** The player view just turned on, its sight (local items) not read yet: nothing drawn meanwhile (see set, refresh). */
   let awaitingSight = false;
+  /** How many times the player view was turned on or off (see set): the last one's sight is waited for. */
+  let sightAsked = 0;
   /**
    * What's measured from, as the map shows one Medición on each screen: this client's own while it
    * measures (a token it drags, here or with the map's Medición; that Medición; its free point here),
