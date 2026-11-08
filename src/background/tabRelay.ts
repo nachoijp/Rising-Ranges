@@ -15,9 +15,12 @@ type Linked = {
   /** Each subscription's ending, by its callback's number. */
   subs: Map<number, () => void>;
   interactions: Map<number, Promise<InteractionManager<Item | Item[]>>>;
+  /** Callbacks the tab dropped before their subscription was made (ended as soon as it is). */
+  dropped: Set<number>;
 };
 
-const QUIET_MS = 5000;
+/** A tab not heard from for this long is let go (a hidden one's timers run once a minute). */
+const QUIET_MS = 3 * 60 * 1000;
 /** Kept here (this frame's storage outlives Owlbear's reloads) while a tab's linked: found again after one. */
 const LINKED_KEY = "rising-ranges/tab-linked";
 /** How long after it was last linked a tab is looked for (one left open overnight isn't). */
@@ -101,7 +104,9 @@ export function startTabRelay(onLinked: (linked: boolean) => void) {
   };
   window.setInterval(() => {
     if (linked && Date.now() - linked.heard > QUIET_MS) {
+      // Closed without a word (or asleep): not looked for after Owlbear's next reload either.
       letGo();
+      mark(false);
     }
   }, 1000);
 
@@ -160,7 +165,12 @@ export function startTabRelay(onLinked: (linked: boolean) => void) {
     });
     const value = await (fn as (...a: unknown[]) => unknown).apply(owner, real);
     if (typeof value === "function") {
-      // A subscription's ending: kept here, called when the tab drops it (or goes).
+      // A subscription's ending: kept here, called when the tab drops it (or goes); now, if that's
+      // happened meanwhile.
+      if (linked !== own || marks.some((mark) => own.dropped.delete(mark))) {
+        (value as () => void)();
+        return undefined;
+      }
       for (const mark of marks) {
         own.subs.set(mark, value as () => void);
       }
@@ -180,13 +190,16 @@ export function startTabRelay(onLinked: (linked: boolean) => void) {
         (event.source as Window).postMessage({ rrTab: "taken", session: data.session } satisfies TabMessage, origin);
         return;
       }
+      let fresh = false;
       if (linked?.session !== data.session) {
+        fresh = true;
         letGo();
-        linked = { session: data.session, since: data.since, source: event.source as Window, heard: Date.now(), subs: new Map(), interactions: new Map() };
+        linked = { session: data.session, since: data.since, source: event.source as Window, heard: Date.now(), subs: new Map(), interactions: new Map(), dropped: new Set() };
         onLinked(true);
         mark(true);
       }
-      const answer = (ready: boolean) => send({ rrTab: "found", session: data.session, playerId: OBR.player.id, ready });
+      linked.heard = Date.now();
+      const answer = (ready: boolean) => send({ rrTab: "found", session: data.session, playerId: OBR.player.id, ready, fresh });
       OBR.scene.isReady().then(answer, () => answer(false));
       return;
     }
@@ -201,8 +214,13 @@ export function startTabRelay(onLinked: (linked: boolean) => void) {
       letGo();
       mark(false);
     } else if (data.rrTab === "drop") {
-      linked.subs.get(data.fn)?.();
-      linked.subs.delete(data.fn);
+      const end = linked.subs.get(data.fn);
+      if (end) {
+        end();
+        linked.subs.delete(data.fn);
+      } else {
+        linked.dropped.add(data.fn);
+      }
     } else if (data.rrTab === "call") {
       const { id, session } = data;
       run(data.path, data.args).then(

@@ -90,6 +90,13 @@ window.addEventListener("message", (event) => {
   }
 });
 
+// The tab closed: the background told (the frame's own bye may not get out in time).
+window.addEventListener("pagehide", () => {
+  if (session) {
+    relay?.postMessage({ rrTab: "bye", session } satisfies TabMessage, origin);
+  }
+});
+
 // Owlbear closed or reloaded (its window gone): the frame's told.
 window.setInterval(() => {
   if (owlbear?.closed && session) {

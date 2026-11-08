@@ -693,7 +693,8 @@ async function start() {
   /** The X: closed for good, from the panel or full screen (not back to the panel); a tab of its own, closed. */
   const closeAll = () => {
     if (TAB) {
-      window.close();
+      // A frame in the tab's page: that's what closes (opened by script, it may).
+      window.parent.close();
       return;
     }
     void closeVistazoPanel();
@@ -3047,7 +3048,7 @@ async function start() {
     sceneMetadata = next;
     const now = vistazoAccess(settingsOf(next));
     if (now !== "everyone" && !isGM) {
-      void (TAB ? window.close() : FULL ? OBR.modal.close(FULL_MODAL_ID) : closeVistazoPanel());
+      void (TAB ? window.parent.close() : FULL ? OBR.modal.close(FULL_MODAL_ID) : closeVistazoPanel());
       return;
     }
     const nextLanguage = languageFromMetadata(next);

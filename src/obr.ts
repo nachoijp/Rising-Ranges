@@ -16,7 +16,7 @@ export type TabMessage =
   | { rrTab: "find"; session: string; since: number }
   | { rrTab: "taken"; session: string }
   | { rrTab: "closed"; session: string }
-  | { rrTab: "found"; session: string; playerId: string; ready: boolean }
+  | { rrTab: "found"; session: string; playerId: string; ready: boolean; fresh: boolean }
   | { rrTab: "call"; session: string; id: number; path: string; args: unknown[] }
   | { rrTab: "result"; session: string; id: number; value?: unknown; error?: string }
   | { rrTab: "event"; session: string; fn: number; args: unknown[] }
@@ -76,11 +76,17 @@ function tabOBR(): typeof Real {
   let playerId = "";
   let ready = false;
   let calls = 0;
-  const waiting = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  /** Each call's answer awaited; `sent`: to the link there was then (lost with it, if it goes). */
+  const waiting = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void; sent: boolean }>();
   let fns = 0;
   const callbacks = new Map<number, (...args: unknown[]) => unknown>();
+  /** The subscriptions (an on…'s call), by call: made again on a new link (the old one's ended with it). */
+  const subscribed = new Map<number, { path: string; args: unknown[] }>();
   const whenFound: (() => void)[] = [];
   let lastHeard = 0;
+  /** When the last beat went (an answer's due soon after: none, the link's gone). */
+  let beatAt = 0;
+  let linkedBefore = false;
   let ended: "closed" | "taken" | null = null;
   const since = Date.now();
   // All through the tab's page (it finds the background, and passes each message on).
@@ -97,12 +103,25 @@ function tabOBR(): typeof Real {
     if (data.rrTab === "closed" || data.rrTab === "taken") {
       ended = data.rrTab;
     } else if (data.rrTab === "found") {
-      const first = !relay;
+      const wasLinked = !!relay;
       relay = host;
       ended = null;
       playerId = data.playerId;
       ready = data.ready;
-      if (first) {
+      if (data.fresh && linkedBefore) {
+        // A new link (the old one let go): what the old one had is gone with it.
+        for (const [id, call] of waiting) {
+          if (call.sent) {
+            waiting.delete(id);
+            call.reject(new Error("the link to Owlbear was lost"));
+          }
+        }
+        for (const { path, args } of subscribed.values()) {
+          post({ rrTab: "call", session, id: ++calls, path, args });
+        }
+      }
+      linkedBefore = true;
+      if (!wasLinked) {
         whenFound.splice(0).forEach((f) => f());
       }
     } else if (data.rrTab === "result") {
@@ -119,10 +138,25 @@ function tabOBR(): typeof Real {
   });
   // Looked for till found; then a beat now and then, for the background to tell when this tab's gone.
   search();
-  window.setInterval(() => (ended === "taken" ? undefined : relay ? post({ rrTab: "beat", session }) : search()), 1000);
+  window.setInterval(() => {
+    if (ended === "taken") {
+      return;
+    }
+    // A beat unanswered for a while (the background let this tab go, or Owlbear went): looked for again.
+    // Timed by the beats, not the clock: a hidden tab's timers run once a minute.
+    if (relay && beatAt && lastHeard < beatAt && performance.now() - beatAt > 4000) {
+      relay = null;
+    }
+    if (relay) {
+      beatAt = performance.now();
+      post({ rrTab: "beat", session });
+    } else {
+      search();
+    }
+  }, 1000);
   window.addEventListener("pagehide", () => post({ rrTab: "bye", session }));
 
-  const call = (path: string, args: unknown[]): Promise<unknown> => {
+  const call = (path: string, args: unknown[], subscribe = false): Promise<unknown> => {
     const id = ++calls;
     const plain = args.map((arg) => {
       if (typeof arg !== "function") {
@@ -132,9 +166,16 @@ function tabOBR(): typeof Real {
       callbacks.set(fn, arg as (...a: unknown[]) => unknown);
       return { rrFn: fn } satisfies FnMark;
     });
+    if (subscribe) {
+      subscribed.set(id, { path, args: plain });
+    }
     return new Promise((resolve, reject) => {
-      waiting.set(id, { resolve, reject });
-      const send = () => post({ rrTab: "call", session, id, path, args: plain });
+      const entry = { resolve, reject, sent: false };
+      waiting.set(id, entry);
+      const send = () => {
+        entry.sent = true;
+        post({ rrTab: "call", session, id, path, args: plain });
+      };
       if (relay) {
         send();
       } else {
@@ -205,11 +246,14 @@ function tabOBR(): typeof Real {
         return special[next] ?? at(next);
       },
       apply(_target, _this, args: unknown[]) {
-        const result = call(path, args);
+        const subscription = /\.on[A-Z]\w*$/.test(path);
+        const result = call(path, args, subscription);
         // A subscription: what it answers is how to end it (its callbacks let go here and there).
-        if (/\.on[A-Z]\w*$/.test(path)) {
+        if (subscription) {
+          const id = calls;
           void result.catch(() => {});
           return () => {
+            subscribed.delete(id);
             for (const [fn, callback] of callbacks) {
               if (args.includes(callback)) {
                 callbacks.delete(fn);
@@ -221,7 +265,7 @@ function tabOBR(): typeof Real {
         return result;
       },
     });
-  state = () => ended ?? (!relay ? "searching" : performance.now() - lastHeard > 4000 ? "lost" : "connected");
+  state = () => ended ?? (relay ? "connected" : linkedBefore ? "lost" : "searching");
   return at("") as typeof Real;
 }
 
