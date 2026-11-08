@@ -443,6 +443,34 @@ function message(text: string) {
 const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 24;
 
+/**
+ * Small helpers of the page (nothing of start's own): a turn's angle back within ±180°, the camera's
+ * tilt kept to its range, eases for the camera's moves, a pointer's modifier keys, a message to the players.
+ */
+const wrapYaw = (y: number) => ((((y + 180) % 360) + 360) % 360) - 180;
+const broadcast = (message: SyncMessage) => OBR.broadcast.sendMessage(SYNC_CHANNEL, message, { destination: "REMOTE" }).catch(() => {});
+const clampTilt = (v: number) => Math.max(0, Math.min(150, v));
+const ease = (p: number) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+const turn = (p: number) => Math.sin(2 * Math.PI * p);
+const swell = (p: number) => (1 - Math.cos(2 * Math.PI * p)) / 2;
+const modsOf = (event: PointerEvent) => ({ shift: event.shiftKey, alt: event.altKey, ctrl: event.ctrlKey || event.metaKey, clicks: 1 });
+
+/**
+ * The page: everything the Vistazo does, in one function (its parts share the page's state, so they're
+ * kept together, in sections marked "// ---------- … ----------"), in this order:
+ *
+ * - Templates; Esc; who may open it; the window (size, full screen, its own tab, closing).
+ * - Texts; the view (`view`, its `camera`); syncing the view to the players; camera moves.
+ * - Pointer state (`mode`, `moving`, `pointers`…); the relief editor's brush; permissions (`may`);
+ *   the item menu; the stage's pointer, wheel and keys.
+ * - The panel's options (`options`).
+ * - The scene: its items and grid (`items`, `scene`, `dpi`); what's measured; tokens dragged live;
+ *   others' Mediciones and drags; the player view's fog and doors.
+ * - Drawing it again (`refresh`, `later`); editing the relief (`session`); Owlbear's changes listened to.
+ *
+ * Most parts read `scene` (the scene as drawn, see scene.ts), `view` (the 3D view, see render.ts),
+ * `items` (Owlbear's, as last heard) and `options`; a change to them goes through `refresh()`.
+ */
 async function start() {
   const [role, metadata, theme] = await Promise.all([OBR.player.getRole(), OBR.scene.getMetadata().catch(() => null), OBR.theme.getTheme()]);
   applyTheme(theme);
@@ -570,6 +598,8 @@ async function start() {
     showTemplates();
   };
   $("templateClear").hidden = true;
+
+  // ---------- Esc: what it stops first ----------
   /** Takes the free point away, if there's one (then Esc does only that); see placePoint. */
   let clearPoint: () => boolean = () => false;
   document.addEventListener("keydown", (event) => {
@@ -595,6 +625,7 @@ async function start() {
     }
   });
 
+  // ---------- Who may open it, and on what scene ----------
   // Who may open it (Settings → General): the GM always (hidden, "off", only takes its button away:
   // the relief is still edited here, from the map's menu), and the players too with "everyone".
   const isGM = role === "GM";
@@ -626,6 +657,7 @@ async function start() {
     return;
   }
 
+  // ---------- The window: its size, full screen, its own tab, closing ----------
   setUpResizing();
 
   /** The camera handed over to the other view, for a few seconds. */
@@ -784,14 +816,12 @@ async function start() {
     $("toggle").textContent = t(camera.tilt < 1 ? "vistazo.to3d" : "vistazo.toTop");
   };
 
-  const wrapYaw = (y: number) => ((((y + 180) % 360) + 360) % 360) - 180;
 
   // ---------- Sync my view (see sync.ts) ----------
   let syncing = false;
   let lastSent = 0;
   let sendTimer: ReturnType<typeof setTimeout> | null = null;
   let heartbeat: ReturnType<typeof setInterval> | null = null;
-  const broadcast = (message: SyncMessage) => OBR.broadcast.sendMessage(SYNC_CHANNEL, message, { destination: "REMOTE" }).catch(() => {});
   /** The GM's camera out, at most every SYNC_INTERVAL_MS (the last position always goes). */
   function sendCamera() {
     if (sendTimer) {
@@ -896,7 +926,8 @@ async function start() {
       }
     });
   }
-  const clampTilt = (v: number) => Math.max(0, Math.min(150, v));
+
+  // ---------- Camera moves: animations, cinematic shots, the reset and the compass ----------
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
   let frame = 0;
   type Numbers = "tilt" | "yaw" | "zoom" | "panX" | "panY";
@@ -944,9 +975,6 @@ async function start() {
    * began loop seamlessly when recorded. Esc or a click on the scene stops it there.
    */
   type Pose = { tilt: number; yaw: number; zoom: number };
-  const ease = (p: number) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
-  const turn = (p: number) => Math.sin(2 * Math.PI * p);
-  const swell = (p: number) => (1 - Math.cos(2 * Math.PI * p)) / 2;
   const SHOTS: { id: TranslationKey; ms: number; loop: boolean; at: (p: number, from: Pose) => Pose }[] = [
     { id: "vistazo.shotOrbit", ms: 20000, loop: true, at: (p, from) => ({ tilt: 55, yaw: from.yaw + 360 * p, zoom: 1 }) },
     { id: "vistazo.shotSweep", ms: 7000, loop: false, at: (p, from) => ({ tilt: 68 - 20 * ease(p), yaw: from.yaw - 35 + 70 * ease(p), zoom: from.zoom * (0.92 + 0.2 * ease(p)) }) },
@@ -1096,6 +1124,7 @@ async function start() {
     }
   });
 
+  // ---------- What a press on the stage is doing (shared by the pointer handlers below) ----------
   // Pointer: drag orbits; the wheel held down (or Shift) pans, as in Owlbear; two fingers zoom and pan.
   const pointers = new Map<number, [number, number]>();
   let mode: "orbit" | "pan" | "pinch" | "token" | "point" | "handle" | null = null;
@@ -1193,7 +1222,6 @@ async function start() {
   // keys too); the right one still turns the camera, the middle one moves it.
   /** The pointer painting (pressed on the terrain), if one is. */
   let brushPointer: number | null = null;
-  const modsOf = (event: PointerEvent) => ({ shift: event.shiftKey, alt: event.altKey, ctrl: event.ctrlKey || event.metaKey, clicks: 1 });
   /** The edited map's cell under the pointer on the terrain (null: none, or no brush in hand). */
   const brushCell = (event: PointerEvent) => {
     const map = session && items.find((item): item is Image => item.id === session!.imageId && item.type === "IMAGE");
@@ -1275,6 +1303,8 @@ async function start() {
   });
 
   stage.addEventListener("contextmenu", (event) => event.preventDefault());
+
+  // ---------- What this player may do to items (the room's permissions) ----------
   // Who may do what to an item, as on the map (see background/permission.ts' canUpdateItem): the GM
   // anything; a player what the room's permissions let them, for its layer (characters only their own,
   // with "owner only" on).
@@ -1382,6 +1412,8 @@ async function start() {
     },
     true
   );
+
+  // ---------- The stage's pointer, wheel and keys: orbit, pan, zoom, dragging tokens and templates, the free point ----------
   /** A right press on an item: its menu, if let go there (a right drag turns the camera instead). */
   let rightPress: { token: string; x: number; y: number } | null = null;
   stage.addEventListener("mousedown", (event) => {
@@ -1787,7 +1819,7 @@ async function start() {
     }
   });
 
-  // ---------- Controls ----------
+  // ---------- The panel's options ----------
   tilt.oninput = () => {
     cancelAnimationFrame(frame);
     camera.tilt = Number(tilt.value);
@@ -1909,7 +1941,7 @@ async function start() {
   anchor.onchange = () => set({ anchor: anchor.value === "base" ? "base" : "center" });
   showOptions();
 
-  // ---------- The scene, kept up to date ----------
+  // ---------- The scene's items and grid (kept up to date below) ----------
   let items = await OBR.scene.items.getItems();
   let sceneMetadata = metadata;
   let [dpi, scale] = await Promise.all([OBR.scene.grid.getDpi(), OBR.scene.grid.getScale()]);
@@ -1927,6 +1959,8 @@ async function start() {
   const findHexCenter = async () =>
     gridType === "HEX_HORIZONTAL" || gridType === "HEX_VERTICAL" ? await OBR.scene.grid.snapPosition({ x: 0, y: 0 }, 1, false, true) : null;
   let hexCenter = await findHexCenter().catch(() => null);
+
+  // ---------- What's measured: the selection, the Mediciones (own, fixed, others'), the free point, the lines ----------
   let selection: string[] = (await OBR.player.getSelection()) ?? [];
   /** The token being dragged (here, or with the Medición tool): its rings stay where the drag began, as on the map. */
   let draggingId: string | null = null;
@@ -2142,6 +2176,7 @@ async function start() {
     showDistances();
   });
 
+  // ---------- Tokens dragged live (here, in Owlbear or by others): where they're shown meanwhile ----------
   /**
    * Tokens being dragged (here or with the Medición tool), where they are now: kept
    * through any rebuild of the scene meanwhile (their light moving redoes the fog, from
@@ -2488,6 +2523,7 @@ async function start() {
     }
   }
 
+  // ---------- The player view: the fog and its doors ----------
   // The fog, for the player view: Owlbear's setting, and this client's local items (Smoke & Spectre's lights and walls).
   let fogFilled = await OBR.scene.fog.getFilled().catch(() => false);
   let fogColor = await OBR.scene.fog.getColor().catch(() => "#222222");
@@ -2629,6 +2665,7 @@ async function start() {
   };
   void watchLocal(options.playerView);
 
+  // ---------- Drawing the scene again (refresh): what changed, how much is built again ----------
   /** Only the relief's heights changed since it was drawn (a brush), within this box (scene px): moved where they are (see VistazoView.reheight). */
   let heightsOnly: Region | null = null;
   /** Where a brush went since the terrain was last built whole (scene px): let go, see settles. */
@@ -2995,6 +3032,8 @@ async function start() {
     },
     true
   );
+
+  // ---------- Owlbear's changes (items, metadata, grid, broadcasts), and the first frame ----------
   OBR.scene.items.onChange((next) => {
     // How many items each change brings (the whole scene's list each time), and how often.
     record("vistazo.itemsChange (avg = items)", next.length);
