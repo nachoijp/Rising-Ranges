@@ -187,11 +187,16 @@ Its panel:
 - **Opening** and **Thickness** — how tall the doorway is, and how thick the leaf.
 - **Secret** — to players, while it's shut, there's no door: it's the wall.
 
+![A door open in the Glance, with its button](screenshots/glance/door-button.png)
+
 In the Glance, a button over each linked door opens or shuts it, shown as you get near it (and with the keyboard, Tab). The GM can always use them; players only where the fog extension lets them (Owlbear's fog permission, or Smoke & Spectre's player doors). In **View as a player**, a door hidden by the fog on both sides isn't shown, and a shut one with fog on one side shows only from the clear side.
 
 ## Turning fog into relief
 
 **Turn fog into relief…** (under **⋮**) builds walls and rooms from the walls the room already has for its fog, their thickness measured on the map's picture:
+
+![Turn fog into relief](screenshots/glance/fog-to-relief.png)
+
 
 - **Smoke & Spectre walls** — rooms, walls, round towers, objects and hedges; its doors become doors, linked to them.
 - **Owlbear's fog** — each fog shape is a room, with a wall along its edges where the picture shows one. Its doors become doors, linked to them; a door drawn shut on the map without a fog door often comes out as wall: cut it open.
