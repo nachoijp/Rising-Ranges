@@ -96,7 +96,9 @@ Open the scene as a small diorama: orbit, pan and zoom around the raised
 relief, with tokens at their elevation, range rings, distance lines and
 readings in 3D. Place spell templates (sphere, cube, cylinder, cone, line),
 show props and weather, play camera moves, and sync your view to the players —
-each still sees through their own fog. The GM decides who gets it.
+each still sees through their own fog. Doors open and shut with the fog's, from
+a button over each. Open it in a browser tab of its own to put it on another
+screen. The GM decides who gets it.
 
 ![The 3D Glance](https://raw.githubusercontent.com/nachoijp/Rising-Ranges/main/docs/screenshots/glance/fullscreen.jpg)
 

@@ -14,7 +14,7 @@ A relative, 3D-aware range and elevation measuring tool for [Owlbear Rodeo](http
 - **Multiple visualization styles** — icon stacks, rings, or filled circles, independently sized and colored.
 - **Exact numbers when you want them** — optionally add each token's exact distance to its Reading ("Close · 15ft"), and show elevation markers as icons, as a "⬆️ 30ft" label, or both.
 - **Terrain with elevation** — build the map's relief in the relief editor (raised ground, pits, ramps, stairs, slopes, bridges) and tokens standing on it are measured from up there. Drawn on the map as outlines, or as stacked cut-paper layers with their shadows. For maps seen from above.
-- **3D Glance** — the scene as a small diorama: the relief raised, tokens at their elevation, range rings, distance lines and spell templates in 3D. See the [3D Glance manual](docs/vistazo.md).
+- **3D Glance** — the scene as a small diorama: the relief raised, tokens at their elevation, range rings, distance lines and spell templates in 3D, with doors that open with the fog's. In its panel, or in a browser tab of its own for another screen. See the [3D Glance manual](docs/vistazo.md).
 - **Distances panel** — a list of every token's Range, horizontal and vertical distance, and total distance from any token you pick, live as tokens move. For the GM only or for everyone; players never see hidden tokens.
 - **Color-blind friendly themes** — Base, Deuteranopia, Tritanopia, Protanopia, or your own colors. Each player picks their own, and sees everything in it — rings, Readings and elevation markers, whoever made them.
 - **Bilingual** — Español / English, switchable per room.
@@ -90,7 +90,7 @@ Give the map a relief: raised ground, pits, ramps and stairs, slopes, bridges an
 
 ![The relief editor](docs/screenshots/glance/editor.jpg)
 
-The relief follows its map image, and is kept in the scene. Everything about the editor — the tools, shapes, slopes, slabs and groups — is in the [3D Glance manual](docs/vistazo.md#editing-the-relief). Scenes made with the old terrain zones can bring them in from the editor's **⋮** menu (**Bring zones**); the zones themselves are left as they were.
+The relief follows its map image, and is kept in the scene. Everything about the editor — the tools, shapes, slopes, slabs and groups — is in the [3D Glance manual](docs/vistazo.md#editing-the-relief). Scenes made with the old terrain zones can bring them in from the editor's **⋮** menu (**Bring zones**); the zones themselves are left as they were. A map whose walls are already drawn for the fog (Owlbear's own fog, Smoke & Spectre, or a .uvtt file) can have its walls and rooms built from them: **Turn fog into relief** in the same menu.
 
 A toolbar button (GM only) picks who sees the terrain on the map: nobody, only the GM, or everyone.
 

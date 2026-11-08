@@ -654,7 +654,7 @@ const en: Record<TranslationKey, string> = {
   "relief.gen.source": "Where the walls come from",
   "relief.gen.smoke": "Smoke & Spectre walls ({n} lines, {d} doors)",
   "relief.gen.smokeNone": "Smoke & Spectre walls (this scene has none)",
-  "relief.gen.smokeHint": "Rooms, walls, round towers, objects and hedges; doors are left open. What the lines close in and the picture shows dark (rock, void) is made solid.",
+  "relief.gen.smokeHint": "Rooms, walls, round towers, objects and hedges; its doors become doors, linked to them. What the lines close in and the picture shows dark (rock, void) is made solid.",
   "relief.gen.obr": "Owlbear's fog ({n} edges)",
   "relief.gen.obrNone": "Owlbear's fog (this scene has none)",
   "relief.gen.obrHint": "Each Forecast shape is a room; a wall runs along its edges where the picture shows one. What's left outside, or what you covered by hand, is made solid if the picture shows it dark (rock, void). Doors drawn shut usually come out as wall: open them with the cut.",

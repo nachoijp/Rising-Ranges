@@ -12,6 +12,8 @@ The 3D Glance shows the scene as a small diorama: the map's terrain raised to it
 - [Vertices and height points](#vertices-and-height-points)
 - [Slabs](#slabs)
 - [Groups](#groups)
+- [Doors](#doors)
+- [Turning fog into relief](#turning-fog-into-relief)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 
 ## Opening it
@@ -25,6 +27,8 @@ The Glance has its own button in the toolbar. Who gets it is chosen in **Setting
 ![Who gets the 3D Glance](screenshots/glance/settings-general.png)
 
 The window can be moved by its grip, minimised, or taken full screen. The panel on the right opens and closes with the button at its top.
+
+**Open in a tab** (the button beside full screen) moves the Glance to a browser tab of its own: drag it to another screen and keep Owlbear in view. It works as the panel does (the relief editor stays in Owlbear), and follows the scene as it changes. If Owlbear is reloaded, the tab links to it again by itself; if Owlbear is closed, open the Glance from Owlbear and press the same button. The tab keeps its own options.
 
 The **camera** button beside it opens a list of camera moves — a full orbit round the terrain, a sweep, pushing in and out, a crane down from above, a pendulum — played once with the panel and buttons out of the way: a quick way to show the terrain. With **Sync view** on, the players see it too. Those marked ↻ end where they start, so they loop seamlessly if you record them. Esc or a click on the scene stops a move.
 
@@ -40,6 +44,7 @@ The **camera** button beside it opens a list of camera moves — a full orbit ro
 | Click a token | select it |
 | Drag a token | move it (Z / X change its height while dragging) |
 | Click empty ground | measure from there (Z / X raise and lower the point) |
+| Click a door's button | open or shut it (see [Doors](#doors)) |
 | Esc | remove the point, or close |
 
 The **?** in the corner lists these too.
@@ -54,7 +59,7 @@ At the top:
 - **Sync view** (GM) — players with the Glance see what your camera sees (it opens for them if it's set to Everyone). Each still sees through their own fog.
 - **Edit relief** (GM) — the relief editor (see below).
 - **Show tokens** and **View as a player** — the scene as a player sees it: with the fog (Owlbear's or Smoke & Spectre's), without hidden tokens or what's under the fog. The fog is as on Owlbear's map: fog shapes, rooms you've cut open, and what the lights reveal, with their soft edges. A secondary light (a campfire) shows only once a character's light sees it. The fog opens around a token as it's dragged, and a token dragged in the Glance stops at the fog's walls, as on the map. Under the fog the terrain isn't shown: a flat floor of fog, with a curtain of it along its edge, stands in for it, and heights read 0 there.
-- **Quality** — High as designed; Medium is a little less sharp on dense screens, with less weather; Low for slower devices.
+- **Quality** — High as designed, always as sharp; Medium is a little less sharp on dense screens, with less weather, and on a slow device it's drawn less sharp while the camera moves; Low for slower devices, the same, more so. Dragging a token never makes it less sharp.
 
 The rest is folded into sections:
 
@@ -86,7 +91,7 @@ The rest is folded into sections:
 
 ![The relief editor](screenshots/glance/editor.jpg)
 
-The relief follows the map image: move or resize the map, and it goes with it. If the scene has several maps, the one being edited is picked at the top left. **Done** saves; the **X** leaves without saving (a second click if there are changes). Under **⋮**: export the relief to a file, import one, bring in the zones from the old terrain tool, or clear it.
+The relief follows the map image: move or resize the map, and it goes with it. If the scene has several maps, the one being edited is picked at the top left. **Done** saves; the **X** leaves without saving (a second click if there are changes). Under **⋮**: turn the room's fog walls into a relief (see [Turning fog into relief](#turning-fog-into-relief)), export the relief to a file, import one, bring in the zones from the old terrain tool, or clear it.
 
 The tools, on the left:
 
@@ -106,6 +111,7 @@ The tools, on the left:
 
   The **Edge** in the bar is the edge new shapes get: a wall (0), or a soft slope that fades into what's round it.
 
+- **Door** — drag from a door's hinge to its other end, on a wall (see [Doors](#doors)).
 - **Terrain brush** — raises, lowers, smooths or flattens what's on top (the ground, or the shape over it), or only the ground. Its size and strength are in the bar; [ and ] change its size while painting.
 
   ![The terrain brush](screenshots/glance/bar-brush.png)
@@ -166,11 +172,39 @@ Shapes can be grouped, as folders in the shapes list: **Ctrl + G** (or the right
 
 ![Groups in the shapes list](screenshots/glance/groups.png)
 
+## Doors
+
+A door is drawn on a wall, with the **Door** tool: drag from its hinge to its other end. The wall stays as it is on the map; in the Glance, and when measuring, the doorway is cut through it, as tall as its **Opening**, the rest of the wall over it as its lintel. A token in a doorway stands on its floor.
+
+Drawn on one of the fog's doors (Owlbear's own fog, or Smoke & Spectre's), it's **linked** to it: it opens and shuts with that door, and the fog with it. **Find** links a door drawn near one, and puts it right on it; **Unlink** lets it go. A door that isn't linked stays shut.
+
+Its panel:
+
+![A door's panel](screenshots/glance/door-panel.png)
+
+- **Look** — the leaf in the walls' styles (wood, brick, stone, earth, plain color, blend, the map stretched up), the **Map picture** (a rectangle of the map over it), or its own (metal, bars, glass).
+- **Opens** — it **swings** (by its **Angle**, to either side: **Other way**), **slides**, **lifts** or **vanishes**. **Hinge on the other end** moves the hinge.
+- **Opening** and **Thickness** — how tall the doorway is, and how thick the leaf.
+- **Secret** — to players, while it's shut, there's no door: it's the wall.
+
+In the Glance, a button over each linked door opens or shuts it, shown as you get near it (and with the keyboard, Tab). The GM can always use them; players only where the fog extension lets them (Owlbear's fog permission, or Smoke & Spectre's player doors). In **View as a player**, a door hidden by the fog on both sides isn't shown, and a shut one with fog on one side shows only from the clear side.
+
+## Turning fog into relief
+
+**Turn fog into relief…** (under **⋮**) builds walls and rooms from the walls the room already has for its fog, their thickness measured on the map's picture:
+
+- **Smoke & Spectre walls** — rooms, walls, round towers, objects and hedges; its doors become doors, linked to them.
+- **Owlbear's fog** — each fog shape is a room, with a wall along its edges where the picture shows one. Its doors become doors, linked to them; a door drawn shut on the map without a fog door often comes out as wall: cut it open.
+- **A .uvtt plan** — the map's .uvtt or .dd2vtt file (many map packs include one for Foundry). Its doors become doors, not linked (shut until you link them).
+
+What's closed in and dark on the picture (rock, void) is made solid. It can also look for stairs in the picture (they climb from 0 to 1: check their direction and heights), and replace what's there or add on top, with the wall height you choose. Ctrl + Z undoes it.
+
 ## Keyboard shortcuts
 
 | Key | Does |
 | --- | --- |
 | V | Select (again: shapes / vertices) |
+| D | Door |
 | Ctrl + Z / Ctrl + Y | undo / redo |
 | Ctrl + D | duplicate |
 | Ctrl + G / Ctrl + Shift + G | group / ungroup |

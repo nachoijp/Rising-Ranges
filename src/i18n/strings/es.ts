@@ -649,7 +649,7 @@ const es = {
   "relief.gen.source": "De dónde salen las paredes",
   "relief.gen.smoke": "Paredes de Smoke & Spectre ({n} líneas, {d} puertas)",
   "relief.gen.smokeNone": "Paredes de Smoke & Spectre (esta escena no tiene)",
-  "relief.gen.smokeHint": "Salas, paredes, torres redondas, objetos y setos; las puertas quedan abiertas. Lo que las líneas encierran y en el dibujo es oscuro (roca, vacío) queda sólido.",
+  "relief.gen.smokeHint": "Salas, paredes, torres redondas, objetos y setos; sus puertas se vuelven puertas, vinculadas a ellas. Lo que las líneas encierran y en el dibujo es oscuro (roca, vacío) queda sólido.",
   "relief.gen.obr": "Niebla de Owlbear ({n} bordes)",
   "relief.gen.obrNone": "Niebla de Owlbear (esta escena no tiene)",
   "relief.gen.obrHint": "Cada forma del Forecast es una sala; la pared va por sus bordes donde el dibujo muestra una. Lo que queda afuera, o lo que tapaste a mano, queda sólido si en el dibujo es oscuro (roca, vacío). Las puertas dibujadas cerradas suelen quedar como pared: abrilas con el corte.",
