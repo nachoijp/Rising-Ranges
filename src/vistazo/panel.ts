@@ -97,6 +97,8 @@ const STATE_CHANNEL = getPluginId("vistazoPanel");
 // Whether this client has the panel open, or the full-screen view instead, and when the panel was last
 // closed (Owlbear can't tell: see the Distancias panel). The page says: true (open), false (closed),
 // "full" (closed for the full-screen view).
+/** The Vistazo's own tab linked (see setVistazoTab). */
+let inTab = false;
 let open = false;
 let full = false;
 let closedAt = 0;
@@ -113,7 +115,7 @@ function setState(state: unknown) {
     closedAt = Date.now();
   }
   if (was !== (open || full)) {
-    shownChanged?.(open || full);
+    shownChanged?.(open || full || inTab);
   }
 }
 
@@ -124,13 +126,13 @@ export function watchVistazoPanel(onShown?: (shown: boolean) => void) {
   }
   watching = true;
   shownChanged = onShown ?? null;
-  shownChanged?.(open || full);
+  shownChanged?.(open || full || inTab);
   OBR.broadcast.onMessage(STATE_CHANNEL, (event) => setState(event.data));
   // A new scene closes the full-screen view too.
   OBR.scene.onReadyChange((ready) => {
     if (!ready && full) {
       full = false;
-      shownChanged?.(open);
+      shownChanged?.(open || inTab);
     }
   });
 }
@@ -165,7 +167,13 @@ export function isVistazoOpen(): boolean {
 
 /** Whether this client shows the Vistazo at all: its panel, or its full-screen view. */
 export function isVistazoShown(): boolean {
-  return open || full;
+  return open || full || inTab;
+}
+
+/** The background: the Vistazo's own tab linked (see background/tabRelay.ts) or let go. */
+export function setVistazoTab(linked: boolean) {
+  inTab = linked;
+  shownChanged?.(open || full || inTab);
 }
 
 /** When this client's panel was last closed (ms, Date.now()), 0 if never. */

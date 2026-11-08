@@ -25,6 +25,8 @@ import { Relief } from "../relief/relief";
 import { watchReliefs } from "../relief/store";
 import type { EditSession } from "../relief/editor/session";
 import { icon, type IconName } from "../relief/editor/icons";
+import { IN_TAB } from "../obr";
+import { openVistazoTab, showTabLink } from "./tab";
 import vistazoLogo from "../assets/vistazo.svg?raw";
 import { FREE_POINT, TEMPLATE_HANDLE, VistazoView, type Camera, type DistanceLine, type Options } from "./render";
 import { templateReaches, type Template, type TemplateLook, type TemplateShape } from "./templates";
@@ -87,7 +89,9 @@ document.getElementById("barIcon")!.innerHTML = vistazoLogo.replace(/stroke="#[0
  * action's own popover can't grow past what Owlbear leaves it under its top
  * bar. Going there and back keeps the camera (CAMERA_KEY, read once).
  */
-const FULL = new URLSearchParams(location.search).has("full");
+/** In a tab of its own (see src/obr.ts): laid out as full screen, without what's Owlbear's (its panel, its modal). */
+const TAB = IN_TAB;
+const FULL = new URLSearchParams(location.search).has("full") || TAB;
 
 /** The controls' help, one line each (the ? at the stage's corner). */
 const HELP_KEYS = ["vistazo.help1", "vistazo.help2", "vistazo.help3", "vistazo.help4", "vistazo.help5", "vistazo.help6", "vistazo.help7"] as const;
@@ -581,6 +585,8 @@ async function start() {
         showTemplates();
       } else if (clearPoint()) {
         // The point gone, the panel stays.
+      } else if (TAB) {
+        // A tab of its own: Esc closes nothing (the X does).
       } else if (FULL) {
         leaveFull();
       } else {
@@ -652,13 +658,40 @@ async function start() {
     void OBR.modal.close(FULL_MODAL_ID);
   }
   $("fullToggle").onclick = () => (FULL ? leaveFull() : enterFull());
-  /** The X: closed for good, from the panel or full screen (not back to the panel). */
+  /** The X: closed for good, from the panel or full screen (not back to the panel); a tab of its own, closed. */
   const closeAll = () => {
+    if (TAB) {
+      window.close();
+      return;
+    }
     void closeVistazoPanel();
     if (FULL) {
       void OBR.modal.close(FULL_MODAL_ID);
     }
   };
+  // To a tab of its own (another screen, Owlbear left in view): this one closes.
+  const tabButton = document.createElement("button");
+  tabButton.className = "panel-toggle";
+  tabButton.type = "button";
+  tabButton.dataset.title = "vistazo.newTab";
+  tabButton.innerHTML = icon("new-tab");
+  tabButton.onclick = () => {
+    void openVistazoTab().then((how) => {
+      if (how === "ok") {
+        closeAll();
+      } else {
+        void OBR.notification.show(t(how === "blocked" ? "vistazo.tabBlocked" : "vistazo.tabUnheard"), "WARNING");
+      }
+    });
+  };
+  $("fullToggle").before(tabButton);
+  if (TAB) {
+    // What's Owlbear's (its panel, its modal, the editor in it) isn't here.
+    for (const el of [tabButton, $("fullToggle"), $("minimize")]) {
+      el.hidden = true;
+    }
+    showTabLink((state) => t(state === "searching" ? "vistazo.tabSearching" : state === "lost" ? "vistazo.tabLost" : state === "taken" ? "vistazo.tabTaken" : "vistazo.tabClosed"));
+  }
   $("close").onclick = closeAll;
   $("barClose").onclick = closeAll;
   $("fullToggle").dataset.title = FULL ? "vistazo.exitFull" : "vistazo.full";
@@ -2922,7 +2955,8 @@ async function start() {
     }
   }
   const reliefButton = $("reliefEdit");
-  reliefButton.hidden = !isGM;
+  // Edited in Owlbear (its full screen), not in a tab of its own.
+  reliefButton.hidden = !isGM || TAB;
   reliefButton.onclick = () => {
     if (FULL) {
       enterEdit();
@@ -2974,7 +3008,7 @@ async function start() {
     sceneMetadata = next;
     const now = vistazoAccess(settingsOf(next));
     if (now !== "everyone" && !isGM) {
-      void (FULL ? OBR.modal.close(FULL_MODAL_ID) : closeVistazoPanel());
+      void (TAB ? window.close() : FULL ? OBR.modal.close(FULL_MODAL_ID) : closeVistazoPanel());
       return;
     }
     const nextLanguage = languageFromMetadata(next);
@@ -3050,7 +3084,12 @@ async function start() {
     }
   });
   OBR.scene.onReadyChange((ready) => {
-    if (!ready) {
+    if (TAB) {
+      // Another scene: this tab starts over with it, once it's there.
+      if (ready) {
+        location.reload();
+      }
+    } else if (!ready) {
       void (FULL ? OBR.modal.close(FULL_MODAL_ID) : closeVistazoPanel());
     }
   });

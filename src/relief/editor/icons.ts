@@ -39,7 +39,7 @@ export type IconName =
   | "plus" | "minus" | "pick-shapes" | "pick-points" | "edge-wall" | "edge-soft" | "eyedropper"
   | "visible" | "hidden" | "locked" | "unlocked" | "size" | "strength" | "magnet" | "folder" | "group" | "ungroup" | "camera"
   | "stamp" | "column" | "pit" | "stairs" | "platform" | "wall" | "mound" | "erase"
-  | "door" | "mirror" | "grip" | "panel" | "minimize" | "fullscreen" | "fullscreen-exit" | "restore" | "info" | "resize" | "arrow";
+  | "door" | "mirror" | "grip" | "panel" | "minimize" | "fullscreen" | "fullscreen-exit" | "new-tab" | "restore" | "info" | "resize" | "arrow";
 
 /** An icon, as markup; turned (degrees, clockwise) if `turn` is given. */
 export const icon = (name: IconName, turn = 0) =>

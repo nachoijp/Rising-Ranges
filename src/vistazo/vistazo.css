@@ -743,6 +743,25 @@ button.sync.on {
   color: var(--stage-fg);
 }
 
+/* The Vistazo's own tab: its link to Owlbear, while it isn't there (see tab.ts). */
+.tab-link {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100000;
+  max-width: calc(100% - 32px);
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--fg);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  font-size: 14px;
+}
+.tab-link[hidden] {
+  display: none;
+}
+
 /* ---------- The controls ---------- */
 aside {
   /* The scrollbar's room kept with or without one (nothing shifts when it shows), and a margin

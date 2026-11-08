@@ -49,6 +49,10 @@ ${body}
 
 export default defineConfig({
   plugins: [glsl(), react(), devManifest(), devTiming()],
+  // Every page's SDK through src/obr.ts: as it is, but in the Vistazo's own tab a stand-in (see there).
+  resolve: {
+    alias: [{ find: /^@owlbear-rodeo\/sdk$/, replacement: resolve(__dirname, "src/obr.ts") }],
+  },
   build: {
     assetsInlineLimit: 0,
     rollupOptions: {
@@ -60,6 +64,7 @@ export default defineConfig({
         distances: resolve(__dirname, "distances.html"),
         terrainVisibility: resolve(__dirname, "terrain-visibility.html"),
         vistazo: resolve(__dirname, "vistazo.html"),
+        vistazoTab: resolve(__dirname, "vistazo-tab.html"),
       },
     },
   },

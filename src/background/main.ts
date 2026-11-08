@@ -12,7 +12,8 @@ import { startZoneLooks } from "./zoneLooks";
 import { startTerrainView } from "./terrainView";
 import { startReliefs } from "../relief/live";
 import { SYNC_CHANNEL, type SyncMessage } from "../vistazo/sync";
-import { isVistazoShown, openVistazoPanel, vistazoClosedAt, watchVistazoPanel } from "../vistazo/panel";
+import { isVistazoShown, openVistazoPanel, setVistazoTab, vistazoClosedAt, watchVistazoPanel } from "../vistazo/panel";
+import { startTabRelay } from "./tabRelay";
 import { setWatching } from "../vistazo/remoteObr";
 import { globalSettingsFromMetadata, vistazoAccess } from "../settings/globalSettings";
 
@@ -110,8 +111,10 @@ async function init() {
  * (the camera comes several times a second).
  */
 function watchSyncedView() {
-  // The others send their drags only while someone watches (see vistazo/remote.ts).
+  // The others send their drags only while someone watches (see vistazo/remote.ts): in its panel, full
+  // screen or a tab of its own (linked through here, see tabRelay.ts).
   watchVistazoPanel(setWatching);
+  startTabRelay(setVistazoTab);
   let role: string | null = null;
   let everyone = false;
   const readAccess = (metadata: Record<string, unknown>) => {
