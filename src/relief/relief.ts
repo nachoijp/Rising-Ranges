@@ -282,11 +282,11 @@ export class Relief {
     return this.evaluate(x, y);
   }
 
-  /** The slab over a point, if any (the highest): its surface there and its underside. */
-  slabAt(x: number, y: number): { top: number; bottom: number } | undefined {
+  /** The slab over a point, if any (the highest): its surface there and its underside; of the first `upTo` shapes alone, if given. */
+  slabAt(x: number, y: number, upTo = Infinity): { top: number; bottom: number } | undefined {
     let found: { top: number; bottom: number } | undefined;
     for (const layer of this.slabLayers) {
-      if (covers(layer, x, y)) {
+      if (layer.si < upTo && covers(layer, x, y)) {
         const top = this.surface(layer, x, y);
         if (!found || top > found.top) {
           found = { top, bottom: top - layer.thick };

@@ -1,5 +1,6 @@
 import { inShape } from "./geom";
 import { Relief } from "./relief";
+import { stackReliefs, type Stacked } from "./stack";
 import { DOOR_H } from "./trace/doors";
 import type { Door, Pt, ReliefData, Shape } from "./types";
 
@@ -159,6 +160,19 @@ export const doorwaysOf = (relief: Relief): Doorway[] => doorways.get(relief) ??
 
 /** A cut relief kept for each relief, while what it's cut by is the same. */
 const kept = new WeakMap<Relief, { key: string; cut: Relief }>();
+
+/**
+ * Reliefs stacked (see stack.ts) with their doors cut: each stacked first (its doorways' floors cut at
+ * the heights it stands at, over those under it), then its cut copy stacked too (it stands on the same
+ * terrain). What's drawn and measured: wherever reliefs are stacked, through this. `shut`: the doors
+ * left as wall (an image's door by its index).
+ */
+export function stackCut(stack: Stacked[], dpi: number, shut?: (door: Door, i: number, image: string) => boolean): Stacked[] {
+  stackReliefs(stack, dpi);
+  const cut = stack.map((entry) => ({ ...entry, relief: cutDoorsKept(entry.relief, shut ? (door, i) => shut(door, i, entry.id) : undefined) }));
+  stackReliefs(cut, dpi);
+  return cut;
+}
 
 /** cutDoors, kept: worked out again only when the relief changes or which doors are shut does. */
 export function cutDoorsKept(relief: Relief, shut: (door: Door, i: number) => boolean = () => false): Relief {

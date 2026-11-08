@@ -5,9 +5,9 @@ import { mapAnchors, reliefZones } from "./measure";
 import { area, inShape, type Box } from "./geom";
 import { Relief } from "./relief";
 // Measured with every door a way through (see doorCut.ts).
-import { cutDoors } from "./doorCut";
+import { stackCut } from "./doorCut";
 import type { Pt } from "./types";
-import { stackReliefs, type Stacked } from "./stack";
+import type { Stacked } from "./stack";
 import { startReliefService } from "./store";
 
 // The background page's reliefs, worked out: one a map image of the room,
@@ -116,8 +116,8 @@ export function reliefShapes(): (TerrainShape & { follow: string })[] {
     const relief = reliefs.get(id);
     return relief ? [{ id, relief, anchor }] : [];
   });
-  stackReliefs(stack, dpi);
-  for (const { id, relief, anchor } of stack.reverse()) {
+  // Doors cut through (see doorCut.ts), as the Vistazo shows them.
+  for (const { id, relief, anchor } of stackCut(stack, dpi).reverse()) {
     const toScene = ([x, y]: Pt): [number, number] => {
       const p = cellToScene(anchor, dpi, x, y);
       return [p.x, p.y];
@@ -143,7 +143,8 @@ export function reliefShapes(): (TerrainShape & { follow: string })[] {
 export function startReliefs() {
   startReliefService((image, data) => {
     if (data) {
-      reliefs.set(image, cutDoors(new Relief(data)));
+      // As it is: its doors cut once it's stacked (see stackCut).
+      reliefs.set(image, new Relief(data));
     } else {
       reliefs.delete(image);
     }

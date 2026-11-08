@@ -2,7 +2,8 @@ import type { Image, Item } from "@owlbear-rodeo/sdk";
 import type { TerrainZone } from "../terrain/terrain";
 import { anchorOf, reliefSize, sceneToCell, type Anchor } from "./anchor";
 import type { Relief } from "./relief";
-import { owns, stackReliefs, type Stacked } from "./stack";
+import { stackCut } from "./doorCut";
+import { owns, type Stacked } from "./stack";
 
 // What's measured from the reliefs, wherever it's measured (the background
 // page, the Distances panel, the token height picker): each map image that
@@ -32,22 +33,24 @@ export function reliefZones(reliefs: Map<string, Relief>, anchors: Map<string, A
     const relief = reliefs.get(id);
     return relief ? [{ id, relief, anchor }] : [];
   });
-  stackReliefs(stack, dpi);
-  return [...stack].reverse().map((entry): TerrainZone => {
+  // Measured with every door a way through (see doorCut.ts).
+  return [...stackCut(stack, dpi)].reverse().map((entry): TerrainZone => {
     const { relief, anchor } = entry;
     const [w, h] = reliefSize(anchor);
     const at = (point: { x: number; y: number }) => sceneToCell(anchor, dpi, point.x, point.y);
+    // Its own slabs: not a doorway's lintel (the cut's, after them: see doorCut.ts), stood on by nobody.
+    const own = relief.source.data.shapes.length;
     return {
       id: `relief:${entry.id}`,
       height: 0,
       area: 0,
       contains: (point) => {
         const [x, y] = at(point);
-        return x >= 0 && y >= 0 && x <= w && y <= h && (owns(entry, dpi, point.x, point.y) !== null || !!relief.slabAt(x, y));
+        return x >= 0 && y >= 0 && x <= w && y <= h && (owns(entry, dpi, point.x, point.y) !== null || !!relief.slabAt(x, y, own));
       },
       surface: (point) => {
         const [x, y] = at(point);
-        return relief.slabAt(x, y)?.top ?? relief.evaluate(x, y);
+        return relief.slabAt(x, y, own)?.top ?? relief.evaluate(x, y);
       },
     };
   });

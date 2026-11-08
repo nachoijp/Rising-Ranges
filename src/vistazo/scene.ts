@@ -16,10 +16,9 @@ import { getTokenRadius } from "../render/iconAnchor";
 import { anchorOf, cellToScene, sceneToCell } from "../relief/anchor";
 import type { Relief } from "../relief/relief";
 import type { Door, UnderLook } from "../relief/types";
-import { cutDoorsKept, doorwayTop, doorwaysOf, readAt } from "../relief/doorCut";
+import { doorwayTop, doorwaysOf, readAt, stackCut } from "../relief/doorCut";
 import { fogDoorOpen } from "../relief/trace/fogPlan";
 import { reliefTerrain } from "../relief/vistazo";
-import { stackReliefs } from "../relief/stack";
 import { time } from "../timing";
 
 // What the Vistazo draws, read from the scene: the map images where they
@@ -329,7 +328,7 @@ export function buildScene(
   if (reused && !terrainOff) {
     // The same terrain, but a relief changed where it is (a brush let go): those over it follow (see stack.ts).
     const maps = items.filter((item): item is Image => isImage(item) && item.layer === "MAP" && item.visible && reliefs.byImage.has(item.id)).sort((a, b) => a.zIndex - b.zIndex);
-    stackReliefs(maps.map((item) => ({ id: item.id, relief: reliefs.byImage.get(item.id)!, anchor: anchorOf(item) })), dpi);
+    stackCut(maps.map((item) => ({ id: item.id, relief: reliefs.byImage.get(item.id)!, anchor: anchorOf(item) })), dpi, shut);
   }
   const terrain = reused ? previous! : buildTerrain(key, items, tokenItems, dpi, terrainOff, reliefs.byImage, !!reliefs.surfaced, shut);
   const { measuredAt } = terrain;
@@ -457,10 +456,9 @@ function buildTerrain(
     world = [[[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]]];
   }
   const withRelief = terrainOff ? [] : mapItems.filter((item) => reliefs.has(item.id));
-  // Each over those under it (see stack.ts): a prop's relief stands on the map's.
-  stackReliefs(withRelief.map((item) => ({ id: item.id, relief: reliefs.get(item.id)!, anchor: anchorOf(item) })), dpi);
-  // Its doors cut through its walls (see doorCut.ts), the map read past their doorways.
-  const cuts = withRelief.map((item) => cutDoorsKept(reliefs.get(item.id)!, (door, i) => shut(door, i, item.id)));
+  // Each over those under it (see stack.ts): a prop's relief stands on the map's; its doors cut through
+  // its walls (see doorCut.ts), the map read past their doorways.
+  const cuts = stackCut(withRelief.map((item) => ({ id: item.id, relief: reliefs.get(item.id)!, anchor: anchorOf(item) })), dpi, shut).map((entry) => entry.relief);
   const parts = withRelief.map((item, k) => time("scene.reliefTerrain", () => reliefTerrain(cuts[k], anchorOf(item), dpi, surfaced)));
   const reads = withRelief
     .map((item, k) => ({ anchor: anchorOf(item), ways: doorwaysOf(cuts[k]) }))

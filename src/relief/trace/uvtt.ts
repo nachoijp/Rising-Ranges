@@ -93,7 +93,7 @@ const ROOM_AREA = 1.5;
 
 // ---------- Reading ----------
 
-const isPt = (p: unknown): p is V => !!p && typeof (p as V).x === "number" && typeof (p as V).y === "number";
+const isPt = (p: unknown): p is V => !!p && Number.isFinite((p as V).x) && Number.isFinite((p as V).y);
 
 /** The file's walls and doors, or null if it isn't one. */
 export function readUvtt(json: unknown): Uvtt | null {
@@ -105,7 +105,8 @@ export function readUvtt(json: unknown): Uvtt | null {
     image?: string;
   };
   const size = j?.resolution?.map_size;
-  if (!isPt(size) || !Array.isArray(j.line_of_sight)) {
+  // Its size divides everything (cells to the map's): none, or none across, isn't a map.
+  if (!isPt(size) || size.x <= 0 || size.y <= 0 || !Array.isArray(j.line_of_sight)) {
     return null;
   }
   const o = isPt(j.resolution?.map_origin) ? j.resolution!.map_origin! : { x: 0, y: 0 };
