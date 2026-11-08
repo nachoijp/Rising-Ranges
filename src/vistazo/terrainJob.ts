@@ -37,6 +37,8 @@ export type TerrainMessage =
       lite: boolean;
       context: Omit<TerrainContext, "colors">;
       colorsKey: string | null;
+      /** Kept on this device and read from there next time (see terrainCache). */
+      cache: boolean;
     };
 
 /** The worker's answer: the terrain for a request (its walls packed, not in it: see wallPack), and the scene's terrain key it was worked out for. */
@@ -49,6 +51,20 @@ export type TerrainAnswer = { request: number; terrainKey: string; terrain: Terr
  * it's done (a drag asks several times a second; the worker doesn't fall behind). None where workers
  * can't be made: the page works it out itself then.
  */
+/**
+ * Whether terrains are kept on this device (see terrainCache): in a build, unless turned off by hand
+ * (localStorage "rising-ranges/terrain-cache" = "0"); in development only if turned on ("1"), its
+ * worker's address (part of the key) the same whatever its code.
+ */
+function cacheOn(): boolean {
+  try {
+    const set = localStorage.getItem("rising-ranges/terrain-cache");
+    return set === null ? !import.meta.env.DEV : set === "1";
+  } catch {
+    return false;
+  }
+}
+
 export class TerrainJobs {
   private readonly worker: Worker;
   private request = 0;
@@ -63,6 +79,7 @@ export class TerrainJobs {
   private queued: TerrainMessage | null = null;
   /** It failed to start or died (see the constructor): every ask answered as failed, for the page to work it out itself. */
   private dead = false;
+  private readonly cache = cacheOn();
 
   static make(): TerrainJobs | null {
     try {
@@ -147,7 +164,7 @@ export class TerrainJobs {
     if (this.dead) {
       return Promise.resolve({ request, failed: "the worker stopped" });
     }
-    const message: TerrainMessage = { kind: "terrain", request, recipe: { ...rest, reliefKey: reliefs.key, surfaced: !!reliefs.surfaced, shutDoors: reliefs.shutDoors }, reliefs: list, reliefData: data, base, lite, context: plain, colorsKey };
+    const message: TerrainMessage = { kind: "terrain", request, recipe: { ...rest, reliefKey: reliefs.key, surfaced: !!reliefs.surfaced, shutDoors: reliefs.shutDoors }, reliefs: list, reliefData: data, base, lite, context: plain, colorsKey, cache: this.cache };
     if (this.busy) {
       // A queued one's reliefs that this one doesn't send again (sent then) go with it.
       if (this.queued?.kind === "terrain") {

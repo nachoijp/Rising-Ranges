@@ -47,6 +47,10 @@ type DoorButton = { door: DoorView; el: HTMLButtonElement; look: string; x: numb
 
 /** How near the pointer (px) a door's button shows whole. */
 const DOOR_NEAR_PX = 70;
+/** A box of the view (view units), where some of the picture changed (see VistazoView.touch). */
+type PartBox = { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number };
+/** How long the picture's kept to draw parts of it again (see VistazoView.draw) after the last part. */
+const PART_KEEP_MS = 800;
 
 /** Kept on this device once it's found slow (see trackMotion): edges not smoothed (see wantsSmooth). */
 const SLOW_DEVICE = "rising-ranges/slow-device";
@@ -150,6 +154,23 @@ export class VistazoView {
   /** The frame last drawn in (its time, see drawSoon). */
   private drawnAt = -1;
   /**
+   * What's changed in the picture since it was drawn (see draw): everything, only what's in a box
+   * (view units: a dragged token's base, the Bandas round it), or nothing (null).
+   */
+  private dirty: PartBox | "all" | null = "all";
+  /** The camera drawn last (its camVersion): another, everything's drawn again. */
+  private drawnCam = -1;
+  /**
+   * While parts alone change (a token dragged): the picture kept in a target of its own, drawn again
+   * only within those parts' place on screen, then copied to the canvas (see draw). Let go a moment
+   * after the last such part.
+   */
+  private kept: { target: THREE.WebGLRenderTarget; renderer: THREE.WebGLRenderer; copy: THREE.Mesh; scene: THREE.Scene; w: number; h: number } | null = null;
+  private partAt = -Infinity;
+  /** The Bandas' box last drawn (see buildReach): where their rings were, drawn again once they move. */
+  private reachBox: PartBox | null = null;
+  private reachLook = "";
+  /**
    * Opening (see firstDraw): drawn once yet, and its shaders still being compiled (in the background:
    * nothing drawn till they are, or drawing would wait for them).
    */
@@ -199,7 +220,7 @@ export class VistazoView {
   /** What each marker's element was last given (see placeOne): written again only when it changes. */
   private readonly written = new WeakMap<TokenView, { transform: string; z: string; visible: string; css: string; turn: string; hiddenFor: string; hidden: boolean }>();
   /** Drawn again frame after frame (see trackMotion): moving, how much of the sharpness it keeps, its frames' gaps. */
-  private motion = { on: false, scale: 1, last: 0, since: 0, settle: 0, gaps: [] as number[] };
+  private motion = { on: false, scale: 1, last: 0, since: 0, settle: 0, gaps: [] as number[], cam: -1 };
   /** Whether the renderer smooths edges (see wantsSmooth); a long run of moving frames' gaps, to tell a slow device. */
   private smooth = true;
   private longGaps: number[] = [];
@@ -449,9 +470,9 @@ export class VistazoView {
         geometry.computeBoundingBox();
       }
       const near = geometry.boundingBox!;
-      // Drawn by its outline alone, and now its heights vary inside it (painted on, a soft edge over it):
-      // cut small, there and then.
-      if (!mesh.userData.fine && !(near.max.x < x0 || near.min.x > x1 || near.max.y < y0 || near.min.y > y1) && piece.fine?.()) {
+      // Drawn by its outline alone, and now its heights vary inside it (painted on, a soft edge over it),
+      // or drawn lean (few triangles, none where the brush may paint): cut small, there and then.
+      if (!mesh.userData.fine && !(near.max.x < x0 || near.min.x > x1 || near.max.y < y0 || near.min.y > y1) && (mesh.userData.lean || piece.fine?.())) {
         const fine = this.fineGeometry(piece);
         const position = fine.getAttribute("position") as THREE.BufferAttribute;
         fine.setAttribute("uv", new THREE.BufferAttribute(this.uvs(position.array, position.count), 2));
@@ -462,6 +483,7 @@ export class VistazoView {
         mesh.geometry.dispose();
         mesh.geometry = fine;
         mesh.userData.fine = true;
+        mesh.userData.lean = false;
         geometry = fine;
         refine = true;
       }
@@ -731,11 +753,13 @@ export class VistazoView {
       // Only tokens moved (a drag): put them where they are now, without building them again.
       if (!time("3d.moveTokens", () => this.moveTokens(scene, slide?.except))) {
         time("3d.tokens", () => this.buildTokens());
+        this.dirty = "all";
       }
       // The grid changed in Owlbear (square to hex, the hex cells moved): the ground's lines follow.
       this.syncGrid();
       this.updateWeather();
-      this.requestApply();
+      // Only what moved drawn again (see touch), unless something else changed.
+      this.requestApply(true);
       return;
     }
     const sameBase = base === this.base;
@@ -791,12 +815,23 @@ export class VistazoView {
     const scene = this.scene;
     const f = this.fillUniforms;
     const show = !!r && !!scene && (this.options.rings || this.options.ringFill);
+    const look = `${this.options.ringFill}|${this.options.rings}|${r?.shape}`;
+    if (look !== this.reachLook) {
+      // Drawn otherwise everywhere they are: all of it again.
+      this.reachLook = look;
+      this.dirty = "all";
+    }
     f.uFillTint.value = this.options.ringFill ? 1 : 0;
     f.uFillRings.value = this.options.rings ? 1 : 0;
+    // Where they were drawn: drawn again there (and where they go, below).
+    if (this.reachBox) {
+      this.touch(this.reachBox);
+      this.reachBox = null;
+    }
     if (!r || !scene || !show) {
       f.uFillBands.value = 0;
       this.setLayers({ bands: false });
-      this.requestApply();
+      this.requestApply(true);
       return;
     }
     const dpi = scene.dpi;
@@ -817,7 +852,15 @@ export class VistazoView {
     });
     f.uFillBands.value = list.length;
     this.setLayers({ bands: list.length > 0 });
-    this.requestApply();
+    if (list.length > 0) {
+      // As far as the last Banda reaches (cells; hexes a little farther), from the farthest of its cells.
+      const u = this.u;
+      const spread = Math.max(0, ...cells.map((cell) => Math.hypot(cell.x, cell.y)));
+      const far = ((Math.max(...list.map((band) => band.across)) + 2) * 1.2 + spread) * dpi * u;
+      this.reachBox = { x0: r.x * u - far, y0: r.y * u - far, x1: r.x * u + far, y1: r.y * u + far, z0: (this.minH - 1) * this.k, z1: (this.maxH + 1) * this.k };
+      this.touch(this.reachBox);
+    }
+    this.requestApply(true);
   }
 
   /** The terrain's materials with the Bandas or the fog in their shaders or not (see layersOn): only when that changes. */
@@ -827,6 +870,7 @@ export class VistazoView {
       return;
     }
     this.layersOn = next;
+    this.dirty = "all";
     for (const material of this.pieceMaterials) {
       this.layers(material);
       material.needsUpdate = true;
@@ -1586,7 +1630,7 @@ export class VistazoView {
    * pixel of its tops (see based), so each follows the ground under it, bumps and all. Moved, only
    * these numbers change: nothing built again, no picture sent again.
    */
-  private paintBases() {
+  private paintBases(part = false) {
     const u = this.u;
     const list = this.tokenViews.flatMap((view) => (view.painted ? [view.painted] : [])).map((base) => ({ x: base.x * u, y: base.y * u, r: base.r * u * (base.ring ? 1 : -1), z: base.z }));
     const b = this.scene?.bounds ?? { x0: 0, y0: 0, x1: 0, y1: 0 };
@@ -1605,7 +1649,7 @@ export class VistazoView {
     this.baseCount = list.length;
     this.baseUniforms.uBaseReach.value = this.k / 2;
     this.basesMoved = false;
-    this.requestApply();
+    this.requestApply(part);
   }
 
   /** The heights grid within a region (scene px) worked out again. */
@@ -1838,6 +1882,7 @@ export class VistazoView {
     }
     // The doors that take the map's picture, with it now.
     this.buildDoors();
+    this.dirty = "all";
     this.render();
   }
 
@@ -1988,11 +2033,15 @@ export class VistazoView {
     const scene = this.scene;
     const g = this.gridUniforms;
     const hex = scene?.hexGrid;
+    const was = `${g.uGridKind.value}|${g.uGridDpi.value}|${g.uGridCenter.value.x},${g.uGridCenter.value.y}|${g.uGridU.value}`;
     g.uGridKind.value = !scene || !this.options.grid ? 0 : hex ? (hex.shape === "hexHorizontal" ? 2 : 3) : scene.squareGrid ? 1 : 0;
     g.uGridDpi.value = scene?.dpi ?? 1;
     g.uGridCenter.value.set(hex?.center.x ?? 0, hex?.center.y ?? 0);
     g.uGridU.value = this.u;
     this.fillUniforms.uFillU.value = this.u;
+    if (was !== `${g.uGridKind.value}|${g.uGridDpi.value}|${g.uGridCenter.value.x},${g.uGridCenter.value.y}|${g.uGridU.value}`) {
+      this.dirty = "all";
+    }
   }
 
   /**
@@ -2642,9 +2691,11 @@ export class VistazoView {
       geometry.setAttribute("uv", new THREE.BufferAttribute(built.uv, 2));
       const mesh = new THREE.Mesh(geometry, this.pieceMaterial(piece.height, true, undefined, true, true));
       mesh.position.z = built.z;
-      // Its corners can be moved up or down where they are (see reheight).
+      // Its corners can be moved up or down where they are (see reheight); drawn with fewer triangles
+      // (lean), not till it's cut small again there.
       mesh.userData.piece = piece;
-      mesh.userData.fine = built.fine;
+      mesh.userData.fine = built.fine && !built.lean;
+      mesh.userData.lean = built.lean;
       this.terrainGroup.add(mesh);
       this.keepSurface(geometry, built.z);
       return;
@@ -2952,6 +3003,7 @@ export class VistazoView {
       return;
     }
     this.weatherKey = key;
+    this.dirty = "all";
     this.clear(this.weatherGroup);
     const c = this.cloudUniforms;
     c.uCloudCount.value = 0;
@@ -3437,10 +3489,17 @@ export class VistazoView {
    * Drawn again frame after frame (the camera, a drag): moving. Then the picture's drawn with fewer
    * pixels if frames come slow (a weak graphics card: most of its time is each pixel's), as few as it
    * takes to keep up (half each way at least: a quarter of them); still for a moment, it's drawn sharp
-   * again. A card that keeps up never loses any.
+   * again. A card that keeps up never loses any. Only the camera's moving counts: something moved over
+   * a still picture (a token dragged, a shape) keeps it sharp (blurred all over, it shows; and it's
+   * drawn again only where it moved, see draw).
    */
   private trackMotion() {
     const m = this.motion;
+    this.camMatrix();
+    if (this.camVersion === m.cam) {
+      return;
+    }
+    m.cam = this.camVersion;
     const now = performance.now();
     const gap = now - m.last;
     m.last = now;
@@ -3635,6 +3694,7 @@ export class VistazoView {
       const prop = propsById.get(view.token.id)!;
       if (prop !== view.prop!.data) {
         this.moveProp(view, prop);
+        this.dirty = "all";
       }
     }
     const byId = new Map(scene.tokens.map((token) => [token.id, token]));
@@ -3668,13 +3728,13 @@ export class VistazoView {
         view.token = from;
         continue;
       }
-      this.placeView(view);
+      this.placeView(view, from);
     }
     if (this.slides.size > 0) {
       this.slideFrame ||= requestAnimationFrame(() => this.stepSlides());
     }
     if (this.basesMoved) {
-      this.paintBases();
+      this.paintBases(true);
     }
     return true;
   }
@@ -3688,26 +3748,29 @@ export class VistazoView {
       // Ease-out: quick off, settling in.
       const e = 1 - (1 - t) ** 3;
       const { from, to } = slide;
+      const before = view.token;
       view.token = t >= 1 ? to : { ...to, x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e, terrain: from.terrain + (to.terrain - from.terrain) * e, own: from.own + (to.own - from.own) * e };
-      this.placeView(view);
+      this.placeView(view, before);
       if (t >= 1) {
         this.slides.delete(view);
       }
     }
     if (this.basesMoved) {
-      this.paintBases();
+      this.paintBases(true);
     }
     if (this.slides.size > 0) {
       this.slideFrame = requestAnimationFrame(() => this.stepSlides());
     }
-    this.requestApply();
+    this.requestApply(true);
   }
 
-  /** A token's base, line and label where its token says (see moveTokens). */
-  private placeView(view: TokenView) {
+  /** A token's base, line and label where its token says (see moveTokens), from where it was (`from`): its marks drawn again in both places. */
+  private placeView(view: TokenView, from: Token) {
     const u = this.u;
     const k = this.k;
     const token = view.token;
+    this.touch(this.tokenBox(from, view.painted));
+    this.touch(this.tokenBox(token, view.painted));
     const zFloor = floorOf(token) * k;
     view.zTok = (token.terrain + token.own) * k;
     if (view.seat) {
@@ -3750,14 +3813,62 @@ export class VistazoView {
     this.apply();
   }
 
-  /** Everything that wants the picture redrawn in a frame, drawn once in it. */
-  requestApply() {
+  /**
+   * Everything that wants the picture redrawn in a frame, drawn once in it; `part`: only what's been
+   * marked changed (see touch) wants it, the rest of the picture as it was.
+   */
+  requestApply(part = false) {
+    if (!part) {
+      this.dirty = "all";
+    }
     if (!this.applyFrame) {
       this.applyFrame = requestAnimationFrame(() => {
         this.applyFrame = 0;
-        this.apply();
+        this.applyNow();
       });
     }
+  }
+
+  /** A box (view units) of the picture changed: drawn again there, at least, next time. */
+  private touch(box: PartBox) {
+    const d = this.dirty;
+    if (d === "all") {
+      return;
+    }
+    this.dirty = d ? { x0: Math.min(d.x0, box.x0), y0: Math.min(d.y0, box.y0), z0: Math.min(d.z0, box.z0), x1: Math.max(d.x1, box.x1), y1: Math.max(d.y1, box.y1), z1: Math.max(d.z1, box.z1) } : { ...box };
+  }
+
+  /** Where a token's marks in 3D can be (view units): its base painted on any top under it, its line, its seat. */
+  private tokenBox(token: Token, painted?: { r: number }): PartBox {
+    const u = this.u;
+    const k = this.k;
+    const r = (Math.max(token.size / 2, Math.abs(painted?.r ?? 0)) + (this.scene?.dpi ?? 0) * 0.5) * u;
+    return {
+      x0: token.x * u - r,
+      y0: token.y * u - r,
+      x1: token.x * u + r,
+      y1: token.y * u + r,
+      z0: Math.min(this.minH - 1, floorOf(token)) * k,
+      z1: Math.max(this.maxH * k, (token.terrain + token.own) * k + token.size * u),
+    };
+  }
+
+  /** A box's place on screen (css px, padded), or null if some of it is behind the eye. */
+  private onScreen(box: PartBox): { x0: number; y0: number; x1: number; y1: number } | null {
+    const m = this.camMatrix();
+    let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+    for (let c = 0; c < 8; c++) {
+      const q = this.project(m, c & 1 ? box.x1 : box.x0, c & 2 ? box.y1 : box.y0, c & 4 ? box.z1 : box.z0);
+      const ahead = this.persp - q.z;
+      if (ahead < 1) {
+        return null;
+      }
+      const f = this.persp / ahead;
+      const sx = this.width / 2 + q.x * f;
+      const sy = this.height / 2 + q.y * f;
+      [x0, y0, x1, y1] = [Math.min(x0, sx), Math.min(y0, sy), Math.max(x1, sx), Math.max(y1, sy)];
+    }
+    return { x0: x0 - 4, y0: y0 - 4, x1: x1 + 4, y1: y1 + 4 };
   }
 
   /**
@@ -3827,7 +3938,7 @@ export class VistazoView {
 
   private render() {
     if (this.renderer && this.scene && this.width > 0 && this.height > 0 && !this.compiling) {
-      time("3d.render", () => this.renderer!.render(this.world, this.glCamera));
+      time("3d.render", () => this.draw());
       this.drawnAt = Number(document.timeline.currentTime ?? -1);
       for (const material of this.retired.splice(0)) {
         material.dispose();
@@ -3836,18 +3947,116 @@ export class VistazoView {
   }
 
   /**
+   * The picture drawn: whole, straight on the canvas; or, while only parts of it change (a token dragged:
+   * its base, the Bandas round it; see touch), kept in a target of its own and drawn again there only
+   * where they are on screen (old place and new), then copied over. What isn't a marked part (the
+   * camera, the fog, anything built, what moves by itself) draws it whole, kept or not: nothing that
+   * changed is left as it was. With weather (all over, always moving) it's drawn straight.
+   */
+  private draw() {
+    const renderer = this.renderer!;
+    const dirty = this.dirty;
+    this.dirty = null;
+    const now = performance.now();
+    if (dirty && dirty !== "all") {
+      this.partAt = now;
+    }
+    this.camMatrix();
+    const camChanged = this.drawnCam !== this.camVersion;
+    this.drawnCam = this.camVersion;
+    if (now - this.partAt > PART_KEEP_MS || this.hasWeather) {
+      this.letGoKept();
+      renderer.render(this.world, this.glCamera);
+      return;
+    }
+    const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+    let kept = this.kept;
+    let whole = dirty === "all" || camChanged;
+    if (!kept || kept.renderer !== renderer || kept.w !== size.x || kept.h !== size.y) {
+      this.letGoKept();
+      const target = new THREE.WebGLRenderTarget(size.x, size.y, { samples: this.smooth ? 4 : 0, depthBuffer: true, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false });
+      const copy = new THREE.Mesh(
+        new THREE.PlaneGeometry(2, 2),
+        new THREE.ShaderMaterial({
+          uniforms: { uKept: { value: target.texture } },
+          vertexShader: "varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
+          fragmentShader: "uniform sampler2D uKept; varying vec2 vUv; void main() { gl_FragColor = texture2D(uKept, vUv); }",
+          depthTest: false,
+          depthWrite: false,
+          blending: THREE.NoBlending,
+        })
+      );
+      copy.frustumCulled = false;
+      const scene = new THREE.Scene();
+      scene.add(copy);
+      kept = this.kept = { target, renderer, copy, scene, w: size.x, h: size.y };
+      whole = true;
+    } else if (dirty === null && !whole) {
+      // Nothing of it changed: the canvas shows it as it was.
+      return;
+    }
+    const target = kept.target;
+    if (!whole && dirty && dirty !== "all") {
+      const box = this.onScreen(dirty);
+      if (!box) {
+        whole = true;
+      } else {
+        const pr = size.x / this.width;
+        const x0 = Math.max(0, Math.floor(box.x0 * pr));
+        const x1 = Math.min(size.x, Math.ceil(box.x1 * pr));
+        const y0 = Math.max(0, Math.floor(box.y0 * pr));
+        const y1 = Math.min(size.y, Math.ceil(box.y1 * pr));
+        if (x1 <= x0 || y1 <= y0) {
+          // Off screen: nothing to draw again.
+          return;
+        }
+        // Most of it: all of it (a scissor saves nothing then).
+        whole = (x1 - x0) * (y1 - y0) > 0.7 * size.x * size.y;
+        // Scissors count from the bottom.
+        target.scissor.set(x0, size.y - y1, x1 - x0, y1 - y0);
+      }
+    }
+    target.scissorTest = !whole;
+    renderer.setRenderTarget(target);
+    renderer.render(this.world, this.glCamera);
+    renderer.setRenderTarget(null);
+    target.scissorTest = false;
+    renderer.render(kept.scene, this.glCamera);
+  }
+
+  /** The kept picture (see draw) let go: drawn straight on the canvas again. */
+  private letGoKept() {
+    const kept = this.kept;
+    if (!kept) {
+      return;
+    }
+    this.kept = null;
+    kept.target.dispose();
+    kept.copy.geometry.dispose();
+    (kept.copy.material as THREE.Material).dispose();
+  }
+
+  /**
    * For what moves by itself (a video's new frame, the weather, the water): drawn, unless the picture was
    * drawn in this frame already or the camera's about to draw it (see requestApply), which shows the
    * change too. Otherwise each would draw it again, the same frame.
    */
   private drawSoon() {
+    // Drawn whole (in the frame's drawing, or now): what moves by itself is anywhere.
+    this.dirty = "all";
     if (this.applyFrame || this.drawnAt === Number(document.timeline.currentTime ?? -2)) {
       return;
     }
     this.render();
   }
 
+  /** Drawn now, all of it (from outside: whatever changed, the picture's drawn whole). */
   apply() {
+    this.dirty = "all";
+    this.applyNow();
+  }
+
+  private applyNow() {
     const scene = this.scene;
     const c = this.camera;
     if (!scene || this.width === 0) {

@@ -281,6 +281,34 @@ function terrainKeyOf(items: Item[], tokenItems: Image[], dpi: number, terrainOf
 }
 
 /**
+ * What a scene's terrain is built from, as a key (see terrainKeyOf), and what's read for it: whether
+ * the terrain's off, the tokens, which doors are shut to a player. `reliefKey`: what stands for the
+ * reliefs in it (the reliefs' own key: it changes with them; or what's in them, for a key that lasts
+ * from one opening to the next, see terrainWorker).
+ */
+export function terrainSource(
+  metadata: Record<string, unknown>,
+  items: Item[],
+  dpi: number,
+  gridType: GridType,
+  playerView: boolean,
+  reliefs: Reliefs,
+  reliefKey = reliefs.key
+): { key: string; terrainOff: boolean; tokenItems: Image[]; shut: (door: Door, i: number, image: string) => boolean } {
+  const settings = globalSettingsFromMetadata(metadata);
+  const terrainOff = !terrainOn(settings, gridType);
+  // Characters, and mounts with them (a horse is a creature too).
+  const tokenItems = items.filter((item): item is Image => isImage(item) && (item.layer === "CHARACTER" || item.layer === "MOUNT"));
+  // A secret door shut is the wall to a player: not cut (see doorCut.ts), till its fog door opens.
+  // And one by the fog, shut (see Reliefs.shutDoors).
+  const byFog = new Set(playerView ? (reliefs.shutDoors ?? []) : []);
+  const shut = (door: Door, i: number, image: string) => playerView && ((door.secret === true && !(door.link && fogDoorOpen(door.link, items))) || byFog.has(`${image}:${i}`));
+  const shutKey = playerView ? [...reliefs.byImage].map(([image, r]) => (r.data.doors ?? []).map((d, i) => (shut(d, i, image) ? 1 : 0)).join("")).join(",") : "";
+  const key = terrainKeyOf(items, tokenItems, dpi, terrainOff, `${reliefKey}${reliefs.surfaced ? "+surfaced" : ""}|${shutKey}`);
+  return { key, terrainOff, tokenItems, shut };
+}
+
+/**
  * The scene as the Vistazo draws it. With `previous`, its terrain is kept
  * when nothing it's built from changed: only the tokens are read again.
  */
@@ -296,16 +324,8 @@ export function buildScene(
   reliefs: Reliefs = { byImage: new Map(), key: "" }
 ): VistazoScene {
   const settings = globalSettingsFromMetadata(metadata);
-  const terrainOff = !terrainOn(settings, gridType);
   const altitude = settings.enableAltitude ?? true;
-  // Characters, and mounts with them (a horse is a creature too).
-  const tokenItems = items.filter((item): item is Image => isImage(item) && (item.layer === "CHARACTER" || item.layer === "MOUNT"));
-  // A secret door shut is the wall to a player: not cut (see doorCut.ts), till its fog door opens.
-  // And one by the fog, shut (see Reliefs.shutDoors).
-  const byFog = new Set(playerView ? (reliefs.shutDoors ?? []) : []);
-  const shut = (door: Door, i: number, image: string) => playerView && ((door.secret === true && !(door.link && fogDoorOpen(door.link, items))) || byFog.has(`${image}:${i}`));
-  const shutKey = playerView ? [...reliefs.byImage].map(([image, r]) => (r.data.doors ?? []).map((d, i) => (shut(d, i, image) ? 1 : 0)).join("")).join(",") : "";
-  const key = terrainKeyOf(items, tokenItems, dpi, terrainOff, `${reliefs.key}${reliefs.surfaced ? "+surfaced" : ""}|${shutKey}`);
+  const { key, terrainOff, tokenItems, shut } = terrainSource(metadata, items, dpi, gridType, playerView, reliefs);
   const reused = !!previous && previous.terrainKey === key;
   if (reused && !terrainOff) {
     // The same terrain, but a relief changed where it is (a brush let go): those over it follow (see stack.ts).

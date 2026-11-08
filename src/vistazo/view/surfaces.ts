@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { MultiPolygon } from "polygon-clipping";
 import { bisect } from "./bisect";
+import { decimate } from "./decimate";
 import { colorAt, type MapColors } from "./mapColors";
 import { STONE, VIEW_CELL, type WallStyle } from "./types";
 import { WALL_STYLE } from "./wallBuffers";
@@ -105,6 +106,35 @@ export class FineSurfaces {
   }
 }
 
+/**
+ * A cut surface (one FineSurfaces gave: its triangles its cache's), its corners at their heights, drawn
+ * with fewer triangles (see decimate), or null if it can't be; the same cut at the same heights again
+ * (a build where another shape changed) takes the same ones, not worked out again. A copy each time
+ * (it's handed over to the page).
+ */
+const leanKept = new WeakMap<object, { hash: number; out: Surface | null }>();
+export function leanSurface(surface: Surface, tolerance: number, keep?: (corner: number) => boolean, keepKey = ""): Surface | null {
+  const index = surface.index!;
+  const z = surface.position;
+  // FNV-1a over the heights' bits and what must be kept.
+  const bits = new Uint32Array(z.buffer, z.byteOffset, z.length);
+  let hash = 2166136261;
+  for (let i = 2; i < bits.length; i += 3) {
+    hash = Math.imul(hash ^ bits[i], 16777619);
+  }
+  for (let i = 0; i < keepKey.length; i++) {
+    hash = Math.imul(hash ^ keepKey.charCodeAt(i), 16777619);
+  }
+  hash = Math.imul(hash ^ Math.round(tolerance * 1e3), 16777619);
+  let kept = leanKept.get(index);
+  if (!kept || kept.hash !== hash) {
+    const out = decimate(z, index, tolerance, keep);
+    kept = { hash, out: out && out.index.length < index.length ? out : null };
+    leanKept.set(index, kept);
+  }
+  return kept.out ? { position: (kept.out.position as Float32Array).slice(), index: kept.out.index!.slice() } : null;
+}
+
 /** Triangles (indexes into `corners`, x y z each) with the one a point (view units) is in split into three there: a corner of its own (appended). As they were if none has it. */
 function splitAt(corners: number[], tris: Uint32Array, x: number, y: number): Uint32Array {
   const at = (i: number): [number, number] => [corners[i * 3], corners[i * 3 + 1]];
@@ -153,7 +183,7 @@ export function uvsOver(xy: ArrayLike<number>, count: number, u: number, box: Uv
  * its top a pattern tinted with the map's colour there, its card the relief's picture of it in front).
  */
 export type PieceBuffers =
-  | { kind: "top"; surface: Surface; uv: Float32Array; z: number; fine: boolean }
+  | { kind: "top"; surface: Surface; uv: Float32Array; z: number; fine: boolean; lean: boolean }
   | { kind: "stand"; surface: Surface; roofUv: Float32Array; roofColor: [number, number, number]; roof: WallStyle; z: number; card: { position: Float32Array; uv: Float32Array; map: Float32Array } | null };
 
 /** What a piece's top is worked out with (see pieceBuffers): view units per scene px and per height unit, the map's picture's box (uvs: the scene's without one; `texture`: none without one), its colours, the fine surfaces' cache; `coarse`: cut to a cell (a drag's). */
@@ -169,23 +199,40 @@ export type PieceContext = {
   remap?: (x: number, y: number) => [number, number];
 };
 
+/** How far (view units, up or down) a fine surface drawn with fewer triangles may be from its corners: a hundredth of a cell. */
+export const LEAN_TOLERANCE = VIEW_CELL / 100;
+
 export function pieceBuffers(piece: Piece, c: PieceContext): PieceBuffers {
   const { u, k } = c;
   const z = piece.height * k;
   const fine = !!piece.surface && !(piece.coarse && !piece.fine?.());
-  const surface = fine ? c.fine.get(piece.shape, u, c.coarse, piece.peaks) : flatSurface(piece.shape, u);
-  const position = surface.position;
-  const count = position.length / 3;
+  let surface = fine ? c.fine.get(piece.shape, u, c.coarse, piece.peaks) : flatSurface(piece.shape, u);
+  let position = surface.position;
+  let count = position.length / 3;
   if (!piece.stand) {
-    // Not read elsewhere: a doorway's floor is its threshold, as the map has it.
-    const uv = uvsOver(position, count, u, c.uvBox);
     if (piece.surface) {
       // A ramp: each corner at its own height (a plane: the triangles stay flat).
       for (let i = 0; i < count; i++) {
         position[i * 3 + 2] = pieceHeight(piece, position[i * 3] / u, position[i * 3 + 1] / u) * k;
       }
     }
-    return { kind: "top", surface, uv, z: piece.surface ? 0 : z, fine };
+    // Cut small: drawn with as few triangles as keep within a hundredth of a cell of its corners (what's
+    // flat or evenly sloped in big ones), its peaks kept.
+    let lean = false;
+    if (fine && surface.index) {
+      const peaks = (piece.peaks ?? []).map(([x, y]) => [x * u, y * u]);
+      const keep = peaks.length ? (i: number) => peaks.some(([x, y]) => Math.abs(position[i * 3] - x) < 1e-3 && Math.abs(position[i * 3 + 1] - y) < 1e-3) : undefined;
+      const fewer = leanSurface(surface, LEAN_TOLERANCE, keep, JSON.stringify(peaks));
+      if (fewer) {
+        surface = fewer;
+        position = fewer.position;
+        count = position.length / 3;
+        lean = true;
+      }
+    }
+    // Not read elsewhere: a doorway's floor is its threshold, as the map has it.
+    const uv = uvsOver(position, count, u, c.uvBox);
+    return { kind: "top", surface, uv, z: piece.surface ? 0 : z, fine, lean };
   }
   // Standing: a block (its top plain stone, its sides walls) with the relief's picture of it in front (its card).
   let x0 = Infinity;

@@ -88,6 +88,10 @@ export function terrainTransfers(t: TerrainBuffers): ArrayBuffer[] {
     buffers.add(piece.surface.position.buffer as ArrayBuffer);
     if (piece.kind === "top") {
       buffers.add(piece.uv.buffer as ArrayBuffer);
+      if (piece.lean && piece.surface.index) {
+        // Its own triangles (not the cache's): handed over too.
+        buffers.add(piece.surface.index.buffer as ArrayBuffer);
+      }
     } else {
       buffers.add(piece.roofUv.buffer as ArrayBuffer);
       if (piece.card) {
