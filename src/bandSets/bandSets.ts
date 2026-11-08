@@ -12,14 +12,14 @@ export function getDefaultBandSets(language: Language): BandSet[] {
 }
 
 /**
- * A BandSet read from scene metadata may be a stale, frozen snapshot of a
+ * The room's active BandSet, from already-fetched scene metadata (the first preset when none is stored
+ * yet). A BandSet read from scene metadata may be a stale, frozen snapshot of a
  * default preset taken in a different language (metadata stores whichever
  * full object was selected at the time, not just its id) — swap it for the
  * current localized definition whenever its id matches a known default, so
  * a language change is reflected even for a preset selected before the
  * switch. Custom BandSets (no matching default id) pass through untouched.
  */
-/** The room's active BandSet, from already-fetched scene metadata (the first preset when none is stored yet). */
 export function bandSetFromMetadata(metadata: Record<string, unknown>): BandSet {
   const language = languageFromMetadata(metadata);
   const raw = (metadata[getPluginId("bandSet")] ?? getDefaultBandSets(language)[0]) as BandSet;

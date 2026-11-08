@@ -7,9 +7,6 @@ import * as THREE from "three";
 export type TemplateShape = "cone" | "sphere" | "cylinder" | "line" | "cube";
 export type TemplateLook = "fire" | "ice" | "poison" | "lightning" | "darkness" | "arcane" | "force" | "necrotic" | "acid" | "thunder" | "psychic" | "radiant";
 
-export const TEMPLATE_SHAPES: readonly TemplateShape[] = ["cone", "sphere", "cylinder", "line", "cube"];
-export const TEMPLATE_LOOKS: readonly TemplateLook[] = ["fire", "ice", "poison", "lightning", "darkness", "arcane", "force", "necrotic", "acid", "thunder", "psychic", "radiant"];
-
 /**
  * A placed template: where (scene px, and the height there, grid units),
  * which way it points (a cone or a line; unit, on the map), and its size in

@@ -208,12 +208,10 @@ const SIZE_WARN = 4_000_000;
 const sizeOf = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1000))} KB`);
 
 /**
- * `before`: the images changed earlier in this editing (another picked in the dropdown, theirs saved),
- * each as it was when editing began (null: none), for the X to put back too.
- */
-/**
  * The editor on a map image. `into`: the session object to fill (another image picked: the one the Vistazo
  * holds, so its keys, pointer and redraws reach this one, not the one left).
+ * `before`: the images changed earlier in this editing (another picked in the dropdown, theirs saved),
+ * each as it was when editing began (null: none), for the X to put back too.
  */
 export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "", before = new Map<string, string | null>(), into?: EditSession): EditSession {
   const { t, root } = o;

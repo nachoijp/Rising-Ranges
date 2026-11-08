@@ -45,13 +45,6 @@ export type TerrainMessage =
 export type TerrainAnswer = { request: number; terrainKey: string; terrain: TerrainBuffers; walls: PackedWalls; took: number; stages: Record<string, number> } | { request: number; failed: string };
 
 /**
- * The page's end of the terrain's worker: asks it for a scene's terrain (only the last asked is
- * answered: an earlier one's answer is dropped), sending the reliefs and the map's colours it doesn't
- * have yet. One at a time: asked again while it's working one out, only the last of those is sent once
- * it's done (a drag asks several times a second; the worker doesn't fall behind). None where workers
- * can't be made: the page works it out itself then.
- */
-/**
  * Whether terrains are kept on this device (see terrainCache): in a build, unless turned off by hand
  * (localStorage "rising-ranges/terrain-cache" = "0"); in development only if turned on ("1"), its
  * worker's address (part of the key) the same whatever its code.
@@ -64,6 +57,14 @@ function cacheOn(): boolean {
     return false;
   }
 }
+
+/**
+ * The page's end of the terrain's worker: asks it for a scene's terrain (only the last asked is
+ * answered: an earlier one's answer is dropped), sending the reliefs and the map's colours it doesn't
+ * have yet. One at a time: asked again while it's working one out, only the last of those is sent once
+ * it's done (a drag asks several times a second; the worker doesn't fall behind). None where workers
+ * can't be made: the page works it out itself then.
+ */
 
 export class TerrainJobs {
   private readonly worker: Worker;

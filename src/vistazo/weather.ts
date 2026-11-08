@@ -454,8 +454,10 @@ const FRAGMENT = /* glsl */ `
   }
 `;
 
-/** Where the weather's drawn: the view's scale (view units a scene px, and a cell of height) and the ground's lowest and highest. */
-/** `amount`: how many particles and puffs, of all (the quality setting's: 1 at high). */
+/**
+ * Where the weather's drawn: the view's scale (view units a scene px, and a cell of height) and the
+ * ground's lowest and highest; `amount`: how many particles and puffs, of all (the quality's: 1 at high).
+ */
 export type WeatherFrame = { u: number; cell: number; k: number; lowest: number; highest: number; amount?: number };
 
 /**

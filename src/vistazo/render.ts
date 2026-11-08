@@ -18,7 +18,7 @@ import { bridgeHighest, bridgeTop, inShape, pieceHeight, type Bridge, type MapIm
 import { isHexShape, ringSteps } from "../engine/hex";
 import { foggedOf, type Fog } from "./fog";
 import { visibleBox } from "./visibleBox";
-import { CLOUD_GLSL, CLOUD_ZONES, buildWeather, cloudNoise, cloudShadowOf, setWeatherTime } from "./weather";
+import { CLOUD_ZONES, buildWeather, cloudNoise, cloudShadowOf, setWeatherTime } from "./weather";
 import { buildTemplate, templateTip, type Template } from "./templates";
 import { doorMesh, type DoorMap, type DoorView } from "./doors";
 
@@ -27,12 +27,12 @@ import { isShared, patternTexture } from "./view/patterns";
 import { floorOf, mediaElement, propsKey, propToken, raised, skinAcross, skinPoint, visibleOnScreen } from "./view/helpers";
 import { computeWalls, type Region } from "./view/walls";
 import { BaseBatch, moveBase, ringMaterial, type BaseSeat } from "./view/bases";
-import { UNDER_FRAGMENT, UNDER_VERTEX, WALL_GRAIN } from "./view/shaders";
-import { NOISE_2D } from "./glsl";
+import { UNDER_FRAGMENT, UNDER_VERTEX } from "./view/shaders";
+import { FILL_BANDS, FILL_CELLS, FOG_GLSL, baseTexture, based, clouded, fogCut, fogCutShader, fogged, foggedToo, grained, gridded, layer, tinted } from "./view/layers";
 import { reachMask, waterMaterial, waterReach, waterShape, type WaterReach } from "./view/water";
 import { since, stamp, time } from "../timing";
 
-export type { Camera, DistanceLine, Options, Quality, Reach, TokenText, WallStyle } from "./view/types";
+export type { Camera, DistanceLine, Options } from "./view/types";
 export { tintOf };
 
 /** Who may open or shut a door from the Vistazo (`can`), its button's name (`label`), and doing it (`toggle`). */
@@ -187,7 +187,6 @@ export class VistazoView {
   private paused = false;
   /** The weather's particles (see weather.ts), what they were built from, and the frames they're drawn on. */
   private weatherGroup = new THREE.Group();
-  /** Clouds as shadows: the terrain's surfaces under each (see copiesIn), with the shadows' material. */
   /** The clouds' shadows, worked out at each pixel of the terrain (see clouded): their zones, and the time they've drifted to. */
   private readonly cloudUniforms = {
     uCloudTime: { value: 0 },
@@ -351,7 +350,6 @@ export class VistazoView {
    * Left out of their shaders when off (a slow graphics card pays for them even then).
    */
   private layersOn = { bands: false, clouds: false, fog: false };
-  /** Outlines already cut small (see fineGeometry), by outline: their flat triangles, and the last build that used them. */
   /** Surfaces that aren't flat, cut small once for an outline (see FineSurfaces). */
   private readonly fine = new FineSurfaces();
   /** The scene's terrain as numbers (see computeTerrain), and what it was worked out with (see terrainContext). */
@@ -1547,7 +1545,6 @@ export class VistazoView {
 
   // ---------- Geometry ----------
 
-  /** Heights on a grid of a fifth of a cell, for the rays (NaN outside the map). */
   /** What the terrain's numbers are worked out with now (see computeTerrain), and a key that changes with it. */
   private terrainContext(): { context: TerrainContext; key: string } {
     const t = this.texture;
@@ -1958,8 +1955,8 @@ export class VistazoView {
     return t ? { x0: t.x0, y0: t.y0, w: t.w, h: t.h } : { x0: scene.bounds.x0, y0: scene.bounds.y0, w: scene.bounds.x1 - scene.bounds.x0 || 1, h: scene.bounds.y1 - scene.bounds.y0 || 1 };
   }
 
-  /** A top's or wall's material; `top`: the bases are painted on it (see based; a slab's, "deck"). */
   /**
+   * A top's or wall's material; `top`: the bases are painted on it (see based; a slab's, "deck").
    * `pooled`: shared by every piece it suits and kept from one build to the next (see materialPool), for
    * a caller that doesn't change it after: a new material is worked out by three.js again (its shader
    * rewritten, its program looked up), which over every piece of every build of a drag costs.
@@ -3039,7 +3036,6 @@ export class VistazoView {
     );
   }
 
-  /** The volume templates to draw (only in this view), moving with the weather's frames. */
   /** The reliefs' doors, open or shut as their fog doors are. */
   setDoors(doors: DoorView[]) {
     this.doors = doors;
@@ -4402,35 +4398,11 @@ function fillPixels(shape: MultiPolygon, map: Texture, grow: number): { bytes: U
   }
 }
 
-/** A material with a blended wall's grain (see WALL_GRAIN) over its colour, where it is in the view. */
-function grained<M extends THREE.MeshBasicMaterial>(material: M): M {
-  // Over what the material's shader had already (the fog's cut, put on before it: see fogCut).
-  const before = material.onBeforeCompile.bind(material);
-  const key = material.customProgramCacheKey.bind(material);
-  material.onBeforeCompile = (shader, renderer) => {
-    before(shader, renderer);
-    shader.vertexShader = shader.vertexShader
-      .replace("#include <common>", "#include <common>\nvarying vec3 vGrainAt;")
-      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvGrainAt = (modelMatrix * vec4(position, 1.0)).xyz;");
-    shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", `#include <common>\nvarying vec3 vGrainAt;\n${NOISE_2D}\n${WALL_GRAIN}`)
-      .replace("#include <color_fragment>", `#include <color_fragment>\ndiffuseColor.rgb *= wallGrain(vGrainAt, ${VIEW_CELL.toFixed(1)});`);
-  };
-  material.customProgramCacheKey = () => `${key()}+rising-ranges/grained`;
-  return material;
-}
-
 /** The longest side of the ground's texture while a video map is played on it (drawn again every frame), px. */
 const VIDEO_TEXTURE_MAX = 2048;
 /** The same at medium or low quality. */
 const VIDEO_TEXTURE_LIGHT = 1536;
 
-/**
- * A lone video map as the ground's texture: the video itself, placed by the
- * texture's transform where the map is in the texture's box (the ground's
- * uv: 0 to 1 across the box, up from its bottom). Turned, scaled, flipped:
- * the map's own transform undone, then over its size.
- */
 /** A surface's arrays as a three.js geometry (see surfaces.ts). */
 function geometryOf(surface: Surface): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
@@ -4440,6 +4412,13 @@ function geometryOf(surface: Surface): THREE.BufferGeometry {
   }
   return geometry;
 }
+
+/**
+ * A lone video map as the ground's texture: the video itself, placed by the
+ * texture's transform where the map is in the texture's box (the ground's
+ * uv: 0 to 1 across the box, up from its bottom). Turned, scaled, flipped:
+ * the map's own transform undone, then over its size.
+ */
 
 function videoTexture(video: HTMLVideoElement, map: MapImage, box: Texture): THREE.VideoTexture {
   const texture = new THREE.VideoTexture(video);
@@ -4473,119 +4452,6 @@ function placed<T extends THREE.Texture>(texture: T, map: MapImage, box: Texture
 }
 
 /**
- * The grid's cells drawn over a ground material, worked out at each pixel
- * from where it is (scene px: the view units over uGridU): sharp at any
- * zoom, a line about a fiftieth of a cell wide (a pixel at least), darker
- * as the map's grid was; fading out where the cells get too small to tell
- * apart. Square: lines every cell (dpi). Hex, as Owlbear lays them out from
- * a cell's center, a cell (dpi) between neighbours: flat-topped (2) in
- * columns, every other one half a cell down; pointy (3) in rows, every
- * other one half a cell along. The same cells the hex rings follow.
- */
-function gridded(material: THREE.MeshBasicMaterial, uniforms: Record<string, { value: unknown }>) {
-  material.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, uniforms);
-    shader.vertexShader = shader.vertexShader
-      .replace("#include <common>", "#include <common>\nvarying vec2 vGridAt;\nuniform float uGridU;")
-      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvGridAt = (modelMatrix * vec4(position, 1.0)).xy / uGridU;");
-    shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", `#include <common>\nvarying vec2 vGridAt;\n${GRID_GLSL}`)
-      .replace("#include <map_fragment>", "#include <map_fragment>\ndiffuseColor.rgb *= 1.0 - 0.35 * gridLine(vGridAt);");
-  };
-  material.customProgramCacheKey = () => "rising-ranges/gridded";
-}
-
-/**
- * The tokens' (and props') bases painted on a top or a wall of the terrain (on a wall, see BASE_WALL), worked out at each pixel from where
- * it is (view units): within a base's radius, darker (35%); its last two units (two pixels at least),
- * a light ring (a token's). On a slab's top (`deck`), only those standing on it, not those under it
- * (the terrain's own tops don't lie over one another: on them, wherever it is, steep ground too).
- * Over what's drawn there, the grid too, as the picture of them laid over it was. With gridded's (or
- * any) changes to the shader, kept.
- */
-/** The bases' texture (see binBases): `rows` rows of BASE_TEX_WIDTH float texels, read texel by texel. */
-function baseTexture(data: Float32Array, rows: number): THREE.DataTexture {
-  const texture = new THREE.DataTexture(data, BASE_TEX_WIDTH, rows, THREE.RGBAFormat, THREE.FloatType);
-  texture.needsUpdate = true;
-  return texture;
-}
-
-function based(material: THREE.MeshBasicMaterial, uniforms: Record<string, { value: unknown }>, on: "top" | "deck" | "wall") {
-  const define = on === "deck" ? "#define BASE_DECK\n" : on === "wall" ? "#define BASE_WALL\n" : "";
-  layer(material, `based${on === "top" ? "" : `-${on}`}`, uniforms, `${define}${BASE_GLSL}`, "outgoingLight = paintBases(outgoingLight, vLayerAt);");
-}
-
-/**
- * The Bandas worked out at each pixel of a top or wall (see BAND_GLSL), as the map's rings: the ring
- * of each, and on a top (`tint`) the ground inside it tinted, if the options ask.
- */
-function tinted(material: THREE.MeshBasicMaterial, uniforms: Record<string, { value: unknown }>, tint: boolean) {
-  layer(material, `tinted${tint ? "" : "-rings"}`, uniforms, BAND_GLSL, `#ifdef RR_BANDS\noutgoingLight = paintBands(outgoingLight, vLayerAt.xy / uFillU, ${tint});\n#endif`);
-}
-
-/** The clouds' shadows over a top or wall (see CLOUD_GLSL), when there are any. */
-function clouded(material: THREE.MeshBasicMaterial, uniforms: Record<string, { value: unknown }>) {
-  layer(material, "clouded", uniforms, CLOUD_GLSL, "#ifdef RR_CLOUDS\noutgoingLight = shadeClouds(outgoingLight, vLayerAt.xy);\n#endif");
-}
-
-/**
- * The player view's fog over a top or wall, from its picture laid from above (see drawFog): under
- * it, not drawn (the fog's floor and curtains stand in for it, see buildFogFloor: its heights would
- * give it away); by its edge, tinted.
- */
-function fogged(material: THREE.MeshBasicMaterial, uniforms: Record<string, { value: unknown }>) {
-  layer(material, "fogged", uniforms, FOG_GLSL, "#ifdef RR_FOG\nif (fogHidden(vLayerAt.xy)) discard;\noutgoingLight = paintFog(outgoingLight, vLayerAt.xy);\n#endif");
-}
-
-/**
- * As fogged, always (not only with RR_FOG on, as the terrain's own materials are, see layers): not drawn
- * where the fog hides, darkened where it covers; the material given back (a slab's sides, its belly; a
- * door's leaf).
- */
-function foggedToo<M extends THREE.MeshBasicMaterial>(material: M, uniforms: Record<string, { value: unknown }>): M {
-  layer(material, "foggedtoo", uniforms, FOG_GLSL, "if (fogHidden(vLayerAt.xy)) discard;\noutgoingLight = paintFog(outgoingLight, vLayerAt.xy);");
-  return material;
-}
-
-/** Not drawn under the player view's fog (lines). */
-function fogCut<M extends THREE.MeshBasicMaterial | THREE.LineBasicMaterial>(material: M, uniforms: Record<string, { value: unknown }>): M {
-  layer(material, "fogcut", uniforms, FOG_GLSL, "if (fogHidden(vLayerAt.xy)) discard;");
-  return material;
-}
-
-/** As fogCut, for a shader of its own: `at`, its pixel's place (view units, a vec2 it has). */
-function fogCutShader(material: THREE.ShaderMaterial, uniforms: Record<string, { value: unknown }>, at: string): THREE.ShaderMaterial {
-  Object.assign(material.uniforms, uniforms);
-  material.fragmentShader = `${FOG_GLSL}\n${material.fragmentShader.replace("void main() {", `void main() {\n    if (fogHidden(${at})) discard;`)}`;
-  return material;
-}
-
-/**
- * Something worked out at each pixel of a material, over what it draws: its uniforms; its functions;
- * what it does to the colour (before it's written), from the pixel's place in the world (vLayerAt,
- * view units: one for every layer, worked out once a vertex). Over what the material's shader had
- * already (the grid, another layer), in that order.
- */
-function layer(material: THREE.Material, name: string, uniforms: Record<string, { value: unknown }>, head: string, body: string) {
-  const before = material.onBeforeCompile.bind(material);
-  const key = material.customProgramCacheKey.bind(material);
-  material.onBeforeCompile = (shader, renderer) => {
-    before(shader, renderer);
-    Object.assign(shader.uniforms, uniforms);
-    if (!shader.vertexShader.includes("vLayerAt")) {
-      shader.vertexShader = shader.vertexShader
-        .replace("#include <common>", "#include <common>\nvarying vec3 vLayerAt;")
-        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvLayerAt = (modelMatrix * vec4(position, 1.0)).xyz;");
-      shader.fragmentShader = shader.fragmentShader.replace("#include <common>", "#include <common>\nvarying vec3 vLayerAt;");
-    }
-    shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", `#include <common>\n${head}`)
-      .replace("#include <opaque_fragment>", `${body}\n#include <opaque_fragment>`);
-  };
-  material.customProgramCacheKey = () => `${key()}+rising-ranges/${name}`;
-}
-
-/**
  * A token's labels, under its picture: its name as Owlbear's map shows it, then (as `shown` has it) its
  * height and where it stands, in a pill of its own under that.
  */
@@ -4607,237 +4473,6 @@ function labelsIn(disc: HTMLElement, shown: string): { name: HTMLElement; title:
   disc.prepend(labels);
   return { name, title, detail };
 }
-
-const BASE_GLSL = /* glsl */ `
-  uniform highp sampler2D uBaseTex;
-  uniform int uBaseCount;
-  uniform vec4 uBaseBins;
-  uniform float uBaseDown;
-  uniform float uBaseReach;
-  vec4 baseTexel(int i) {
-    return texelFetch(uBaseTex, ivec2(i % ${BASE_TEX_WIDTH}, i / ${BASE_TEX_WIDTH}), 0);
-  }
-  vec3 paintBases(vec3 color, vec3 at) {
-    // Half a pixel either side of each edge (smooth at any zoom), worked out once (before anything that
-    // differs from one pixel to the next: a derivative needs its neighbours to have got here too).
-    float aa = max(length(fwidth(at.xy)), 1e-4) * 0.5;
-    if (uBaseCount == 0) return color;
-    // Only the bases in this pixel's bin (see binBases): however many there are, a few at most each.
-    vec2 bin = floor((at.xy - uBaseBins.xy) / uBaseBins.z);
-    if (bin.x < 0.0 || bin.y < 0.0 || bin.x >= uBaseBins.w || bin.y >= uBaseDown) return color;
-    vec4 list = baseTexel(uBaseCount + int(bin.y * uBaseBins.w + bin.x));
-    int start = int(list.x);
-    int count = int(list.y);
-    for (int n = 0; n < count; n++) {
-      vec4 b = baseTexel(int(baseTexel(start + n).x));
-      vec2 off = at.xy - b.xy;
-      float r = abs(b.z);
-      if (dot(off, off) > (r + aa) * (r + aa)) continue;
-      #ifdef BASE_DECK
-        if (abs(at.z - b.w) > uBaseReach) continue;
-      #endif
-      // On a wall: down from its feet as far as the wall goes (as on the tops under it), up half a cell
-      // at most, fading (not up a tall wall beside it, nor a bridge's sides over it).
-      float lift = 1.0;
-      #ifdef BASE_WALL
-        lift = 1.0 - smoothstep(0.0, uBaseReach, at.z - b.w);
-        if (lift <= 0.0) continue;
-      #endif
-      float d = length(off);
-      float inside = (1.0 - smoothstep(r - aa, r + aa, d)) * lift;
-      color *= 1.0 - 0.35 * inside;
-      if (b.z > 0.0) {
-        // As the measuring rings (see BAND_GLSL): about two pixels wide at any zoom, smooth; just inside
-        // its edge (its middle a pixel in), not spilling out of the base.
-        float px = (r - d) / (2.0 * aa);
-        color = mix(color, vec3(1.0), 0.95 * lift * (1.0 - smoothstep(0.5, 1.5, abs(px - 1.0))));
-      }
-    }
-    return color;
-  }
-`;
-
-const GRID_GLSL = /* glsl */ `
-  uniform float uGridKind;
-  uniform float uGridDpi;
-  uniform vec2 uGridCenter;
-  // A flat-topped hex's distance from its middle, in the way its edges go (its apothem at the edge).
-  float hexFlat(vec2 q) {
-    q = abs(q);
-    return max(q.y, 0.8660254 * q.x + 0.5 * q.y);
-  }
-  // How far a point is inside its cell's edge (scene px): the nearest of two offset lattices' centers.
-  float hexEdge(vec2 p, bool flatTop) {
-    float d = uGridDpi;
-    float s = 0.8660254 * d;
-    vec2 q = p - uGridCenter;
-    if (!flatTop) q = q.yx;
-    vec2 period = vec2(2.0 * s, d);
-    vec2 a = q - period * floor(q / period + 0.5);
-    vec2 qb = q - vec2(s, 0.5 * d);
-    vec2 b = qb - period * floor(qb / period + 0.5);
-    return 0.5 * d - min(hexFlat(a), hexFlat(b));
-  }
-  float gridLine(vec2 p) {
-    if (uGridKind < 0.5) return 0.0;
-    float d = uGridDpi;
-    float dist;
-    if (uGridKind < 1.5) {
-      vec2 f = abs(fract(p / d + 0.5) - 0.5) * d;
-      dist = min(f.x, f.y);
-    } else {
-      dist = hexEdge(p, uGridKind < 2.5);
-    }
-    float px = length(fwidth(p));
-    // A pixel wide at least; thinner than that, as much fainter as it's thinner (as a picture of it
-    // made smaller would be), not wider.
-    float halfWidth = max(d * 0.01, px * 0.5);
-    float cover = min(1.0, d * 0.02 / (2.0 * halfWidth));
-    float line = (1.0 - smoothstep(halfWidth - px * 0.5, halfWidth + px * 0.5, dist)) * cover;
-    // Too far to tell the cells apart: gone, not a grey haze.
-    return line * (1.0 - smoothstep(d * 0.12, d * 0.35, px));
-  }
-`;
-
-/** How many Bandas, and how many cells an Origen takes, the ground works out (see BAND_GLSL). */
-const FILL_BANDS = 12;
-const FILL_CELLS = 16;
-
-/**
- * The Banda tint at a ground point (scene px), as buildReach measured it on
- * the CPU before: how far across it is (a circle, a square, or on hex cells
- * the whole steps of the cell it's in from the Origen's cells, as
- * cellStepsFrom), the first Banda whose edge it's within, and its color
- * fading in across the Banda (5% at its inner edge, 25% at its ring; on hex
- * cells by the point's own distance, not whole steps). Sharp at any zoom.
- */
-const BAND_GLSL = /* glsl */ `
-  uniform float uFillU;
-  uniform float uFillShape;
-  uniform vec2 uFillOrigin;
-  uniform float uFillDpi;
-  uniform vec2 uFillCells[${FILL_CELLS}];
-  uniform int uFillCellCount;
-  uniform float uFillEdges[${FILL_BANDS}];
-  uniform vec3 uFillColors[${FILL_BANDS}];
-  uniform int uFillBands;
-  uniform float uFillTint;
-  uniform float uFillRings;
-  const float C30 = 0.8660254;
-  // hexSteps: how many hex steps an offset (cells) is, continuously.
-  float hexStepsG(vec2 d, bool horizontal) {
-    float first = horizontal ? 0.0 : 0.5235988;
-    float most = 0.0;
-    for (int k = 0; k < 3; k++) {
-      float angle = first + float(k) * 1.0471976;
-      most = max(most, abs(d.x * cos(angle) + d.y * sin(angle)));
-    }
-    return most / C30;
-  }
-  // nearestCell: the center of the cell an offset (cells, from a cell's center) falls in.
-  vec2 nearestCellG(vec2 d, bool horizontal) {
-    float r = horizontal ? d.x / C30 : d.y / C30;
-    float q = horizontal ? d.y - 0.5 * r : d.x - 0.5 * r;
-    float s = -q - r;
-    float rq = floor(q + 0.5);
-    float rr = floor(r + 0.5);
-    float rs = floor(s + 0.5);
-    float dq = abs(rq - q);
-    float dr = abs(rr - r);
-    float ds = abs(rs - s);
-    if (dq > dr && dq > ds) {
-      rq = -rr - rs;
-    } else if (dr > ds) {
-      rr = -rq - rs;
-    }
-    return horizontal ? vec2(rr * C30, rq + rr * 0.5) : vec2(rq + rr * 0.5, rr * C30);
-  }
-  vec3 paintBands(vec3 color, vec2 at, bool tint) {
-    if (uFillBands == 0) return color;
-    vec2 d = (at - uFillOrigin) / uFillDpi;
-    float across;
-    float far = length(d);
-    if (uFillShape < 0.5) {
-      across = far;
-    } else if (uFillShape < 1.5) {
-      across = max(abs(d.x), abs(d.y));
-      far = across;
-    } else {
-      bool horizontal = uFillShape < 2.5;
-      vec2 base = uFillCells[0];
-      vec2 cell = base + nearestCellG(d - base, horizontal);
-      float best = 1e9;
-      for (int k = 0; k < ${FILL_CELLS}; k++) {
-        if (k >= uFillCellCount) break;
-        best = min(best, hexStepsG(cell - uFillCells[k], horizontal));
-      }
-      if (uFillCellCount > 1) best += 1.0;
-      across = floor(best + 0.5);
-    }
-    int index = -1;
-    float inner = 0.0;
-    float outer = 0.0;
-    for (int k = 0; k < ${FILL_BANDS}; k++) {
-      if (k >= uFillBands) break;
-      if (across <= uFillEdges[k]) {
-        index = k;
-        outer = uFillEdges[k];
-        break;
-      }
-      inner = uFillEdges[k];
-    }
-    // How fast across and the Banda change from one pixel to the next (worked out here, where every
-    // pixel gets: the rings' width from them).
-    float step = max(fwidth(across), 1e-6);
-    float banded = fwidth(float(index < 0 ? uFillBands : index));
-    if (tint && uFillTint > 0.5 && index >= 0) {
-      float t = clamp((far - inner) / max(outer - inner, 1e-6), 0.0, 1.0);
-      color = mix(color, uFillColors[index], 0.05 + 0.2 * t * t);
-    }
-    if (uFillRings > 0.5) {
-      float line = 0.0;
-      vec3 ink = vec3(1.0);
-      if (uFillShape < 1.5) {
-        // A circle's or a square's: about two pixels wide on its edge, smooth.
-        for (int k = 0; k < ${FILL_BANDS}; k++) {
-          if (k >= uFillBands) break;
-          float a = 1.0 - smoothstep(0.5, 1.5, abs(across - uFillEdges[k]) / step);
-          if (a > line) {
-            line = a;
-            ink = uFillColors[k];
-          }
-        }
-      } else if (banded > 0.0) {
-        // Hex cells: where the Banda changes, between cells.
-        line = 1.0;
-        ink = uFillColors[index < 0 ? uFillBands - 1 : index];
-      }
-      color = mix(color, ink, 0.95 * line);
-    }
-    return color;
-  }
-`;
-
-/** The fog's picture over a scene point (view units; see drawFog): its colour, as much as it covers there. */
-const FOG_GLSL = /* glsl */ `
-  uniform sampler2D uFog;
-  uniform sampler2D uFogHard;
-  uniform vec4 uFogBox;
-  uniform float uFogOn;
-  // Whether the fog hides a point (view units): its sharp picture, past half (its outline, where the
-  // curtains stand). A light's soft edge only darkens (see paintFog).
-  bool fogHidden(vec2 at) {
-    if (uFogOn < 0.5) return false;
-    vec2 uv = (at - uFogBox.xy) / uFogBox.zw;
-    return texture2D(uFogHard, vec2(uv.x, 1.0 - uv.y)).a > 0.5;
-  }
-  vec3 paintFog(vec3 color, vec2 at) {
-    if (uFogOn < 0.5) return color;
-    vec2 uv = (at - uFogBox.xy) / uFogBox.zw;
-    vec4 fog = texture2D(uFog, vec2(uv.x, 1.0 - uv.y));
-    return mix(color, fog.rgb, fog.a);
-  }
-`;
 
 /** How much a light clears at the very edge of its reach, at least: the fog's tint there is 96%, the terrain still seen. */
 const LIT_EDGE = 0.04;

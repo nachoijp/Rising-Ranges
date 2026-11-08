@@ -8,7 +8,6 @@ export type Pt = [number, number];
 /** A vertex of a shape's outline (its own, no other shape's); its height counts on inclined shapes. */
 export type Vert = { x: number; y: number; h: number };
 
-/** A height point inside an inclined shape. */
 /** A height point inside an inclined shape; `of`: its shape's id (see Shape.id), when it was given one. */
 export type HeightPoint = { x: number; y: number; h: number; of?: string };
 
@@ -18,10 +17,10 @@ export type Ramp = { a: Pt; b: Pt; from: number; to: number; steps: number };
 /** The edge a standing shape stands on ("auto": the one facing the map's middle). */
 export type StandEdge = "auto" | "bottom" | "top" | "left" | "right";
 
-/** How a shape's walls look in 3D (the Vistazo's own looks). */
 /** What a slab has under it in 3D (see Shape.under). */
 export type UnderLook = "mirror" | "keep";
 
+/** How a shape's walls look in 3D (the Vistazo's own looks). */
 export type WallLook = "blend" | "flat" | "stretch" | "fold" | "stone" | "rubble" | "earth" | "wood";
 
 /**

@@ -328,15 +328,15 @@ function cellCommands(
   );
 }
 
+/** How far a vertical stack is nudged toward its direction, as a fraction of its own length. */
+export const DIRECTION_NUDGE = 0.1;
+
 /**
  * Geometry, in local path units, of an icon stack centered at (0, 0). For
  * left/right positions the stack is a vertical column; for top/bottom it's a
  * horizontal row. Stepped shapes taper in size along the stack, growing from
  * the first icon (index 0) to the last.
  */
-/** How far a vertical stack is nudged toward its direction, as a fraction of its own length. */
-export const DIRECTION_NUDGE = 0.1;
-
 export function buildIconStackCommands(
   shape: IconShape,
   count: number,

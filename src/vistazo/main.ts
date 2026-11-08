@@ -84,13 +84,13 @@ for (const el of document.querySelectorAll<HTMLElement>("[data-icon]")) {
 }
 document.getElementById("barIcon")!.innerHTML = vistazoLogo.replace(/stroke="#[0-9a-fA-F]+"/, 'stroke="currentColor"');
 
+/** In a tab of its own (see src/obr.ts): laid out as full screen, without what's Owlbear's (its panel, its modal). */
+const TAB = IN_TAB;
 /**
  * The same page opened full screen (an Owlbear modal, `?full`): the
  * action's own popover can't grow past what Owlbear leaves it under its top
  * bar. Going there and back keeps the camera (CAMERA_KEY, read once).
  */
-/** In a tab of its own (see src/obr.ts): laid out as full screen, without what's Owlbear's (its panel, its modal). */
-const TAB = IN_TAB;
 const FULL = new URLSearchParams(location.search).has("full") || TAB;
 
 /** The controls' help, one line each (the ? at the stage's corner). */

@@ -10,9 +10,9 @@ export type Region = { x0: number; y0: number; x1: number; y1: number };
  * that, `base` (grid units) where there's nothing beside it.
  *
  * With `region`, only the edges that reach into it (the heights changed
- * there: a brush); `done` gets each such edge (see Wall.seg), walls or not.
+ * there: a brush); `done` gets each such edge (see Wall.seg), walls or not. `coarse`: a sloped edge
+ * cut in half cells, not quarters (a drag's).
  */
-/** `coarse`: a sloped edge cut in half cells, not quarters (a drag's). */
 export function computeWalls(scene: VistazoScene, base: number, region?: Region, done?: Set<string>, coarse = false): Wall[] {
   const probe = scene.dpi * 0.03;
   const l = Math.hypot(...LIGHT);

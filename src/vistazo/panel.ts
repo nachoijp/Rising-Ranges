@@ -160,11 +160,6 @@ export async function openVistazoPanel() {
   await OBR.popover.open(popoverOptions(position, Math.max(MIN_WIDTH, width), Math.max(MIN_HEIGHT, height)));
 }
 
-/** Whether this client has the panel open, as far as the background script knows. */
-export function isVistazoOpen(): boolean {
-  return open;
-}
-
 /** Whether this client shows the Vistazo at all: its panel, or its full-screen view. */
 export function isVistazoShown(): boolean {
   return open || full || inTab;

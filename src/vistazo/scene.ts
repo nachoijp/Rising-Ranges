@@ -188,10 +188,9 @@ type Terrain = {
 /** How far apart each image's shapes are numbered in the scene (see Terrain.firstShape): more than any relief has. */
 const SHAPES_APART = 100000;
 
-/** A bridge or balcony drawn: its outline (scene px), top and underside (grid units), its wall style. */
 /**
- * A slab over the terrain: its top and underside (grid units) as its middle
- * has them; one that isn't flat (a ramp, inclined, stairs, painted) its top
+ * A slab over the terrain (a bridge, a balcony), drawn: its outline (scene px), its wall style, its top
+ * and underside (grid units) as its middle has them; one that isn't flat (a ramp, inclined, stairs, painted) its top
  * at each scene point too (`surface`), its underside as far under it.
  */
 export type Bridge = { id: string; shape: MultiPolygon; top: number; bottom: number; surface?: (point: { x: number; y: number }) => number; walls?: TerrainWallStyle; skin?: TerrainSkin; frame: BridgeFrame; si?: number; under?: UnderLook };

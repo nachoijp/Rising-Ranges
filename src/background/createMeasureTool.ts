@@ -190,7 +190,6 @@ let refreshScheduled = false;
 let pendingLecturaPosition: Vector2 | null = null;
 let lecturaRefreshScheduled = false;
 
-/** A Medición from a point: the rings, gradient, Lecturas and height label all follow the pointer. */
 /**
  * A Medición from a point: where its Origen is now (it follows the pointer), and its height, to this
  * client's Vistazo and the others' (theirs as a free point, see vistazo/remote.ts). From a token: nothing

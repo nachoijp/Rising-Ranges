@@ -78,9 +78,6 @@ const VISTAZO_BASE_KEY = getPluginId("vistazoBase");
 
 export type VistazoBase = { x: number; y: number };
 
-/** Where setting it by hand starts: its bottom, in the middle. */
-export const DEFAULT_VISTAZO_BASE: VistazoBase = { x: 0.5, y: 1 };
-
 export function getVistazoBase(item: Item): VistazoBase | undefined {
   const stored = item.metadata[VISTAZO_BASE_KEY] as Partial<VistazoBase> | undefined;
   const ok = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;

@@ -55,9 +55,9 @@ const RING_STYLE = { fillOpacity: 0, strokeWidth: 2, strokeOpacity: 0.9, strokeD
 
 /**
  * On a hex grid a Banda is whole cells (see hex.ts): its ring is the outline
- * of every cell whose center it reaches, stepped along the cells' edges.
+ * of every cell whose center it reaches, stepped along the cells' edges. This: a hex ring's path,
+ * around the cells within `radius` of the Origen at `center` (its own cell, or a corner's three).
  */
-/** A hex ring's path, around the cells within `radius` of the Origen at `center` (its own cell, or a corner's three). */
 function hexRingOutline(center: Vector2, radius: number, dpi: number, shape: "hexHorizontal" | "hexVertical") {
   const outline = cellsOutline(ringSteps(radius, dpi), shape, originCells(center, dpi, shape)).map((p) => ({
     x: p.x * dpi,

@@ -448,7 +448,6 @@ export function terrainShapes(items: Item[]): TerrainShape[] {
   return shapes.sort((a, b) => a.area - b.area || b.height - a.height);
 }
 
-/** A bridge or balcony (see getTerrainUnder): its outline in the scene, its top and underside (cells), its wall style. */
 /**
  * A bridge's own box in the scene (px): its middle, its length's way and
  * its width's (unit vectors), and half of each — what's painted under it
@@ -456,6 +455,7 @@ export function terrainShapes(items: Item[]): TerrainShape[] {
  */
 export type BridgeFrame = { center: Vector2; along: Vector2; across: Vector2; halfAlong: number; halfAcross: number };
 
+/** A bridge or balcony (see getTerrainUnder): its outline in the scene, its top and underside (cells), its wall style. */
 export type TerrainBridge = { id: string; top: number; bottom: number; rings: [number, number][][]; walls?: TerrainWallStyle; skin?: TerrainSkin; frame: BridgeFrame };
 
 /**

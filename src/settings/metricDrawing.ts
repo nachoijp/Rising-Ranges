@@ -75,6 +75,19 @@ function floor() {
   return svg;
 }
 
+/** Whether a face of a solid round the origin is turned to the viewer (its outward normal towards V). */
+function turnedToViewer(face: Vec[]): boolean {
+  const middle = face.reduce<Vec>((m, p) => [m[0] + p[0] / face.length, m[1] + p[1] / face.length, m[2] + p[2] / face.length], [0, 0, 0]);
+  let normal = cross(minus(face[1], face[0]), minus(face[2], face[0]));
+  if (dot(normal, middle) < 0) {
+    normal = [-normal[0], -normal[1], -normal[2]];
+  }
+  return dot(normal, V) > 1e-9;
+}
+
+/** A seen face, filled faintly. */
+const faceFill = (face: Vec[]) => `<polygon points="${face.map((p) => project(p).map(n1).join(",")).join(" ")}" fill="currentColor" fill-opacity=".06" stroke="none"/>`;
+
 /** A convex solid from its faces: those turned to the viewer filled faintly, an edge solid if a face beside it is seen, dashed if none is. */
 function solid(faces: Vec[][]) {
   let fill = "";
@@ -83,14 +96,9 @@ function solid(faces: Vec[][]) {
   const edges = new Map<string, { a: Vec; b: Vec; seen: boolean }>();
   const key = (p: Vec) => p.map((c) => c.toFixed(2)).join(",");
   for (const face of faces) {
-    const middle = face.reduce<Vec>((m, p) => [m[0] + p[0] / face.length, m[1] + p[1] / face.length, m[2] + p[2] / face.length], [0, 0, 0]);
-    let normal = cross(minus(face[1], face[0]), minus(face[2], face[0]));
-    if (dot(normal, middle) < 0) {
-      normal = [-normal[0], -normal[1], -normal[2]];
-    }
-    const seen = dot(normal, V) > 1e-9;
+    const seen = turnedToViewer(face);
     if (seen) {
-      fill += `<polygon points="${face.map((p) => project(p).map(n1).join(",")).join(" ")}" fill="currentColor" fill-opacity=".06" stroke="none"/>`;
+      fill += faceFill(face);
     }
     face.forEach((a, i) => {
       const b = face[(i + 1) % face.length];
@@ -163,14 +171,9 @@ function facets(faces: Vec[][]) {
   const key = (p: Vec) => p.map((c) => c.toFixed(2)).join(",");
   let fill = "";
   for (const face of faces) {
-    const middle = face.reduce<Vec>((m, p) => [m[0] + p[0] / face.length, m[1] + p[1] / face.length, m[2] + p[2] / face.length], [0, 0, 0]);
-    let normal = cross(minus(face[1], face[0]), minus(face[2], face[0]));
-    if (dot(normal, middle) < 0) {
-      normal = [-normal[0], -normal[1], -normal[2]];
-    }
-    const seen = dot(normal, V) > 1e-9;
+    const seen = turnedToViewer(face);
     if (seen) {
-      fill += `<polygon points="${face.map((p) => project(p).map(n1).join(",")).join(" ")}" fill="currentColor" fill-opacity=".06" stroke="none"/>`;
+      fill += faceFill(face);
     }
     face.forEach((a, i) => {
       const b = face[(i + 1) % face.length];

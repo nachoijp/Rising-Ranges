@@ -1,32 +1,11 @@
 import type { Item, Permission } from "@owlbear-rodeo/sdk";
 import OBR from "@owlbear-rodeo/sdk";
 
+/** The layers a player needs a permission to change (their own, "<LAYER>_UPDATE"); the rest none can. */
+const UPDATABLE = new Set(["MAP", "PROP", "MOUNT", "CHARACTER", "ATTACHMENT", "NOTE", "RULER", "POINTER", "TEXT", "FOG", "DRAWING"]);
+
 export function getPermissionForItem(item: Item): Permission | undefined {
-  if (item.layer === "MAP") {
-    return "MAP_UPDATE";
-  } else if (item.layer === "PROP") {
-    return "PROP_UPDATE";
-  } else if (item.layer === "MOUNT") {
-    return "MOUNT_UPDATE";
-  } else if (item.layer === "CHARACTER") {
-    return "CHARACTER_UPDATE";
-  } else if (item.layer === "ATTACHMENT") {
-    return "ATTACHMENT_UPDATE";
-  } else if (item.layer === "NOTE") {
-    return "NOTE_UPDATE";
-  } else if (item.layer === "RULER") {
-    return "RULER_UPDATE";
-  } else if (item.layer === "POINTER") {
-    return "POINTER_UPDATE";
-  } else if (item.layer === "TEXT") {
-    return "TEXT_UPDATE";
-  } else if (item.layer === "FOG") {
-    return "FOG_UPDATE";
-  } else if (item.layer === "DRAWING") {
-    return "DRAWING_UPDATE";
-  } else {
-    return undefined;
-  }
+  return UPDATABLE.has(item.layer) ? (`${item.layer}_UPDATE` as Permission) : undefined;
 }
 
 /**

@@ -28,7 +28,6 @@ export type Options = {
   grid: boolean;
   /** Lines from the selected token to the others, by Banda. */
   distances: boolean;
-  /** What a token's label says. */
   /**
    * A token's labels: its name (Owlbear's label), its height, and where it stands ("full": all three;
    * "nameHeight": no where; "heightFull": no name; "height": the height alone; "name": the name alone).
