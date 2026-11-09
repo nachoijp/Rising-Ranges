@@ -30,7 +30,7 @@ export type GlobalSettings = {
   display?: StoredDisplaySettings;
   /** Who gets the Distancias panel's toolbar button. Missing = "off". */
   distancePanel?: DistancePanelAccess;
-  /** Who gets the Vistazo 3D's toolbar button (see vistazoAccess); "off" hides it, the GM still opens it to edit the relief. Missing = "gm". */
+  /** Who gets the Vistazo 3D's toolbar button (see vistazoAccess); "off" hides it, the GM still opens it to edit the relief. Missing = "everyone". */
   vistazo?: DistancePanelAccess;
   /**
    * On an isometric/dimetric grid, draws each raised token raised (see
@@ -116,9 +116,9 @@ export function resolveTerrainLook(settings: GlobalSettings): TerrainLook {
 }
 export type TerrainVisibility = "hidden" | "gm" | "everyone";
 
-/** Who gets the Vistazo 3D's button: the GM unless set otherwise ("off": hidden, no button; the GM still opens it to edit the relief). */
+/** Who gets the Vistazo 3D's button: everyone unless set otherwise ("off": hidden, no button; the GM still opens it to edit the relief). */
 export function vistazoAccess(settings: GlobalSettings): DistancePanelAccess {
-  return settings.vistazo ?? "gm";
+  return settings.vistazo ?? "everyone";
 }
 
 export function terrainVisibility(settings: GlobalSettings): TerrainVisibility {
