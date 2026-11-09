@@ -2005,9 +2005,13 @@ export class VistazoView {
       }
     }
     const span = this.maxH - this.minH || 1;
-    // Lower ground a little darker: the highest keeps its own color (never over 1, which would wash a map
-    // texture out to white), the lowest up to relief × 50% darker.
-    const lit = 1 - this.options.relief * 0.5 * (1 - (height - this.minH) / span);
+    // Lower ground a little darker: the highest keeps its own color, the lowest up to relief × 50% darker.
+    // The range is the terrain's (minH/maxH, from the pieces): a slab's top over all of it falls past it,
+    // a little lighter, up to another span over the highest; no further, which would wash a map texture
+    // out to white. That lightening a little stronger from the slider's middle up: +25% at 50%, +65% at 100%.
+    const along = Math.min(2, Math.max(0, (height - this.minH) / span));
+    const relief = this.options.relief;
+    const lit = along <= 1 ? 1 - relief * 0.5 * (1 - along) : 1 + relief * 0.5 * (1 + 0.6 * Math.max(0, relief - 0.5)) * (along - 1);
     const color = new THREE.Color(...(fill ?? (textured && this.mapTexture ? [255, 255, 255] : STONE)).map((v) => v / 255) as [number, number, number]);
     if (this.options.tint) {
       color.lerp(new THREE.Color(tintOf(height)), 0.5);
