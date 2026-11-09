@@ -4,8 +4,10 @@ import type { Vector2 } from "@owlbear-rodeo/sdk";
 // and Owlbear stops a move at the dynamic fog's walls (its own, or Smoke &
 // Spectre's) along the straight line from where it was: dragged around a
 // corner, it'd be stopped at the wall it never crossed. So the move is
-// saved along the way it was really dragged, a few steps that each keep
-// clear of the walls the drag went around (its turns, by Ramer–Douglas–Peucker).
+// saved along the way it was really dragged, in as few straight steps as
+// keep clear of the walls (each as far along the way as a straight line
+// from the last one goes without crossing one): Owlbear takes only a few
+// writes at a time, and a long drag's every turn would be far too many.
 
 /** A dragged token's way: where it's been, as it went (raw, not snapped). */
 export class DragPath {
@@ -25,38 +27,28 @@ export class DragPath {
     }
   }
 
-  /** The steps to save it in, ending at `end`: its turns sharper than `tolerance` (scene px) off a straight line. */
-  steps(end: Vector2, tolerance: number): Vector2[] {
+  /**
+   * The steps to save it in, ending at `end`: from where it began, each as far along the way as a
+   * straight line from the last goes `clear` (no wall crossed); where even the next point of the way
+   * isn't (it was dragged through a wall), that point (Owlbear stops it at the wall, as its own drag).
+   */
+  steps(end: Vector2, clear: (from: Vector2, to: Vector2) => boolean): Vector2[] {
     const all = [...this.points, end];
     if (all.length <= 2) {
       return [end];
     }
-    return simplify(all, tolerance).slice(1);
-  }
-}
-
-function simplify(points: Vector2[], tolerance: number): Vector2[] {
-  if (points.length <= 2) {
-    return points;
-  }
-  const a = points[0];
-  const b = points[points.length - 1];
-  const length = Math.hypot(b.x - a.x, b.y - a.y);
-  let farthest = 0;
-  let index = 0;
-  for (let i = 1; i < points.length - 1; i++) {
-    const p = points[i];
-    const away =
-      length > 0
-        ? Math.abs((b.x - a.x) * (a.y - p.y) - (a.x - p.x) * (b.y - a.y)) / length
-        : Math.hypot(p.x - a.x, p.y - a.y);
-    if (away > farthest) {
-      farthest = away;
-      index = i;
+    const steps: Vector2[] = [];
+    let at = 0;
+    while (at < all.length - 1) {
+      let next = at + 1;
+      if (clear(all[at], all[next])) {
+        while (next + 1 < all.length && clear(all[at], all[next + 1])) {
+          next++;
+        }
+      }
+      steps.push(all[next]);
+      at = next;
     }
+    return steps;
   }
-  if (farthest <= tolerance) {
-    return [a, b];
-  }
-  return [...simplify(points.slice(0, index + 1), tolerance).slice(0, -1), ...simplify(points.slice(index), tolerance)];
 }

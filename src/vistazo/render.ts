@@ -30,7 +30,7 @@ import { BaseBatch, moveBase, ringMaterial, type BaseSeat } from "./view/bases";
 import { UNDER_FRAGMENT, UNDER_VERTEX } from "./view/shaders";
 import { FILL_BANDS, FILL_CELLS, FOG_GLSL, baseTexture, based, clouded, fogCut, fogCutShader, fogged, foggedToo, grained, gridded, layer, tinted } from "./view/layers";
 import { reachMask, waterMaterial, waterReach, waterShape, type WaterReach } from "./view/water";
-import { since, stamp, time } from "../timing";
+import { record, since, stamp, time, timingOn } from "../timing";
 
 export type { Camera, DistanceLine, Options } from "./view/types";
 export { tintOf };
@@ -1138,6 +1138,8 @@ export class VistazoView {
     }
     const kept = this.curtains.edges;
     const edges = new Map<string, [number[], number[]]>();
+    // With the stopwatch on (see timing.ts): where the curtains' time goes, and how much there is.
+    const watch = { t0: timingOn ? performance.now() : 0, fresh: 0, heights: 0, heightMs: 0 };
     if (fogged && fogged.length > 0) {
       const step = scene.dpi * 0.25;
       const near = scene.dpi * 0.05;
@@ -1150,6 +1152,16 @@ export class VistazoView {
       // The ground's height just off the edge on its clear side (0 off the map; null: neither side
       // clear), that side asked first.
       const clearHeight = (x: number, y: number, nx: number, ny: number, first: number): number | null => {
+        if (timingOn) {
+          watch.heights++;
+          const t = performance.now();
+          const h = clearHeightNow(x, y, nx, ny, first);
+          watch.heightMs += performance.now() - t;
+          return h;
+        }
+        return clearHeightNow(x, y, nx, ny, first);
+      };
+      const clearHeightNow = (x: number, y: number, nx: number, ny: number, first: number): number | null => {
         for (const side of [first, -first]) {
           const [qx, qy] = [x + nx * near * side, y + ny * near * side];
           if (!fog.at(qx, qy)) {
@@ -1181,6 +1193,7 @@ export class VistazoView {
             const positions: number[] = [];
             const lids: number[] = [];
             edges.set(key, [positions, lids]);
+            watch.fresh++;
             const [cx, cy] = [nx * lid * clear, ny * lid * clear];
             const n = Math.max(1, Math.ceil(length / step));
             // In steps: each sample's height held up to where the ground's height changes on the way
@@ -1233,6 +1246,15 @@ export class VistazoView {
       }
     }
     this.curtains.edges = edges;
+    if (timingOn) {
+      record("3d.fog.edges", performance.now() - watch.t0);
+      record("3d.fog.edges.heights", watch.heightMs);
+      record("3d.fog.n edges (avg = count)", edges.size);
+      record("3d.fog.n new edges (avg = count)", watch.fresh);
+      record("3d.fog.n heights read (avg = count)", watch.heights);
+      watch.t0 = performance.now();
+    }
+    let floats = 0;
     for (const [which, material] of [[0, materials.curtain], [1, materials.lid]] as const) {
       let size = 0;
       for (const edge of edges.values()) {
@@ -1241,6 +1263,7 @@ export class VistazoView {
       if (size === 0) {
         continue;
       }
+      floats += size;
       const all = new Float32Array(size);
       let at = 0;
       for (const edge of edges.values()) {
@@ -1253,6 +1276,10 @@ export class VistazoView {
     }
     this.fogFloor = group;
     this.world.add(group);
+    if (timingOn) {
+      record("3d.fog.merge", performance.now() - watch.t0);
+      record("3d.fog.n floats (avg = count)", floats);
+    }
   }
 
   /** The fog floor's, curtains' and lids' materials: made once (the floor is redone as lights move). */
@@ -1978,8 +2005,9 @@ export class VistazoView {
       }
     }
     const span = this.maxH - this.minH || 1;
-    // Higher ground a little lighter: up to ±25% from the lowest to the highest.
-    const lit = 1 + this.options.relief * 0.5 * ((height - this.minH) / span - 0.5);
+    // Lower ground a little darker: the highest keeps its own color (never over 1, which would wash a map
+    // texture out to white), the lowest up to relief × 50% darker.
+    const lit = 1 - this.options.relief * 0.5 * (1 - (height - this.minH) / span);
     const color = new THREE.Color(...(fill ?? (textured && this.mapTexture ? [255, 255, 255] : STONE)).map((v) => v / 255) as [number, number, number]);
     if (this.options.tint) {
       color.lerp(new THREE.Color(tintOf(height)), 0.5);

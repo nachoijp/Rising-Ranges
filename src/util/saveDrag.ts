@@ -1,21 +1,28 @@
 import OBR, { type Item, type Vector2 } from "@owlbear-rodeo/sdk";
+import { stopAtWalls } from "../vistazo/fog";
 import type { DragPath } from "./dragPath";
 
 // Owlbear refuses bursts of scene writes ("Too many requests"). The waits
-// grow, so a short limit costs little and a longer one still gets a chance.
-const SAVE_RETRY_DELAYS_MS = [50, 100, 200];
+// grow, so a short limit costs little and a longer one still gets a chance;
+// the end's waits longer still (it's what matters).
+const SAVE_RETRY_DELAYS_MS = [100, 250, 500];
+const END_RETRY_DELAYS_MS = [100, 250, 500, 1000, 2000];
+/** A pause between the steps' writes: a few in a row, not a burst. */
+const STEP_PAUSE_MS = 40;
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A write, tried again after each wait while it's refused; throws the last refusal if every try fails. */
-async function retried(write: () => Promise<void>) {
+async function retried(write: () => Promise<void>, delays = SAVE_RETRY_DELAYS_MS) {
   for (let attempt = 0; ; attempt++) {
     try {
       await write();
       return;
     } catch (error) {
-      if (attempt >= SAVE_RETRY_DELAYS_MS.length) {
+      if (attempt >= delays.length) {
         throw error;
       }
-      await new Promise((resolve) => setTimeout(resolve, SAVE_RETRY_DELAYS_MS[attempt]));
+      await wait(delays[attempt]);
     }
   }
 }
@@ -31,8 +38,15 @@ async function retried(write: () => Promise<void>) {
  */
 export async function saveDraggedToken(final: Item, path: DragPath): Promise<Vector2 | null> {
   try {
-    const dpi = await OBR.scene.grid.getDpi();
-    for (const step of path.steps(final.position, dpi * 0.3).slice(0, -1)) {
+    // The walls Owlbear stops a token at (the scene's, and this client's own: Smoke & Spectre's); none
+    // for a hidden token, which Owlbear lets through.
+    const [items, local] = final.visible ? await Promise.all([OBR.scene.items.getItems(), OBR.scene.local.getItems().catch(() => [])]) : [[], []];
+    const clear = (from: Vector2, to: Vector2) => {
+      const reached = stopAtWalls(from, to, items, local, 0);
+      return Math.hypot(reached.x - to.x, reached.y - to.y) < 0.5;
+    };
+    const steps = path.steps(final.position, clear);
+    for (const step of steps.slice(0, -1)) {
       await retried(() =>
         OBR.scene.items.updateItems([final.id], (items) => {
           for (const item of items) {
@@ -40,6 +54,7 @@ export async function saveDraggedToken(final: Item, path: DragPath): Promise<Vec
           }
         })
       );
+      await wait(STEP_PAUSE_MS);
     }
   } catch (error) {
     console.warn("Rising Ranges: couldn't save a dragged token along its way, saving where it ends", error);
@@ -59,7 +74,7 @@ export async function saveDraggedToken(final: Item, path: DragPath): Promise<Vec
           }
         }
       });
-    });
+    }, END_RETRY_DELAYS_MS);
     return final.position;
   } catch (error) {
     console.error("Rising Ranges: failed to save the dragged token's position", error);
