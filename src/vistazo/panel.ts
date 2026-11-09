@@ -93,13 +93,16 @@ export function savePanelSize(size: Partial<PanelSize>) {
 // The page tells the background script (which owns the button) when it opens or closes itself,
 // over a broadcast that never leaves this client.
 const STATE_CHANNEL = getPluginId("vistazoPanel");
+// The other way: the button asks the minimized page to come back (see toggleVistazoPanel).
+const RESTORE_CHANNEL = getPluginId("vistazoPanel/restore");
 
 // Whether this client has the panel open, or the full-screen view instead, and when the panel was last
-// closed (Owlbear can't tell: see the Distancias panel). The page says: true (open), false (closed),
-// "full" (closed for the full-screen view).
+// closed (Owlbear can't tell: see the Distancias panel). The page says: true (open), "min" (open,
+// minimized to its bar), false (closed), "full" (closed for the full-screen view).
 /** The Vistazo's own tab linked (see setVistazoTab). */
 let inTab = false;
 let open = false;
+let minimized = false;
 let full = false;
 let closedAt = 0;
 let watching = false;
@@ -109,7 +112,8 @@ let shownChanged: ((shown: boolean) => void) | null = null;
 
 function setState(state: unknown) {
   const was = open || full;
-  open = state === true;
+  open = state === true || state === "min";
+  minimized = state === "min";
   full = state === "full";
   if (state === false) {
     closedAt = Date.now();
@@ -184,9 +188,22 @@ export async function closeVistazoPanel(forFull = false) {
   await OBR.popover.close(VISTAZO_POPOVER_ID);
 }
 
-/** The toolbar button: opens the panel, or closes it if it's open. */
+/** The page: minimized to its bar (`on`) or back, so the button brings it back rather than closing it. */
+export async function reportPanelMinimized(on: boolean) {
+  await OBR.broadcast.sendMessage(STATE_CHANNEL, on ? "min" : true, { destination: "LOCAL" }).catch(() => {});
+}
+
+/** The page: told when the button asks it to come back from its bar. */
+export function onRestoreRequested(restore: () => void) {
+  OBR.broadcast.onMessage(RESTORE_CHANNEL, () => restore());
+}
+
+/** The toolbar button: opens the panel, brings it back if it's minimized, or closes it if it's open. */
 export async function toggleVistazoPanel() {
-  if (open) {
+  if (open && minimized) {
+    minimized = false;
+    await OBR.broadcast.sendMessage(RESTORE_CHANNEL, null, { destination: "LOCAL" }).catch(() => {});
+  } else if (open) {
     await closeVistazoPanel();
   } else {
     await openVistazoPanel();

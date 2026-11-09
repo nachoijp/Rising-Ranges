@@ -48,7 +48,9 @@ import {
   DEFAULT_POSITION,
   closeVistazoPanel,
   moveVistazoPanel,
+  onRestoreRequested,
   openVistazoPanel,
+  reportPanelMinimized,
   readPanelPosition,
   savePanelPosition,
   type PanelPosition,
@@ -380,17 +382,37 @@ function fitBar() {
 function setUpResizing() {
   setUpDrag($("grip"));
   setUpDrag($("barGrip"));
+  const isMinimized = () => document.documentElement.classList.contains("minimized");
+  /** Out of the bar; `resize`: back to its size too (not when something else already made it big). */
+  const unminimize = (resize: boolean) => {
+    document.documentElement.classList.remove("minimized");
+    onMinimized(false);
+    void reportPanelMinimized(false);
+    if (resize) {
+      const saved = readSize();
+      resizePanel(saved.width ?? 900, saved.height ?? 600);
+    }
+  };
   $("minimize").onclick = () => {
     document.documentElement.classList.add("minimized");
     onMinimized(true);
+    void reportPanelMinimized(true);
     fitBar();
   };
-  $("restore").onclick = () => {
-    document.documentElement.classList.remove("minimized");
-    onMinimized(false);
-    const saved = readSize();
-    resizePanel(saved.width ?? 900, saved.height ?? 600);
-  };
+  $("restore").onclick = () => unminimize(true);
+  // The toolbar button, while it's a bar: back as its own button does.
+  onRestoreRequested(() => {
+    if (isMinimized()) {
+      unminimize(true);
+    }
+  });
+  // Made big while a bar (the button reopening it when the background lost count): no bar left
+  // alone in a big panel, it comes back at that size.
+  window.addEventListener("resize", () => {
+    if (isMinimized() && window.innerHeight > BAR_HEIGHT * 2) {
+      unminimize(false);
+    }
+  });
   const app = $("app");
   const compact = (on: boolean) => {
     app.classList.toggle("compact", on);
