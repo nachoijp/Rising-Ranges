@@ -1,6 +1,6 @@
 import * as THREE from "three";
 
-// Volume templates, only in this Vistazo (not the scene's): a spell's area
+// Volume templates (the scene's items: see templateItems.ts): a spell's area
 // in 3D — a cone, a sphere, a cylinder, a line or a cube — at the heights
 // it reaches, drawn translucent and moving with its kind (fire, ice...).
 
@@ -59,6 +59,17 @@ const LOOKS: Record<TemplateLook, Look> = {
   psychic: { deep: [0.5, 0.32, 0.9], bright: [1, 0.9, 1], opacity: 0.48, glow: true, mode: "pulse", rise: 0.1, grain: 0.8, speed: 1 },
   radiant: { deep: [0.95, 0.72, 0.1], bright: [1, 0.98, 0.85], opacity: 0.5, glow: true, mode: "sparkles", rise: 0.4, grain: 1, speed: 1 },
 };
+
+/** How a kind is drawn (see LOOKS), for the map's version of it (see templateEffect.ts). */
+export function templateLook(look: TemplateLook): Look & { modeIndex: number } {
+  return { ...LOOKS[look], modeIndex: MODES[LOOKS[look].mode] };
+}
+
+/** A kind's colours as CSS (its deep one, its bright one): its outline and fill on the map. */
+export function templateColors(look: TemplateLook): { deep: string; bright: string } {
+  const css = ([r, g, b]: [number, number, number]) => `#${[r, g, b].map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, "0")).join("")}`;
+  return { deep: css(LOOKS[look].deep), bright: css(LOOKS[look].bright) };
+}
 
 const VERTEX = /* glsl */ `
   varying vec3 vAt;

@@ -1011,7 +1011,7 @@ export function renderProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: n
     doorProps(el, ed, t, unit);
   } else if (ed.sel.kind === "shape") {
     if (ed.sel.more?.length) {
-      comboProps(el, ed, t);
+      comboProps(el, ed, t, unit);
     } else {
       shapeProps(el, ed, t, unit, folded);
     }
@@ -1200,15 +1200,20 @@ function doorProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =>
   q<HTMLButtonElement>("del")!.onclick = () => ed.remove();
 }
 
-/** Several shapes picked: what they can make together. */
-function comboProps(el: HTMLElement, ed: ReliefEditor, t: T) {
+/** Several shapes picked: raised or lowered together (each its own way), and what they can make together. */
+function comboProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) => string) {
   const { i, more } = ed.sel as { kind: "shape"; i: number; more: number[] };
   const first = nameOf(t, ed.data.shapes[i], i);
+  // Their height, if they're all flat at one; a dash otherwise (each keeps its own, raised by as much).
+  const heights = new Set([i, ...more].map((si) => ed.data.shapes[si]).map((s) => (s.kind === "flat" ? `${s.h}|${!!s.rel}` : "other")));
+  const shared = heights.size === 1 && !heights.has("other") ? ed.data.shapes[i].h : null;
   el.innerHTML = `
     <div class="head"><span class="ptitle grow" ${tip(t("relief.combo.title", { n: more.length + 1 }), t("relief.combo.result", { first }))}>${esc(t("relief.combo.title", { n: more.length + 1 }))}</span></div>
+    <div class="rows"><span class="l" ${tip(t("relief.height"), t("relief.combo.heightHint"))}>${esc(t("relief.height"))}</span>${heightRow(t, shared === null ? "—" : "", shared === null ? "" : unit(shared))}</div>
     <div class="ops">${COMBINES.map(([id, label, hint]) => `<button type="button" class="opb" data-op="${id}" ${tip(t(label), t(hint, { first }))}>${OP_ICONS[id]}<span>${esc(t(label))}</span></button>`).join("")}</div>
     ${ed.notice ? `<p class="warn" role="status">${esc(t(ed.notice === "nothingShared" ? "relief.combo.nothingShared" : "relief.combo.nothingLeft"))}</p>` : ""}
     <button type="button" class="field wide" data-k="single" ${tip(t("relief.combo.single", { first }), t("relief.combo.ctrl"))}>${esc(t("relief.combo.single", { first }))}</button>`;
+  bindSteps(el, ed);
   for (const button of el.querySelectorAll<HTMLButtonElement>("[data-op]")) {
     button.onclick = () => runCombine(ed, button.dataset.op as Combine);
   }

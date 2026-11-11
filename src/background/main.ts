@@ -6,6 +6,7 @@ import { startFalls } from "./falls";
 import { startMarkerRefresh } from "./markerRefresh";
 import { startFixedMedicion } from "./fixedMedicion";
 import { startIsoLift } from "./isoLift";
+import { startTemplateLooks } from "./templateLooks";
 import { registerToolbar, watchToolbar } from "./toolbar";
 import { prefetchPanels } from "./prefetchPanels";
 import { startZoneLooks } from "./zoneLooks";
@@ -99,6 +100,10 @@ async function init() {
   });
   startIsoLift().catch((error) => {
     console.error("Rising Ranges: failed to start raised tokens", error);
+  });
+  // The templates' moving looks on the map (each client's own).
+  startTemplateLooks().catch((error) => {
+    console.error("Rising Ranges: failed to start the templates' looks", error);
   });
 }
 

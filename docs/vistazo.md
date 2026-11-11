@@ -63,7 +63,9 @@ At the top:
 
 The rest is folded into sections:
 
-**Templates.** Spell areas in 3D: a sphere, cube, cylinder, cone or line, with a texture (fire, ice, poison, lightning, darkness, arcane, force, necrotic, acid, thunder, psychic, radiant) and a size. **Place**, then click where it goes; a cone or a line then points where you click. They're only in this view, and listed under the buttons to remove one by one.
+**Templates.** Spell areas in 3D: a sphere, cube, cylinder, cone or line, with a texture (fire, ice, poison, lightning, darkness, arcane, force, necrotic, acid, thunder, psychic, radiant) and a size. **Place**, then click where it goes; a cone or a line then points where you click. Drag its handle to move it, or a cone's or a line's tip to turn it; the elevation hotkeys raise and lower the one you last placed or grabbed (a cone's or a line's tip: tilts it).
+
+Templates are part of the scene, so everyone sees them, on the map too: there, each one is an animated area in its texture, under the tokens, that can be moved and turned like any drawing (the Glance follows). Players can place their own if the room lets them create drawings (Owlbear's player permissions); if not, the Glance tells them. They're listed under the buttons to remove one by one; **Remove all** removes everyone's. A template the GM hides isn't shown to players.
 
 ![Templates](screenshots/glance/templates.jpg)
 
@@ -131,6 +133,8 @@ Shapes are stacked: each one sits on what's under it. Picking one shows its pane
 - **3D look** — its walls' look: **Blend** (the default: the map's colors along the wall, the top's running into the foot's, with a subtle grain), **Flat color**, **Stretched edge** and **Folded edge** (the map's edge pulled down the wall), **Brick**, **Stone**, **Earth** or **Wood**; a texture taken from a rectangle of the map; water in it; its edge (a wall, or a soft slope); and **Not covered by slabs** (see [Slabs](#slabs)).
 
 Right-click a shape for duplicate, rename, layer up or down, convert, combine (union, subtract, intersect, exclude), group, take a texture, or delete.
+
+With several shapes picked (Ctrl + click), the panel raises or lowers them all together, each from its own height (a ramp both its ends, an inclined one its corners), and combines them.
 
 ## Vertices and height points
 

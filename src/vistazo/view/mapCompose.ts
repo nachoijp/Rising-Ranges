@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { MapImage } from "../scene";
 import { animationOf } from "./animated";
+import { record, time } from "../../timing";
 
 /**
  * The map images put together on the graphics card: each image cut in blocks (a texture each), drawn as
@@ -33,6 +34,8 @@ const GUTTER = 2;
 /** A block's picture as its file has it, while it's near where the camera looks (see sharpen). */
 type Full = {
   img: HTMLImageElement;
+  /** Its file (where it could be read): the block made from it off the page's work (see blockTexture). */
+  file: Blob | null;
   /** Its part of the file (the small one's, gutter and all: the quad's uv fit both). */
   crop: [number, number, number, number];
   /** Where it is on the scene (scene px). */
@@ -248,8 +251,8 @@ export class MapComposer {
     if (!box) {
       return;
     }
-    this.detailTarget ??= shownTarget(this.detailSize, this.detailSize, this.anisotropy);
-    this.draw(renderer, box, this.detailTarget, null);
+    this.detailTarget ??= time("3d.detail.target", () => shownTarget(this.detailSize, this.detailSize, this.anisotropy));
+    time("3d.detail.draw", () => this.draw(renderer, box, this.detailTarget!, null));
     if (sharp) {
       void this.sharpen(box);
     }
@@ -307,15 +310,31 @@ export class MapComposer {
     if (load.length === 0) {
       return;
     }
-    await Promise.all(load.map((full) => this.loadFull(full)));
+    for (const full of load) {
+      full.loading = true;
+    }
+    // Those of one file cut from its picture decoded once (see withWhole), not each decoding it whole.
+    const byFile = new Map<Blob | null, Full[]>();
+    for (const full of load) {
+      byFile.set(full.file, [...(byFile.get(full.file) ?? []), full]);
+    }
+    await Promise.all(
+      [...byFile].map(([file, fulls]) =>
+        file ? withWhole(file, (whole) => Promise.all(fulls.map((full) => this.loadFull(full, whole ?? full.img)))) : Promise.all(fulls.map((full) => this.loadFull(full, full.img)))
+      )
+    );
   }
 
-  /** A block's full picture made (off the page's work), to be sent to the card (see sendSoon). */
-  private async loadFull(full: Full) {
-    full.loading = true;
+  /** A block's full picture made (off the page's work, from `source`), to be sent to the card (see sendSoon). */
+  private async loadFull(full: Full, source: HTMLImageElement | ImageBitmap) {
+    // Let go while it waited its turn: not made.
+    if (this.disposed || !full.loading) {
+      full.loading = false;
+      return;
+    }
     try {
       const [cx, cy, cw, ch] = full.crop;
-      const { texture, bitmap } = await blockTexture(full.img, cx, cy, cw, ch, cw, ch);
+      const { texture, bitmap } = await blockTexture(source, full.img, cx, cy, cw, ch, cw, ch);
       if (this.disposed || !full.loading) {
         texture.dispose();
         bitmap?.close();
@@ -607,30 +626,18 @@ async function imageQuads(map: MapImage, img: HTMLImageElement, px: number): Pro
   const native = file / Math.max(1e-9, scaleOf(map));
   const f = Math.min(1, px / native);
   const gutter = Math.min(BLOCK / 4, Math.ceil(GUTTER / f));
-  // All its blocks asked for at once (the browser makes them side by side), placed in order.
-  const made: Promise<Quad>[] = [];
-  for (let by = 0; by < H; by += BLOCK) {
-    for (let bx = 0; bx < W; bx += BLOCK) {
-      const bw = Math.min(BLOCK, W - bx);
-      const bh = Math.min(BLOCK, H - by);
-      const cx = Math.max(0, bx - gutter);
-      const cy = Math.max(0, by - gutter);
-      const cw = Math.min(W, bx + bw + gutter) - cx;
-      const ch = Math.min(H, by + bh + gutter) - cy;
-      const ow = Math.max(1, Math.round(cw * f));
-      const oh = Math.max(1, Math.round(ch * f));
-      made.push(
-        blockTexture(img, cx, cy, cw, ch, ow, oh).then(({ texture, bitmap }) => {
-          // In the item's px (the file may be another size).
-          const inner: [number, number, number, number] = [bx / file, by / file, (bx + bw) / file, (by + bh) / file];
-          const full: Full | null =
-            f < 1 ? { img, crop: [cx, cy, cw, ch], box: boxOf(sceneCorners(map, inner)), texels: cw * ch, texture: null, bitmap: null, loading: false, used: 0 } : null;
-          return { mesh: quadMesh(map, inner, [cx / file, cy / file, cw / file, ch / file], texture), texture, bitmap, full };
-        })
-      );
-    }
-  }
-  const settled = await Promise.allSettled(made);
+  // Its file decoded once, off the page's work, and the small blocks cut from that (see withWhole): cut
+  // from the <img>, each one decoded the whole picture again on the page's own work (a big map: 400 ms,
+  // the page stuck, each). The full blocks are cut from the file again later, the same way (see sharpen).
+  const source = await fileOf(img);
+  let usable = false;
+  const cut = (whole: ImageBitmap | null) => {
+    usable = !!whole;
+    return Promise.allSettled(blocks(whole ?? img));
+  };
+  const t0 = performance.now();
+  const settled = source ? await withWhole(source, cut) : await cut(null);
+  record(usable ? "map.blocks (decoded off the page)" : "map.blocks (cut from the <img>)", performance.now() - t0);
   const quads = settled.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
   const failed = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
   if (failed) {
@@ -638,15 +645,83 @@ async function imageQuads(map: MapImage, img: HTMLImageElement, px: number): Pro
     throw failed.reason;
   }
   return quads;
+
+  // All its blocks asked for at once (the browser makes them side by side), placed in order.
+  function blocks(from: HTMLImageElement | ImageBitmap): Promise<Quad>[] {
+    const made: Promise<Quad>[] = [];
+    for (let by = 0; by < H; by += BLOCK) {
+      for (let bx = 0; bx < W; bx += BLOCK) {
+        const bw = Math.min(BLOCK, W - bx);
+        const bh = Math.min(BLOCK, H - by);
+        const cx = Math.max(0, bx - gutter);
+        const cy = Math.max(0, by - gutter);
+        const cw = Math.min(W, bx + bw + gutter) - cx;
+        const ch = Math.min(H, by + bh + gutter) - cy;
+        const ow = Math.max(1, Math.round(cw * f));
+        const oh = Math.max(1, Math.round(ch * f));
+        made.push(
+          blockTexture(from, img, cx, cy, cw, ch, ow, oh).then(({ texture, bitmap }) => {
+            // In the item's px (the file may be another size).
+            const inner: [number, number, number, number] = [bx / file, by / file, (bx + bw) / file, (by + bh) / file];
+            const full: Full | null =
+              f < 1 ? { img, file: usable ? source : null, crop: [cx, cy, cw, ch], box: boxOf(sceneCorners(map, inner)), texels: cw * ch, texture: null, bitmap: null, loading: false, used: 0 } : null;
+            return { mesh: quadMesh(map, inner, [cx / file, cy / file, cw / file, ch / file], texture), texture, bitmap, full };
+          })
+        );
+      }
+    }
+    return made;
+  }
 }
 
-/** A block of an image at `ow` x `oh`, premultiplied, first row first: an ImageBitmap, or a canvas. */
-async function blockTexture(img: HTMLImageElement, cx: number, cy: number, cw: number, ch: number, ow: number, oh: number): Promise<{ texture: THREE.Texture; bitmap: ImageBitmap | null }> {
+/** An <img>'s file, read again (from the browser's cache: the <img> read it the same way, anonymous); null where it can't be. */
+async function fileOf(img: HTMLImageElement): Promise<Blob | null> {
+  try {
+    const response = await fetch(img.currentSrc || img.src, { mode: "cors", credentials: "omit" });
+    return response.ok ? await response.blob() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One whole picture decoded at a time (each is its width × height × 4 bytes: a big scene's maps, or a
+ * map's full blocks, each decoding it at once, would take gigabytes).
+ */
+let wholeTurn: Promise<unknown> = Promise.resolve();
+
+/**
+ * A file's picture decoded whole, off the page's work, in its turn (see wholeTurn), for `use` (null if
+ * the browser can't decode it so: `use` cuts from the <img> then), and let go after.
+ */
+function withWhole<T>(file: Blob, use: (whole: ImageBitmap | null) => Promise<T>): Promise<T> {
+  const run = wholeTurn.then(async () => {
+    let whole: ImageBitmap | null = null;
+    try {
+      whole = await createImageBitmap(file, { premultiplyAlpha: "premultiply" });
+    } catch {
+      whole = null;
+    }
+    try {
+      return await use(whole);
+    } finally {
+      whole?.close();
+    }
+  });
+  wholeTurn = run.catch(() => {});
+  return run;
+}
+
+/**
+ * A block of an image at `ow` x `oh`, premultiplied, first row first: an ImageBitmap (from `source`: a
+ * file or a decoded picture is cut off the page's work, an <img> on it), or a canvas (drawn from `img`).
+ */
+async function blockTexture(source: HTMLImageElement | ImageBitmap | Blob, img: HTMLImageElement, cx: number, cy: number, cw: number, ch: number, ow: number, oh: number): Promise<{ texture: THREE.Texture; bitmap: ImageBitmap | null }> {
   let texture: THREE.Texture;
   let bitmap: ImageBitmap | null = null;
   try {
     // Premultiplied as it's made (an ImageBitmap's isn't changed on its way to the card).
-    bitmap = await createImageBitmap(img, cx, cy, cw, ch, { resizeWidth: ow, resizeHeight: oh, resizeQuality: "high", premultiplyAlpha: "premultiply" });
+    bitmap = await createImageBitmap(source, cx, cy, cw, ch, { resizeWidth: ow, resizeHeight: oh, resizeQuality: "high", premultiplyAlpha: "premultiply" });
     texture = new THREE.Texture(bitmap);
   } catch {
     const canvas = document.createElement("canvas");

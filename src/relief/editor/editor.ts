@@ -1203,10 +1203,24 @@ export class ReliefEditor {
       return;
     }
     this.pushUndo();
-    const ramp = sel.kind === "shape" ? this.data.shapes[sel.i].ramp : undefined;
-    if (sel.kind === "shape" && this.data.shapes[sel.i].kind === "ramp" && ramp) {
-      ramp.from = clampHeight(ramp.from + step);
-      ramp.to = clampHeight(ramp.to + step);
+    if (sel.kind === "shape") {
+      // Every shape picked (several: all together, each its own way). A corner or a height point two of
+      // them share, raised once.
+      const raised = new Set<{ h: number }>();
+      for (const si of [sel.i, ...(sel.more ?? [])]) {
+        const s = this.data.shapes[si];
+        if (s.kind === "ramp" && s.ramp) {
+          s.ramp.from = clampHeight(s.ramp.from + step);
+          s.ramp.to = clampHeight(s.ramp.to + step);
+          continue;
+        }
+        for (const target of this.shapeTargets(si)) {
+          if (!raised.has(target)) {
+            raised.add(target);
+            target.h = clampHeight(target.h + step);
+          }
+        }
+      }
     } else {
       for (const target of this.targets()) {
         target.h = clampHeight(target.h + step);
@@ -1271,15 +1285,20 @@ export class ReliefEditor {
       return [...sel.list.map((i) => data.verts[i]), ...(sel.points ?? []).map((i) => data.points[i])];
     }
     if (sel.kind === "shape") {
-      const s = data.shapes[sel.i];
-      if (s.kind !== "slope") {
-        return [s];
-      }
-      // An inclined one: its corners, and the height points inside it.
-      const [ring, holes] = this.relief.coordsOf(s);
-      return [...vertsOf(s).map((i) => data.verts[i]), ...data.points.filter((q) => inShape(q.x, q.y, ring, holes))];
+      return this.shapeTargets(sel.i);
     }
     return [sel.kind === "point" ? data.points[sel.i] : data.verts[sel.i]];
+  }
+
+  /** The heights a shape's raised by: its own; an inclined one's corners, and the height points inside it. */
+  shapeTargets(si: number): { h: number }[] {
+    const data = this.data;
+    const s = data.shapes[si];
+    if (s.kind !== "slope") {
+      return [s];
+    }
+    const [ring, holes] = this.relief.coordsOf(s);
+    return [...vertsOf(s).map((i) => data.verts[i]), ...data.points.filter((q) => inShape(q.x, q.y, ring, holes))];
   }
 
   // ---------- Transforms ----------

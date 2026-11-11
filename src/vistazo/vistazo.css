@@ -299,6 +299,17 @@ body {
   user-select: none;
   -webkit-user-select: none;
 }
+/* The panel: an app's controls, not a page's text: its titles and labels aren't picked as text by a
+   click or a drag (its text fields are, to copy and paste). */
+aside {
+  user-select: none;
+  -webkit-user-select: none;
+}
+aside input,
+aside textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
 .stage:focus-visible {
   box-shadow: 0 0 0 2px var(--accent);
 }

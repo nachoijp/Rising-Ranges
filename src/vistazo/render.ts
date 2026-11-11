@@ -1831,6 +1831,7 @@ export class VistazoView {
     // The videos, animations and composer made below, till they're handed over (or let go): let go
     // if anything fails on the way, not left playing.
     let pendingMedia: CanvasImageSource[] = [];
+    const loadStart = stamp();
     let pendingComposer: MapComposer | null = null;
     Promise.all(
       scene.maps.map(
@@ -1864,6 +1865,7 @@ export class VistazoView {
         const maps = scene.maps.filter((_, i) => loaded[i] !== null);
         const read = loaded.filter((img): img is CanvasImageSource => img !== null);
         pendingMedia = read;
+        since("map.1 images read", loadStart);
         if (read.length === 0) {
           throw new Error("none of the map images could be read");
         }
@@ -1872,6 +1874,7 @@ export class VistazoView {
           read.map(async (img, i) => (img instanceof HTMLImageElement && mayAnimate(maps[i].mime) ? ((await AnimatedImage.open(maps[i].url, maps[i].mime))?.canvas ?? img) : img))
         );
         pendingMedia = images;
+        since("map.2 animations read", loadStart);
         // In steps, the page let go between them (each is long on a slow machine): another map's
         // meanwhile, this one's dropped.
         const pause = () => new Promise((resolve) => setTimeout(resolve));
@@ -1908,18 +1911,20 @@ export class VistazoView {
           const detailSize = Math.min(DETAIL_SIZE[quality] ?? DETAIL_SIZE.high, this.renderer.capabilities.maxTextureSize);
           const fullBudget = FULL_BUDGET[quality] ?? FULL_BUDGET.high;
           let made: MapComposer | null = null;
+          const makeStart = stamp();
           made = await MapComposer.make(maps, media, { x0, y0, w, h }, { px, basePx, detailSize, fullBudget }, this.renderer.capabilities.getMaxAnisotropy(), () => this.sharpened(made));
           composer = made;
           pendingComposer = made;
+          since("map.3 composer made", makeStart);
           if (stale()) {
             composer?.dispose();
             return;
           }
         }
         const smallPx = Math.min(1, 1024 / Math.max(w, h));
-        const small = composer && this.renderer ? smallFrom(composer, this.renderer, w, h, smallPx) : draw(images, maps, smallPx);
+        const small = time("map.4 small", () => (composer && this.renderer ? smallFrom(composer, this.renderer, w, h, smallPx) : draw(images, maps, smallPx)));
         const pixels = { data: small.context.getImageData(0, 0, small.canvas.width, small.canvas.height).data, w: small.canvas.width, h: small.canvas.height };
-        const colors: MapColors = { x0, y0, w, h, small: pixels, soft: softPixels(small.canvas, w, h, scene.dpi) };
+        const colors: MapColors = { x0, y0, w, h, small: pixels, soft: time("map.5 soft", () => softPixels(small.canvas, w, h, scene.dpi)) };
         this.mapColors = colors;
         this.colors = (x, y) => colorAt(colors, x, y);
         // The doors that take the map's colours, in them now.
@@ -1931,11 +1936,13 @@ export class VistazoView {
           return;
         }
         if (composer && this.renderer) {
-          composer.compose(this.renderer);
+          const renderer = this.renderer;
+          time("map.6 compose", () => composer!.compose(renderer));
           composer.busy = () => performance.now() - this.camMovedAt < STILL_MS;
           this.composer = composer;
           // Its detail for the camera now, before it's first shown.
           this.updateDetail(true);
+          since("map.7 all (to detail)", loadStart);
           // The small one for what's read on the page (see fillPixels: the composer's, where there's one).
           this.texture = { canvas: small.canvas, x0, y0, w, h };
           this.mapMedia = { images, maps };

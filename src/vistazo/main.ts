@@ -30,6 +30,7 @@ import { openVistazoTab, showTabLink } from "./tab";
 import vistazoLogo from "../assets/vistazo.svg?raw";
 import { FREE_POINT, TEMPLATE_HANDLE, VistazoView, type Camera, type DistanceLine, type Options } from "./render";
 import { templateReaches, type Template, type TemplateLook, type TemplateShape } from "./templates";
+import { isTemplateItem, setTemplateItem, templateItem, templateOf } from "./templateItems";
 import { LIVE_DRAG_CHANNEL, type LiveDrag } from "./live";
 import { SYNC_CHANNEL, SYNC_HEARTBEAT_MS, SYNC_INTERVAL_MS, SYNC_TIMEOUT_MS, type SyncMessage } from "./sync";
 import { stepHeight } from "../engine/heights";
@@ -513,8 +514,43 @@ async function start() {
   const t = (key: TranslationKey, vars?: Record<string, string | number>) => translate(language, key, vars);
   /** Set while a token is being moved here: Esc cancels that instead of closing. */
   let cancelMove: (() => void) | null = null;
-  // ---------- Volume templates (only in this view; see templates.ts) ----------
+  // ---------- Volume templates (the scene's items, shared: see templateItems.ts) ----------
+  /** As the scene's items have them (see syncTemplates), but those changed here and not yet saved (drafts). */
   let templates: Template[] = [];
+  /**
+   * Templates changed here (a handle dragged, a height key, one just put down): shown so, not as the
+   * scene had them a moment before, till the scene has them so too (its change may come after the save's
+   * done), or a while after it's saved (`settled`: when; 0 while it's being saved or dragged).
+   */
+  const drafts = new Map<string, { template: Template; settled: number }>();
+  /** Templates taken away here: left out till the scene has let them go too (or a while: not let go, back). */
+  const removing = new Map<string, number>();
+  /** Templates still being put on the scene; and those taken away meanwhile (taken away once they're on). */
+  const adding = new Set<string>();
+  const removeOnceAdded = new Set<string>();
+  /** How long a draft or a removal waits at most for the scene to show it (ms). */
+  const SETTLE_MS = 2000;
+  /** What a template is, as the scene would have it back (where, which way, how big and high: not its height there, worked out). */
+  const templateKey = (template: Template) =>
+    JSON.stringify([template.shape, template.look, template.size, template.lift, template.rise, Math.round(template.x * 100), Math.round(template.y * 100), Math.round(template.dir.x * 1e4), Math.round(template.dir.y * 1e4)]);
+  /** Their key the last time they were shown (the list's not made again for nothing). */
+  let templatesShown = "";
+  /** What the room lets players do to drawings (the templates are): kept as it changes. */
+  let drawingRights: Record<"CREATE" | "UPDATE" | "DELETE", boolean> = { CREATE: true, UPDATE: true, DELETE: true };
+  const readDrawingRights = (permissions: Permission[]) => {
+    drawingRights = { CREATE: permissions.includes("DRAWING_CREATE"), UPDATE: permissions.includes("DRAWING_UPDATE"), DELETE: permissions.includes("DRAWING_DELETE") };
+  };
+  OBR.room.getPermissions().then(readDrawingRights, () => {});
+  OBR.room.onPermissionsChange(readDrawingRights);
+  /** Whether this player may do that to templates (the GM, anything); if not, told why (and how the GM lets them). */
+  const mayTemplate = (action: "CREATE" | "UPDATE" | "DELETE") => {
+    if (isGM || drawingRights[action]) {
+      return true;
+    }
+    const key = action === "CREATE" ? "vistazo.templateNoCreate" : action === "UPDATE" ? "vistazo.templateNoUpdate" : "vistazo.templateNoDelete";
+    void OBR.notification.show(t(key), "WARNING");
+    return false;
+  };
   /** Waiting for a click to put the next one down; and a cone or a line being pointed. */
   let placing = false;
   let aiming: Template | null = null;
@@ -542,7 +578,7 @@ async function start() {
     const units = Number(($("templateSize") as HTMLInputElement).value) || 20;
     const perCell = scale.parsed.multiplier || 1;
     return {
-      id: String(Date.now()) + Math.random().toString(36).slice(2, 6),
+      id: crypto.randomUUID(),
       shape: ($("templateShape") as HTMLSelectElement).value as TemplateShape,
       look: ($("templateLook") as HTMLSelectElement).value as TemplateLook,
       x: ground.x,
@@ -558,12 +594,131 @@ async function start() {
   let activeTemplate: string | null = null;
   let activePart: "origin" | "tip" = "origin";
   function addTemplate(template: Template) {
-    templates = [...templates, template];
     activeTemplate = template.id;
     activePart = "origin";
     setPlacing(false);
-    showTemplates();
+    drafts.set(template.id, { template, settled: 0 });
+    adding.add(template.id);
+    syncTemplates();
+    // Its moving look on the map is each client's own (see background/templateLooks.ts).
+    OBR.scene.items
+      .addItems([templateItem(template, dpi, templateName(template))])
+      .then(
+        () => {
+          adding.delete(template.id);
+          // Taken away while it was being put on: taken away now that it's there.
+          if (removeOnceAdded.delete(template.id)) {
+            OBR.scene.items.deleteItems([template.id]).catch((error) => console.error("Rising Ranges: 3D Glance couldn't remove the template", error));
+          }
+          settleDraft(template, true);
+        },
+        (error) => {
+          adding.delete(template.id);
+          removeOnceAdded.delete(template.id);
+          console.error("Rising Ranges: 3D Glance couldn't put the template on the scene", error);
+          settleDraft(template, false);
+        }
+      );
   }
+  /** A template changed here: shown so now, and saved to its item. */
+  function saveTemplate(template: Template) {
+    drafts.set(template.id, { template, settled: 0 });
+    syncTemplates();
+    OBR.scene.items
+      .updateItems([template.id], ([item]) => {
+        if (item) {
+          setTemplateItem(item, template, dpi);
+        }
+      })
+      .then(
+        () => settleDraft(template, true),
+        (error) => {
+          console.error("Rising Ranges: 3D Glance couldn't save the template", error);
+          settleDraft(template, false);
+        }
+      );
+  }
+  /**
+   * A draft saved: kept till the scene shows it (see syncTemplates); not saved: the scene's own shown
+   * again. Unless it's been changed again meanwhile.
+   */
+  function settleDraft(template: Template, saved: boolean) {
+    const draft = drafts.get(template.id);
+    if (draft?.template === template) {
+      if (saved) {
+        draft.settled = performance.now();
+        window.setTimeout(syncTemplates, SETTLE_MS + 50);
+      } else {
+        drafts.delete(template.id);
+      }
+    }
+    syncTemplates();
+  }
+  /** Takes templates off the scene (and out of here at once). */
+  function removeTemplates(ids: string[]) {
+    if (ids.length === 0) {
+      return;
+    }
+    const now = performance.now();
+    for (const id of ids) {
+      drafts.delete(id);
+      removing.set(id, now);
+    }
+    window.setTimeout(syncTemplates, SETTLE_MS + 50);
+    if (activeTemplate && ids.includes(activeTemplate)) {
+      activeTemplate = null;
+    }
+    const gone = new Set(ids);
+    templates = templates.filter((template) => !gone.has(template.id));
+    showTemplates();
+    // Those still being put on: taken away once they're there (see addTemplate).
+    const there = ids.filter((id) => !adding.has(id));
+    ids.filter((id) => adding.has(id)).forEach((id) => removeOnceAdded.add(id));
+    if (there.length > 0) {
+      OBR.scene.items.deleteItems(there).catch((error) => console.error("Rising Ranges: 3D Glance couldn't remove the templates", error));
+    }
+  }
+  /**
+   * The templates as the scene's items have them (a player's view: not those the GM hides), at the
+   * height of the ground under them; those changed here as they are here.
+   */
+  function syncTemplates() {
+    const groundAt = scene ? scene.measuredAt : () => 0;
+    const now = performance.now();
+    const all = items.filter((item) => isTemplateItem(item) && ((isGM && !options.playerView) || item.visible)).map((item) => templateOf(item, groundAt)!);
+    const ids = new Set(all.map((template) => template.id));
+    // Taken away: left out till the scene's let them go too, or a while (not let go: back).
+    for (const [id, since] of removing) {
+      if (!ids.has(id) || now - since > SETTLE_MS) {
+        removing.delete(id);
+      }
+    }
+    const fromScene = all.filter((template) => !removing.has(template.id));
+    // Saved here: the draft let go once the scene has it so (or a while after it was saved).
+    const byId = new Map(fromScene.map((template) => [template.id, template]));
+    for (const [id, draft] of drafts) {
+      const there = byId.get(id);
+      if (draft.settled && ((there && templateKey(there) === templateKey(draft.template)) || now - draft.settled > SETTLE_MS)) {
+        drafts.delete(id);
+      }
+    }
+    templates = [
+      ...fromScene.map((template) => drafts.get(template.id)?.template ?? template),
+      ...[...drafts.values()].map((draft) => draft.template).filter((draft) => !ids.has(draft.id)),
+    ];
+    if (activeTemplate && !templates.some((template) => template.id === activeTemplate)) {
+      activeTemplate = null;
+    }
+    const key = JSON.stringify(templates);
+    if (key !== templatesShown) {
+      showTemplates();
+    }
+  }
+  const templateName = (template: Template) => {
+    const shapeKey = `vistazo.shape${template.shape[0].toUpperCase()}${template.shape.slice(1)}` as TranslationKey;
+    const lookKey = `vistazo.look${template.look[0].toUpperCase()}${template.look.slice(1)}` as TranslationKey;
+    return `${t(shapeKey)} · ${t(lookKey)}`;
+  };
   /**
    * The tokens a template reaches: their body (round, as tall as wide)
    * within it, with the Lecturas' tolerance; all in cells (grid units up).
@@ -596,6 +751,7 @@ async function start() {
   }
   /** Drawn, and listed with a button to take each away. */
   function showTemplates() {
+    templatesShown = JSON.stringify(templates);
     view.setTemplates(templates);
     updateAffected();
     const list = $("templateList");
@@ -603,31 +759,23 @@ async function start() {
       ...templates.map((template) => {
         const item = document.createElement("li");
         const name = document.createElement("span");
-        const shapeKey = `vistazo.shape${template.shape[0].toUpperCase()}${template.shape.slice(1)}` as TranslationKey;
-        const lookKey = `vistazo.look${template.look[0].toUpperCase()}${template.look.slice(1)}` as TranslationKey;
-        name.textContent = `${t(shapeKey)} · ${t(lookKey)} · ${formatDistance(scale, template.size)}`;
+        name.textContent = `${templateName(template)} · ${formatDistance(scale, template.size)}`;
         const remove = document.createElement("button");
         remove.type = "button";
         remove.textContent = "✕";
         remove.title = t("vistazo.templateRemove");
-        remove.onclick = () => {
-          templates = templates.filter((other) => other.id !== template.id);
-          if (activeTemplate === template.id) {
-            activeTemplate = null;
-          }
-          showTemplates();
-        };
+        remove.onclick = () => mayTemplate("DELETE") && removeTemplates([template.id]);
         item.append(name, remove);
         return item;
       })
     );
     $("templateClear").hidden = templates.length === 0;
   }
-  $("templatePlace").onclick = () => setPlacing(!placing);
-  $("templateClear").onclick = () => {
-    templates = [];
-    showTemplates();
-  };
+  $("templatePlace").onclick = () => setPlacing(placing ? false : mayTemplate("CREATE"));
+  // Everyone's (they're the scene's); the GM's hidden ones too, if it's the GM (a player doesn't know they're there).
+  $("templateClear").onclick = () =>
+    mayTemplate("DELETE") &&
+    removeTemplates([...new Set([...items.filter((item) => isTemplateItem(item) && (isGM || item.visible)).map((item) => item.id), ...templates.map((template) => template.id)])]);
   $("templateClear").hidden = true;
 
   // ---------- Esc: what it stops first ----------
@@ -1335,6 +1483,13 @@ async function start() {
   });
 
   stage.addEventListener("contextmenu", (event) => event.preventDefault());
+  // Nor the browser's menu on the panel (it's an app, not a page); but in a text field (copy, paste).
+  document.addEventListener("contextmenu", (event) => {
+    const target = event.target as HTMLElement | null;
+    if (!target?.closest("input, textarea, [contenteditable]")) {
+      event.preventDefault();
+    }
+  });
 
   // ---------- What this player may do to items (the room's permissions) ----------
   // Who may do what to an item, as on the map (see background/permission.ts' canUpdateItem): the GM
@@ -1535,7 +1690,7 @@ async function start() {
     if (press?.token?.startsWith(TEMPLATE_HANDLE)) {
       const [id, part] = press.token.slice(TEMPLATE_HANDLE.length).split(":");
       const template = templates.find((t) => t.id === id);
-      if (template) {
+      if (template && mayTemplate("UPDATE")) {
         handleDrag = { id, part: part === "tip" ? "tip" : "origin" };
         activeTemplate = id;
         activePart = handleDrag.part;
@@ -1596,6 +1751,8 @@ async function start() {
               next = { ...template, dir: { x: dx / length, y: dy / length } };
             }
           }
+          // Shown as it goes; saved when it's let go (see up).
+          drafts.set(next.id, { template: next, settled: 0 });
           templates = templates.map((t) => (t.id === next.id ? next : t));
           view.setTemplates(templates);
           updateAffected();
@@ -1679,10 +1836,15 @@ async function start() {
     }
     pointDrag = null;
     if (handleDrag) {
+      const dragged = drafts.get(handleDrag.id)?.template;
       handleDrag = null;
-      // Its list redrawn; a failure there mustn't keep the pointer held (the drag would go on).
+      // Saved where it was let go; a failure there mustn't keep the pointer held (the drag would go on).
       try {
-        showTemplates();
+        if (dragged) {
+          saveTemplate(dragged);
+        } else {
+          showTemplates();
+        }
       } catch (error) {
         console.error("Rising Ranges: 3D Glance couldn't redraw the templates", error);
       }
@@ -1788,11 +1950,13 @@ async function start() {
       }
       if (value !== before) {
         event.preventDefault();
+        if (!mayTemplate("UPDATE")) {
+          return;
+        }
         const next = tip
           ? { ...active, rise: Math.max(-active.size, Math.min(active.size, value)) }
           : { ...active, lift: value, z: scene.measuredAt(active.x, active.y) + value };
-        templates = templates.map((t) => (t.id === next.id ? next : t));
-        showTemplates();
+        saveTemplate(next);
         return;
       }
     }
@@ -2734,6 +2898,7 @@ async function start() {
         const region = heightsOnly;
         heightsOnly = null;
         if (time("vistazo.reheight", () => view.reheight(scene!, region))) {
+          syncTemplates();
           if (!settling) {
             return;
           }
@@ -2788,6 +2953,8 @@ async function start() {
       scene.measuredAt = Object.assign((x: number, y: number) => (options.playerView && view.hiddenAt(x, y) ? 0 : measured(x, y)), { raw: measured });
       builtWith = `${reliefs.key}${reliefs.surfaced}`;
       heightsOnly = null;
+      // The templates as the scene has them now, at the ground's height under them.
+      syncTemplates();
       for (const [id, at] of live) {
         scene = placed(scene, id, at.position, at.own);
       }

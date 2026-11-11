@@ -43,8 +43,11 @@ function flush() {
   }
 }
 
-/** A stage's time, added to its label's. */
+/** A stage's time, added to its label's (nothing while the stopwatch is off: some call it directly). */
 export function record(label: string, ms: number) {
+  if (!timingOn) {
+    return;
+  }
   const s = stats.get(label) ?? { n: 0, total: 0, max: 0 };
   s.n += 1;
   s.total += ms;
