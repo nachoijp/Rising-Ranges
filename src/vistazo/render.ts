@@ -22,14 +22,15 @@ import { CLOUD_ZONES, buildWeather, cloudNoise, cloudShadowOf, setWeatherTime } 
 import { buildTemplate, templateTip, type Template } from "./templates";
 import { doorMesh, type DoorMap, type DoorView } from "./doors";
 
-import { LIGHT, QUALITY, STONE, TEXTURE_MAX, VIEW_CELL, type Camera, type DistanceLine, type Options, type Reach, type Texture, type TokenText, type TokenView, type Wall, tintOf } from "./view/types";
+import { BASE_TEXTURE_MAX, DETAIL_SIZE, FULL_BUDGET, LIGHT, QUALITY, SOURCE_BUDGET, STONE, TEXTURE_MAX, VIEW_CELL, type Camera, type DistanceLine, type Options, type Reach, type Texture, type TokenText, type TokenView, type Wall, tintOf } from "./view/types";
 import { isShared, patternTexture } from "./view/patterns";
-import { floorOf, mediaElement, propsKey, propToken, raised, skinAcross, skinPoint, visibleOnScreen } from "./view/helpers";
+import { floorOf, mediaElement, propsKey, stopVideo, propToken, raised, skinAcross, skinPoint, visibleOnScreen } from "./view/helpers";
 import { computeWalls, type Region } from "./view/walls";
 import { BaseBatch, moveBase, ringMaterial, type BaseSeat } from "./view/bases";
 import { UNDER_FRAGMENT, UNDER_VERTEX } from "./view/shaders";
-import { FILL_BANDS, FILL_CELLS, FOG_GLSL, baseTexture, based, clouded, fogCut, fogCutShader, fogged, foggedToo, grained, gridded, layer, tinted } from "./view/layers";
+import { FILL_BANDS, FILL_CELLS, FOG_GLSL, baseTexture, based, clouded, detailed, fogCut, fogCutShader, fogged, foggedToo, grained, gridded, layer, tinted } from "./view/layers";
 import { reachMask, waterMaterial, waterReach, waterShape, type WaterReach } from "./view/water";
+import { MapComposer, sourceDensity, type MapBox } from "./view/mapCompose";
 import { record, since, stamp, time, timingOn } from "../timing";
 
 export type { Camera, DistanceLine, Options } from "./view/types";
@@ -146,9 +147,12 @@ export class VistazoView {
   private canvasSize = { w: 0, h: 0 };
   /** The props as last drawn (see propsKey): rebuilt when they change. */
   private drawnProps = "";
-  /** The flat props' videos (webm): drawn again on each new frame of theirs (see watchVideo). */
-  private videoTextures = new Set<THREE.VideoTexture>();
-  private videoFrame = 0;
+  /**
+   * The flat props' videos (webm), one per file however many props show it (see propVideo): its element,
+   * its texture once it has a frame, and the props' materials waiting for that. Drawn again on each new
+   * frame of theirs (see watchVideo).
+   */
+  private propVideos = new Map<string, PropVideo>();
   /** The frame last drawn in (its time, see drawSoon). */
   private drawnAt = -1;
   /**
@@ -251,7 +255,9 @@ export class VistazoView {
    */
   private waterCache = new Map<string, { reach: WaterReach; shape: MultiPolygon; used: number }>();
   private weatherKey = "";
-  private weatherFrame = 0;
+  /** The one animation loop (videos, weather, water, templates): its frame, and whether a video has a new frame to show (see animate). */
+  private animFrame = 0;
+  private animDue = false;
   /** The player view's fog: its picture (see drawFog), laid on the terrain by its materials (see fogged). */
   private fogTexture: THREE.CanvasTexture | null = null;
   /** The fog's floor and curtains (see buildFogFloor). */
@@ -327,6 +333,29 @@ export class VistazoView {
   private plainTexture: THREE.Texture | null = null;
   /** The maps' pictures (a video map's element), as the ground's texture is drawn from them (see playMaps). */
   private mapMedia: { images: CanvasImageSource[]; maps: VistazoScene["maps"] } | null = null;
+  /** The maps put together on the graphics card (see MapComposer): the ground's texture, unless a lone map is its own. */
+  private composer: MapComposer | null = null;
+  /**
+   * The last one, while the next is made: its texture still on the meshes (shown till the new one's
+   * there, as a canvas's was), let go once they're all built again (see build).
+   */
+  private retiredComposer: MapComposer | null = null;
+  /** The detail's texture, its box in the ground's and whether there's one: shared by every material that reads the map (see DETAIL_GLSL). */
+  private readonly detailUniforms = {
+    uDetail: { value: null as THREE.Texture | null },
+    uDetailUv: { value: new THREE.Vector4(0, 0, 1, 1) },
+    uDetailOn: { value: 0 },
+    uMapPremultiplied: { value: 0 },
+  };
+  /** The detail made again once the camera's still (see scheduleDetail): its timer, since when it's waited, the camera it's for. */
+  private detailTimer = 0;
+  private detailSince = 0;
+  private detailCam = -1;
+  /** When the camera last moved (the detail's full blocks asked for once it's still: see updateDetail), and the check then. */
+  private camMovedAt = 0;
+  private sharpTimer = 0;
+  /** The flat props' shaders compiled ahead (see compileProps): its timer. */
+  private propsCompile = 0;
   /** The grid drawn over the ground (see gridded): shared by its materials, so a change needs no rebuild. */
   private readonly gridUniforms = {
     uGridKind: { value: 0 },
@@ -1542,8 +1571,9 @@ export class VistazoView {
     const resharpen = changed(["quality"]);
     const replay = changed(["videoMaps", "quality"]);
     this.options = { ...this.options, ...options };
-    // Played or still: the ground's texture drawn again, at its size for that.
-    if (replay && this.scene?.maps.some((map) => map.video)) {
+    // Played or still: the ground's texture drawn again, at its size for that. Put together on the card:
+    // again at the quality's sizes (see SOURCE_BUDGET, FULL_BUDGET, DETAIL_SIZE).
+    if ((replay && this.scene?.maps.some((map) => map.video)) || (resharpen && (this.composer || this.retiredComposer))) {
       this.colorsFor = "";
       this.loadColors();
     }
@@ -1555,7 +1585,7 @@ export class VistazoView {
     this.stage.classList.toggle("xray", this.options.xray);
     if (regrid) {
       this.syncGrid();
-      this.requestRender();
+      this.drawSoon();
     }
     if (rebuild) {
       this.build();
@@ -1755,10 +1785,18 @@ export class VistazoView {
     this.colors = null;
     this.softColors = null;
     this.mapColors = null;
+    // The old maps' videos stopped (played, they'd go on decoding unseen).
+    this.mapMedia?.images.forEach((img) => img instanceof HTMLVideoElement && stopVideo(img));
     this.mapMedia = null;
     this.mapsPlaying++;
     this.texture = null;
     this.dropMapTextures();
+    // The one shown kept till the meshes are built again (one still loading: the one shown is the retired one, kept).
+    if (this.composer) {
+      this.retiredComposer?.dispose();
+      this.retiredComposer = this.composer;
+      this.composer = null;
+    }
     if (scene.maps.length === 0) {
       return;
     }
@@ -1806,19 +1844,13 @@ export class VistazoView {
         // In steps, the page let go between them (each is long on a slow machine): another map's
         // meanwhile, this one's dropped.
         const pause = () => new Promise((resolve) => setTimeout(resolve));
-        if (key !== this.colorsFor) {
-          return;
-        }
-        const small = draw(images, Math.min(1, 1024 / Math.max(w, h)));
-        const pixels = { data: small.context.getImageData(0, 0, small.canvas.width, small.canvas.height).data, w: small.canvas.width, h: small.canvas.height };
-        const colors: MapColors = { x0, y0, w, h, small: pixels, soft: softPixels(small.canvas, w, h, scene.dpi) };
-        this.mapColors = colors;
-        this.colors = (x, y) => colorAt(colors, x, y);
-        // The doors that take the map's colours, in them now.
-        this.buildDoors();
-        this.softColors = (x, y) => softColorAt(colors, x, y);
-        await pause();
-        if (key !== this.colorsFor) {
+        // Another map's meanwhile: these videos let go.
+        const stale = () => {
+          if (key === this.colorsFor) return false;
+          images.forEach((img) => img instanceof HTMLVideoElement && stopVideo(img));
+          return true;
+        };
+        if (stale()) {
           return;
         }
         // A video map played: a smaller texture, drawn again every frame.
@@ -1829,6 +1861,61 @@ export class VistazoView {
         // size by the browser (off the page's own work), placed by its texture's transform; not drawn again
         // on a canvas as big (see placed).
         const lone = images.length === 1 && (images[0] instanceof HTMLImageElement || images[0] instanceof HTMLVideoElement) ? images[0] : null;
+        // More than one: put together on the graphics card, each at its file's density (as much as the
+        // texture's size lets for the whole box), not one scene px a texel at most as on a canvas.
+        // A lone image too: its detail where the camera is (see updateDetail). Not a lone video played:
+        // its frames go straight to the card (see useTexture).
+        let composer: MapComposer | null = null;
+        if (!(lone instanceof HTMLVideoElement && played) && this.renderer) {
+          const media = images as (HTMLImageElement | HTMLVideoElement)[];
+          // The small blocks within the quality's budget (their files' where the camera looks: see
+          // MapComposer.sharpen); the ground's texture small (seen past the detail only); the detail as big
+          // as a texture over the map was, videos or not (a new frame draws only where they are).
+          const quality = this.options.quality;
+          const px = sourceDensity(scene.maps, media, SOURCE_BUDGET[quality] ?? SOURCE_BUDGET.high) || 1;
+          const basePx = Math.min(px, Math.min(BASE_TEXTURE_MAX, most) / Math.max(w, h));
+          const detailSize = Math.min(DETAIL_SIZE[quality] ?? DETAIL_SIZE.high, this.renderer.capabilities.maxTextureSize);
+          const fullBudget = FULL_BUDGET[quality] ?? FULL_BUDGET.high;
+          let made: MapComposer | null = null;
+          made = await MapComposer.make(scene.maps, media, { x0, y0, w, h }, { px, basePx, detailSize, fullBudget }, this.renderer.capabilities.getMaxAnisotropy(), () => this.sharpened(made));
+          composer = made;
+          if (stale()) {
+            composer?.dispose();
+            return;
+          }
+        }
+        const smallPx = Math.min(1, 1024 / Math.max(w, h));
+        const small = composer && this.renderer ? smallFrom(composer, this.renderer, w, h, smallPx) : draw(images, smallPx);
+        const pixels = { data: small.context.getImageData(0, 0, small.canvas.width, small.canvas.height).data, w: small.canvas.width, h: small.canvas.height };
+        const colors: MapColors = { x0, y0, w, h, small: pixels, soft: softPixels(small.canvas, w, h, scene.dpi) };
+        this.mapColors = colors;
+        this.colors = (x, y) => colorAt(colors, x, y);
+        // The doors that take the map's colours, in them now.
+        this.buildDoors();
+        this.softColors = (x, y) => softColorAt(colors, x, y);
+        await pause();
+        if (stale()) {
+          composer?.dispose();
+          return;
+        }
+        if (composer && this.renderer) {
+          composer.compose(this.renderer);
+          composer.busy = () => performance.now() - this.camMovedAt < STILL_MS;
+          this.composer = composer;
+          // Its detail for the camera now, before it's first shown.
+          this.updateDetail(true);
+          // The small one for what's read on the page (see fillPixels: the composer's, where there's one).
+          this.texture = { canvas: small.canvas, x0, y0, w, h };
+          this.mapMedia = { images, maps: scene.maps };
+          this.fillCache.clear();
+          this.useTexture();
+          // The water, the walls' shadows and what's under bridges a moment later (as below).
+          this.deferExtras = true;
+          this.build();
+          this.playMaps();
+          return;
+        }
+        composer?.dispose();
         let bitmap: ImageBitmap | null = null;
         if (lone && typeof createImageBitmap === "function") {
           const [lw, lh] = lone instanceof HTMLVideoElement ? [lone.videoWidth, lone.videoHeight] : [lone.naturalWidth, lone.naturalHeight];
@@ -1841,7 +1928,7 @@ export class VistazoView {
         }
         const big = bitmap ? small : draw(images, Math.min(1, most / Math.max(w, h)));
         await pause();
-        if (key !== this.colorsFor) {
+        if (stale()) {
           bitmap?.close();
           return;
         }
@@ -1883,6 +1970,9 @@ export class VistazoView {
       // Its first frame, still (for the water and what's under bridges).
       this.stillTexture = texture.bitmap ? placed(new THREE.Texture(texture.bitmap), media!.maps[0], texture, true) : new THREE.CanvasTexture(texture.canvas);
       this.stillTexture.needsUpdate = true;
+    } else if (this.composer) {
+      // Drawn on the graphics card (its size, its mipmaps and their sharpness: see MapComposer).
+      map = this.composer.texture;
     } else if (texture.bitmap && media) {
       map = placed(new THREE.Texture(texture.bitmap), media.maps[0], texture, true);
       map.anisotropy = anisotropy;
@@ -1893,8 +1983,9 @@ export class VistazoView {
     }
     this.mapTexture = map;
     this.plainTexture = map;
-    // Drawn again every frame: no smaller copies worked out each time (as costly as sending it).
-    if (played) {
+    // Drawn again every frame: no smaller copies worked out each time (as costly as sending it). The
+    // composer's is set up so already.
+    if (played && !this.composer) {
       map.generateMipmaps = false;
       map.minFilter = THREE.LinearFilter;
     }
@@ -1904,6 +1995,8 @@ export class VistazoView {
         material.needsUpdate = true;
       }
     }
+
+    this.syncDetail();
     // The doors that take the map's picture, with it now.
     this.buildDoors();
     this.dirty = "all";
@@ -1918,7 +2011,10 @@ export class VistazoView {
     this.stillTexture?.dispose();
     this.stillTexture = null;
     this.directVideo = null;
-    this.mapTexture?.dispose();
+    // The composer's is let go with it (see loadColors).
+    if (this.mapTexture && !this.composer?.owns(this.mapTexture)) {
+      this.mapTexture.dispose();
+    }
     this.mapTexture = null;
     this.plainTexture = null;
   }
@@ -2029,6 +2125,7 @@ export class VistazoView {
     material.userData.mapTextured = textured;
     if (textured) {
       gridded(material, this.gridUniforms);
+      detailed(material, this.detailUniforms);
     }
     if (top) {
       based(material, this.baseUniforms, top === "deck" ? "deck" : "top");
@@ -2098,6 +2195,9 @@ export class VistazoView {
       });
       if (blend) {
         grained(material);
+      }
+      if (fromMap) {
+        detailed(material, this.detailUniforms);
       }
       // The bases, as on the tops (see BASE_WALL); the Bandas' rings up the walls (no tint), and the fog: a
       // wall would give the hidden terrain away.
@@ -2263,6 +2363,10 @@ export class VistazoView {
     this.weatherKey = "";
     time("3d.build.weather", () => this.updateWeather());
     this.highlight(this.picked.shapes);
+    // No mesh left on the last map texture (all built again here on the one there is now, or put off to
+    // be: see firstDraw): let go.
+    this.retiredComposer?.dispose();
+    this.retiredComposer = null;
     // Its size (it reads the page's layout, which costs): not while something's being dragged, it hasn't changed.
     if (first) {
       this.firstDraw();
@@ -2347,7 +2451,9 @@ export class VistazoView {
         continue;
       }
       // Worked out away from the page (the map's pixels read here): drawn when it's back.
-      const read = fillPixels(group.shape, texture, scene.dpi * FILL_GROW);
+      const composer = this.composer;
+      const renderer = this.renderer;
+      const read = fillPixels(group.shape, texture, scene.dpi * FILL_GROW, composer && renderer ? (box, cols, rows) => composer.read(renderer, box, cols, rows) : undefined);
       if (!read) {
         continue;
       }
@@ -2577,6 +2683,10 @@ export class VistazoView {
       under,
       foggedToo(new THREE.MeshBasicMaterial({ map: skin ? this.mapTexture : blend || plain ? null : patternTexture(kind), color: skin ? new THREE.Color(0.6, 0.6, 0.6) : tint(0.6), side: THREE.DoubleSide }), this.fogUniforms)
     );
+    // The map's picture on it: read as the ground reads it (sharper where the camera is, straight: see detailed).
+    if (skin) {
+      detailed(belly.material as THREE.MeshBasicMaterial, this.detailUniforms);
+    }
     if (blend) {
       grained(belly.material as THREE.MeshBasicMaterial);
     }
@@ -2700,11 +2810,15 @@ export class VistazoView {
         foggedToo(
           blend
             ? grained(new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }))
-            : new THREE.MeshBasicMaterial({
-                map: skin || mapped ? this.plainTexture : plain ? null : patternTexture(kind),
-                color: skin || mapped ? new THREE.Color(0.85, 0.85, 0.85) : tint(0.85),
-                side: THREE.DoubleSide,
-              }),
+            : (() => {
+                const material = new THREE.MeshBasicMaterial({
+                  map: skin || mapped ? this.plainTexture : plain ? null : patternTexture(kind),
+                  color: skin || mapped ? new THREE.Color(0.85, 0.85, 0.85) : tint(0.85),
+                  side: THREE.DoubleSide,
+                });
+                // The map's picture on it: read as the ground reads it (see detailed).
+                return skin || mapped ? detailed(material, this.detailUniforms) : material;
+              })(),
           this.fogUniforms
         )
       )
@@ -2764,7 +2878,12 @@ export class VistazoView {
       return;
     }
     this.clear(this.tokenGroup);
-    this.videoTextures.clear();
+    // The flat props' videos kept for those that show them still (see propVideo); the materials that
+    // waited for one's first frame are gone.
+    const videosUsed = new Set<string>();
+    for (const entry of this.propVideos.values()) {
+      entry.waiting = [];
+    }
     const u = this.u;
     const k = this.k;
     const overlay = document.createDocumentFragment();
@@ -2810,6 +2929,9 @@ export class VistazoView {
         const material = new THREE.MeshBasicMaterial({ transparent: true, forceSinglePass: true, depthWrite: false, side: THREE.DoubleSide, opacity: 0 });
         const dark = propShadows && prop.own > 0 ? new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, forceSinglePass: true, depthWrite: false, side: THREE.DoubleSide, opacity: 0 }) : null;
         const show = (texture: THREE.Texture) => {
+          // On the card now, its shader compiled ahead: not when it first comes into view (a stutter).
+          this.renderer?.initTexture(texture);
+          this.compileProps();
           material.map = texture;
           material.opacity = 1;
           material.needsUpdate = true;
@@ -2822,16 +2944,8 @@ export class VistazoView {
         };
         if (prop.video) {
           // Playing on the ground, as on the map.
-          const video = mediaElement(prop.url, true) as HTMLVideoElement;
-          video.onloadeddata = () => {
-            const texture = new THREE.VideoTexture(video);
-            show(texture);
-            this.videoTextures.add(texture);
-            this.watchVideo(texture);
-            if (this.paused) {
-              video.pause();
-            }
-          };
+          videosUsed.add(prop.url);
+          this.propVideo(prop.url, show);
         } else {
           loader.load(prop.url, show);
         }
@@ -2919,6 +3033,16 @@ export class VistazoView {
     propBases.build(this.tokenGroup, fill, ring, true);
     tokenBases.build(this.tokenGroup, fill, ring, false);
     this.paintBases();
+    // The flat props' videos no prop shows now let go.
+    for (const [url, entry] of this.propVideos) {
+      if (!videosUsed.has(url)) {
+        stopVideo(entry.video);
+        entry.texture?.dispose();
+        this.propVideos.delete(url);
+      }
+    }
+    // The old standing tokens' and props' videos stopped (off the page they'd pause, but hold on till collected).
+    this.tokenOverlay.querySelectorAll("video").forEach(stopVideo);
     this.tokenOverlay.replaceChildren(overlay);
     // Drawn again with the tokens: the free point's marker and the templates' handles too.
     this.placePoint();
@@ -2931,20 +3055,66 @@ export class VistazoView {
   }
 
   /**
-   * The view only draws when something changes; a video on the ground
-   * changes with each of its frames, so it's drawn again on each new one
-   * (only the picture: nothing else is worked out again), until it's gone.
+   * The tokens' and props' shaders compiled in the background (a prop's picture given it after it's
+   * built): those out of view too, compiled now, not as they come into it.
    */
-  private watchVideo(texture: THREE.VideoTexture) {
-    const video = texture.image as HTMLVideoElement;
+  private compileProps() {
+    if (this.propsCompile) {
+      return;
+    }
+    this.propsCompile = window.setTimeout(() => {
+      this.propsCompile = 0;
+      void this.renderer?.compileAsync(this.tokenGroup, this.glCamera, this.world).catch(() => {});
+    }, PROPS_COMPILE_MS);
+  }
+
+  /**
+   * A flat prop's video, its texture to `show` once it has a frame: one element and one texture for
+   * every prop with the same file (one decoder, not one each), kept from one build to the next.
+   */
+  private propVideo(url: string, show: (texture: THREE.Texture) => void) {
+    let entry = this.propVideos.get(url);
+    if (!entry) {
+      const video = mediaElement(url, true) as HTMLVideoElement;
+      const made: PropVideo = { video, texture: null, waiting: [] };
+      entry = made;
+      this.propVideos.set(url, made);
+      video.onloadeddata = () => {
+        if (this.propVideos.get(url) !== made || made.texture) {
+          return;
+        }
+        const texture = new THREE.VideoTexture(video);
+        // Shared by the props that show it: not let go with one's material (see clear).
+        texture.userData.shared = true;
+        made.texture = texture;
+        made.waiting.splice(0).forEach((wait) => wait(texture));
+        this.watchVideo(url, made);
+        if (this.paused) {
+          video.pause();
+        }
+      };
+    }
+    if (entry.texture) {
+      show(entry.texture);
+    } else {
+      entry.waiting.push(show);
+    }
+  }
+
+  /**
+   * The view only draws when something changes; a video on the ground
+   * changes with each of its frames, so it asks to be drawn again on each
+   * new one (see requestRender: at the quality's pace), until it's let go.
+   */
+  private watchVideo(url: string, entry: { video: HTMLVideoElement }) {
     const onFrame = () => {
-      if (!this.videoTextures.has(texture)) {
+      if (this.propVideos.get(url) !== entry) {
         return;
       }
       this.requestRender();
-      video.requestVideoFrameCallback(onFrame);
+      entry.video.requestVideoFrameCallback(onFrame);
     };
-    video.requestVideoFrameCallback(onFrame);
+    entry.video.requestVideoFrameCallback(onFrame);
   }
 
   /**
@@ -2968,6 +3138,7 @@ export class VistazoView {
     const context = texture.canvas.getContext("2d")!;
     const px = texture.canvas.width / texture.w;
     let last = 0;
+    let drawn = -Infinity;
     const frame = () => {
       if (run !== this.mapsPlaying || !this.mapTexture) {
         return;
@@ -2983,6 +3154,17 @@ export class VistazoView {
       if (this.directVideo) {
         this.mapTexture.needsUpdate = true;
         this.requestRender();
+        videos[0].requestVideoFrameCallback(frame);
+        return;
+      }
+      // Put together again on the graphics card (its videos' textures at their new frames), at the
+      // animation's pace at most (see animate): more would be drawn for nothing.
+      if (this.composer && this.renderer) {
+        if (now - drawn >= this.look.frameMs - 2) {
+          drawn = now;
+          this.composer.compose(this.renderer, true);
+          this.requestRender();
+        }
         videos[0].requestVideoFrameCallback(frame);
         return;
       }
@@ -3005,14 +3187,10 @@ export class VistazoView {
     videos[0].requestVideoFrameCallback(frame);
   }
 
-  /** The picture drawn again, once a frame at most however many videos ask. */
+  /** The picture drawn again on the animation loop's next step (see animate), however many videos ask. */
   private requestRender() {
-    if (!this.videoFrame) {
-      this.videoFrame = requestAnimationFrame(() => {
-        this.videoFrame = 0;
-        this.drawSoon();
-      });
-    }
+    this.animDue = true;
+    this.animate();
   }
 
   /** Every video and the weather stopped (the panel minimized), or going again. */
@@ -3363,7 +3541,7 @@ export class VistazoView {
         this.waterCache.set(key, kept);
       }
       kept.used = this.builds;
-      const surface = new THREE.Mesh(this.shapeGeometry(kept.shape), fogCutShader(waterMaterial(this.stillTexture ?? this.mapTexture, t, this.u, scene.dpi, kept.reach), this.fogUniforms, "vAt"));
+      const surface = new THREE.Mesh(this.shapeGeometry(kept.shape), fogCutShader(waterMaterial(this.stillTexture ?? this.mapTexture, t, this.u, scene.dpi, kept.reach, this.detailUniforms), this.fogUniforms, "vAt"));
       surface.position.z = level * this.k;
       surface.renderOrder = 4;
       this.waterGroup.add(surface);
@@ -3398,28 +3576,40 @@ export class VistazoView {
     return `${step}:${i0},${j0},${i1},${j1}:${(hash >>> 0).toString(36)}`;
   }
 
-  /**
-   * While there's weather (and the panel shows), it's drawn again about 30
-   * times a second: its particles move on the GPU, so only their time changes.
-   */
+  /** The weather (and the water, the templates) moving while the panel shows: see animate. */
   private playWeather() {
-    if (this.weatherFrame || this.paused || !this.hasWeather) {
+    this.animate();
+  }
+
+  /**
+   * The one loop for all that moves by itself: the weather's time, and the videos' new frames (each
+   * asks, see requestRender), drawn together at the quality's pace at most (QUALITY.frameMs), not once
+   * per video frame. The weather's particles move on the GPU, so only their time changes. Stops when
+   * nothing's left to move.
+   */
+  private animate() {
+    if (this.animFrame) {
       return;
     }
-    let last = 0;
+    let last = -Infinity;
     const tick = (time: number) => {
-      if (this.paused || !this.hasWeather) {
-        this.weatherFrame = 0;
+      const weather = !this.paused && this.hasWeather;
+      if (!weather && !this.animDue) {
+        this.animFrame = 0;
         return;
       }
-      if (time - last >= this.look.frameMs) {
+      // A couple of ms early is on time (frames don't land exactly on the pace).
+      if (time - last >= this.look.frameMs - 2) {
         last = time;
-        this.weatherUniforms();
+        this.animDue = false;
+        if (weather) {
+          this.weatherUniforms();
+        }
         this.drawSoon();
       }
-      this.weatherFrame = requestAnimationFrame(tick);
+      this.animFrame = requestAnimationFrame(tick);
     };
-    this.weatherFrame = requestAnimationFrame(tick);
+    this.animFrame = requestAnimationFrame(tick);
   }
 
   /** The weather on to now, its particles sized for the camera (screen px a view unit at the eye's distance, in device px). */
@@ -3449,6 +3639,154 @@ export class VistazoView {
 
   private get moving() {
     return this.look.motion;
+  }
+
+  // ---------- The map's detail ----------
+
+  /**
+   * The detail made again for the camera once it's still a moment (or every half second while it goes
+   * on moving): drawing it is a few milliseconds on the card, not worth each frame of a drag.
+   */
+  private scheduleDetail() {
+    this.detailCam = this.camVersion;
+    const now = performance.now();
+    this.camMovedAt = now;
+    if (!this.detailTimer) {
+      this.detailSince = now;
+    }
+    window.clearTimeout(this.detailTimer);
+    this.detailTimer = window.setTimeout(() => this.updateDetail(), now - this.detailSince >= 500 ? 0 : 150);
+  }
+
+  /**
+   * The map's detail for the camera: the part it shows (see viewBox) drawn as sharp as the detail's
+   * texture lets (see detailBoxFor), unless the one there covers it as sharp already (`force`: made all
+   * the same, a new map's). Then drawn.
+   */
+  private updateDetail(force = false) {
+    window.clearTimeout(this.detailTimer);
+    this.detailTimer = 0;
+    const composer = this.composer;
+    const renderer = this.renderer;
+    if (!composer || !renderer || !this.scene || this.width === 0) {
+      this.syncDetail();
+      return;
+    }
+    this.detailCam = this.camVersion;
+    // Moving: drawn with the blocks there are; their full pictures asked for once it's still a moment
+    // (sending them to the card while it moves, it stutters).
+    const still = force || performance.now() - this.camMovedAt >= STILL_MS;
+    window.clearTimeout(this.sharpTimer);
+    if (!still) {
+      this.sharpTimer = window.setTimeout(() => {
+        if (performance.now() - this.camMovedAt >= STILL_MS) {
+          this.updateDetail();
+        }
+      }, STILL_MS + 10);
+    }
+    const view = clipBox(this.viewBox(), composer.box);
+    // Nothing of the map to read (the camera under the ground, or looking off it): the detail there kept,
+    // for when it's back (not one for the ground seen so slanting from below it's all far off).
+    if (!view && !force) {
+      return;
+    }
+    const want = view ? detailBoxFor(view, composer) : null;
+    const shown = composer.shown?.box ?? null;
+    // The one there covers what's seen near (the screen's lower half: slanting, a turn moves its far part
+    // a lot, seen small), at least three quarters as sharp as it would be made: kept.
+    const near = clipBox(this.viewBox(true), composer.box) ?? view;
+    const kept = !!want && !!shown && !!near && inside(near, shown) && shown.w <= want.w / 0.75;
+    if (!force && (kept || (!want && !shown))) {
+      if (still) {
+        composer.sharpenShown();
+      }
+      return;
+    }
+    time("3d.detail", () => composer.detail(renderer, want, still));
+    this.syncDetail();
+    this.dirty = "all";
+    this.render();
+  }
+
+  /** The detail's uniforms as the composer's detail is (off if the ground's texture isn't its: a lone video's, a canvas's). */
+  private syncDetail() {
+    const uniforms = this.detailUniforms;
+    const composer = this.composer;
+    const shown = composer?.shown;
+    // The composer's textures are premultiplied (see MapComposer); a lone video's, a canvas's aren't.
+    const composed = !!composer && this.mapTexture === composer.texture;
+    uniforms.uMapPremultiplied.value = composed ? 1 : 0;
+    if (!composer || !shown || !composed) {
+      uniforms.uDetailOn.value = 0;
+      uniforms.uDetail.value = null;
+      return;
+    }
+    const b = composer.box;
+    const d = shown.box;
+    uniforms.uDetail.value = shown.texture;
+    // The ground's uv: x across its box, y up from its bottom (see uvsOver).
+    uniforms.uDetailUv.value.set((d.x0 - b.x0) / b.w, (b.y0 + b.h - (d.y0 + d.h)) / b.h, d.w / b.w, d.h / b.h);
+    uniforms.uDetailOn.value = 1;
+  }
+
+  /**
+   * What the camera shows of the ground (at height 0), scene px: where rays through the screen (a 5 x 5
+   * grid of points over it) meet it. Those past the horizon left out; those far off (a slanting view's
+   * top) brought in to twice the screen's size where it looks, beyond which the ground's own texture is
+   * as sharp as it's seen.
+   */
+  private viewBox(near = false): MapBox | null {
+    const m = this.camMatrix();
+    const inv = m.inverse();
+    const eye = inv.transformPoint(new DOMPoint(0, 0, this.persp));
+    // Under the ground: what it shows of it from below isn't read sharper.
+    if (eye.z <= 0) {
+      return null;
+    }
+    const u = this.u;
+    // A point on the screen (px from its middle) is where q = (sx, sy, 0) through the camera is.
+    const hit = (sx: number, sy: number): [number, number] | null => {
+      const s = inv.transformPoint(new DOMPoint(sx, sy, 0));
+      const dz = s.z - eye.z;
+      if (Math.abs(dz) < 1e-9) {
+        return null;
+      }
+      const t = -eye.z / dz;
+      return t > 0 ? [(eye.x + t * (s.x - eye.x)) / u, (eye.y + t * (s.y - eye.y)) / u] : null;
+    };
+    const [W, H] = [this.width, this.height];
+    const c = hit(0, 0);
+    const right = hit(W / 2, 0);
+    if (!c || !right) {
+      return null;
+    }
+    const reach = 2 * Math.max(1, H / W) * Math.hypot(right[0] - c[0], right[1] - c[1]);
+    if (!(reach > 0)) {
+      return null;
+    }
+    let [x0, y0, x1, y1] = [c[0], c[1], c[0], c[1]];
+    for (const fx of [-0.5, -0.25, 0, 0.25, 0.5]) {
+      for (const fy of near ? [0, 0.25, 0.5] : [-0.5, -0.25, 0, 0.25, 0.5]) {
+        const p = hit(fx * W, fy * H);
+        if (!p) {
+          continue;
+        }
+        const d = Math.hypot(p[0] - c[0], p[1] - c[1]);
+        const k = d > reach ? reach / d : 1;
+        const [x, y] = [c[0] + (p[0] - c[0]) * k, c[1] + (p[1] - c[1]) * k];
+        [x0, y0, x1, y1] = [Math.min(x0, x), Math.min(y0, y), Math.max(x1, x), Math.max(y1, y)];
+      }
+    }
+    return { x0, y0, w: x1 - x0, h: y1 - y0 };
+  }
+
+  /** The detail drawn sharper on its own (its blocks' files loaded, see MapComposer.sharpen): shown, if it's still the map's. */
+  private sharpened(composer: MapComposer | null) {
+    if (!composer || composer !== this.composer) {
+      return;
+    }
+    this.dirty = "all";
+    this.render();
   }
 
   /** A WebGL renderer on a canvas, its edges smoothed (multisampled) or not. Null without WebGL. */
@@ -3503,6 +3841,8 @@ export class VistazoView {
     this.canvas.replaceWith(canvas);
     this.canvas = canvas;
     this.renderer = renderer;
+    // What's drawn on the old card's targets isn't on the new one: the map put together again there.
+    this.composer?.compose(renderer);
     this.canvasSize = { w: 0, h: 0 };
     this.retired.splice(0).forEach((material) => material.dispose());
     old.dispose();
@@ -3601,7 +3941,7 @@ export class VistazoView {
   }
 
   private pauseVideos() {
-    const videos = [...this.stage.querySelectorAll("video"), ...[...this.videoTextures].map((texture) => texture.image as HTMLVideoElement)];
+    const videos = [...this.stage.querySelectorAll("video"), ...[...this.propVideos.values()].map((entry) => entry.video)];
     for (const video of videos) {
       // Minimized, or at low quality: still.
       if (this.paused || !this.moving) {
@@ -3980,6 +4320,9 @@ export class VistazoView {
     if (this.renderer && this.scene && this.width > 0 && this.height > 0 && !this.compiling) {
       time("3d.render", () => this.draw());
       this.drawnAt = Number(document.timeline.currentTime ?? -1);
+      if (this.composer && this.camVersion !== this.detailCam) {
+        this.scheduleDetail();
+      }
       for (const material of this.retired.splice(0)) {
         material.dispose();
       }
@@ -4426,10 +4769,19 @@ export const TEMPLATE_HANDLE = "rising-ranges/template:";
  * The map's pixels over a bridge's fill's box (see fillFromPixels, which works the fill out from them),
  * and the box's frame. Null if the map can't be read (the drawing is then left as it is).
  */
-function fillPixels(shape: MultiPolygon, map: Texture, grow: number): { bytes: Uint8ClampedArray; frame: FillFrame } | null {
+function fillPixels(
+  shape: MultiPolygon,
+  map: Texture,
+  grow: number,
+  reader?: (box: MapBox, cols: number, rows: number) => Uint8ClampedArray
+): { bytes: Uint8ClampedArray; frame: FillFrame } | null {
   const frame = fillFrame(shape, grow);
   const { x0, y0, step, cols, rows } = frame;
   try {
+    // The maps put together on the graphics card: read there, at the fill's own size.
+    if (reader) {
+      return { bytes: reader({ x0, y0, w: cols * step, h: rows * step }, cols, rows), frame };
+    }
     const canvas = document.createElement("canvas");
     [canvas.width, canvas.height] = [cols, rows];
     const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
@@ -4442,10 +4794,69 @@ function fillPixels(shape: MultiPolygon, map: Texture, grow: number): { bytes: U
   }
 }
 
+/** How long the camera's been still to count as still, ms (see updateDetail). */
+const STILL_MS = 150;
+
+/** The props' shaders compiled once their pictures have come in for this long, ms (all of them at once, see compileProps). */
+const PROPS_COMPILE_MS = 300;
+
+/** `a` within `b` (scene px), or null where they don't meet. */
+function clipBox(a: MapBox | null, b: MapBox): MapBox | null {
+  if (!a) {
+    return null;
+  }
+  const x0 = Math.max(a.x0, b.x0);
+  const y0 = Math.max(a.y0, b.y0);
+  const x1 = Math.min(a.x0 + a.w, b.x0 + b.w);
+  const y1 = Math.min(a.y0 + a.h, b.y0 + b.h);
+  return x1 > x0 && y1 > y0 ? { x0, y0, w: x1 - x0, h: y1 - y0 } : null;
+}
+
+/** Whether `a` is all within `b`. */
+function inside(a: MapBox, b: MapBox): boolean {
+  return a.x0 >= b.x0 && a.y0 >= b.y0 && a.x0 + a.w <= b.x0 + b.w && a.y0 + a.h <= b.y0 + b.h;
+}
+
+/**
+ * The detail's box for what's seen (`view`, within the map's box): a square round it, a tenth more; no
+ * smaller than the sources are sharp for (a smaller one shows nothing more), no bigger than the map's
+ * box (all of it then: as sharp as one texture over the map was); kept within the map's box. Null when
+ * it wouldn't be sharper than the ground's texture.
+ */
+function detailBoxFor(view: MapBox, composer: MapComposer): MapBox | null {
+  const base = composer.box;
+  const most = Math.max(base.w, base.h);
+  const side = Math.min(most, Math.max(Math.max(view.w, view.h) * 1.1, composer.detailSize / composer.sharpest));
+  if (composer.detailSize / side <= composer.baseDensity * 1.15) {
+    return null;
+  }
+  // Along each way: centred on what's seen, moved back within the map's box; or, wider than it, centred on it.
+  const place = (middle: number, from: number, length: number) => (side >= length ? from + length / 2 - side / 2 : Math.min(Math.max(middle - side / 2, from), from + length - side));
+  return { x0: place(view.x0 + view.w / 2, base.x0, base.w), y0: place(view.y0 + view.h / 2, base.y0, base.h), w: side, h: side };
+}
+
+/**
+ * The maps' small picture (for the walls' colours: see MapColors) read from the composer: the box from
+ * its top left, `px` texels a scene px, on a canvas as a 2D drawing of them would be.
+ */
+function smallFrom(composer: MapComposer, renderer: THREE.WebGLRenderer, w: number, h: number, px: number) {
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.ceil(w * px));
+  canvas.height = Math.max(1, Math.ceil(h * px));
+  const context = canvas.getContext("2d", { willReadFrequently: true })!;
+  const { x0, y0 } = composer.box;
+  const pixels = composer.read(renderer, { x0, y0, w: canvas.width / px, h: canvas.height / px }, canvas.width, canvas.height);
+  context.putImageData(new ImageData(pixels, canvas.width, canvas.height), 0, 0);
+  return { canvas, context };
+}
+
 /** The longest side of the ground's texture while a video map is played on it (drawn again every frame), px. */
 const VIDEO_TEXTURE_MAX = 2048;
 /** The same at medium or low quality. */
 const VIDEO_TEXTURE_LIGHT = 1536;
+
+/** A flat prop's video, shared by the props that show its file (see Renderer.propVideo). */
+type PropVideo = { video: HTMLVideoElement; texture: THREE.VideoTexture | null; waiting: ((texture: THREE.Texture) => void)[] };
 
 /** A surface's arrays as a three.js geometry (see surfaces.ts). */
 function geometryOf(surface: Surface): THREE.BufferGeometry {

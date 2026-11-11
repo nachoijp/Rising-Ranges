@@ -59,6 +59,17 @@ export function mediaElement(url: string, video: boolean): HTMLImageElement | HT
   return element;
 }
 
+/**
+ * A video let go: stopped and emptied, so the browser stops decoding it. One that's never been on the
+ * page (a texture's) isn't paused by the browser when it's dropped: it would play on, unseen, for good.
+ */
+export function stopVideo(video: HTMLVideoElement) {
+  video.onloadeddata = null;
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+}
+
 /** A prop as the token-like parts of its view read it (place, size, label). */
 export function propToken(prop: Prop): Token {
   return { id: prop.id, name: prop.name, url: prop.url, video: prop.video, item: prop.item, base: prop.base, radius: prop.radius, x: prop.x, y: prop.y, size: prop.size, terrain: prop.terrain, own: prop.own, rotation: prop.rotation, flipX: false, flipY: false, hidden: false } as Token;

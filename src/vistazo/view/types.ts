@@ -99,7 +99,8 @@ export type Reach = {
 export type Quality = "low" | "medium" | "high";
 
 /**
- * Each quality's sharpness (most device pixels to a screen pixel), weather (share, ms a frame), motion,
+ * Each quality's sharpness (most device pixels to a screen pixel), weather (share), ms a frame for all that
+ * moves by itself (weather, videos: see Renderer.animate), motion,
  * and its edges smoothed (multisampled). What gives up some of the picture to keep up, by quality (high
  * none: as chosen, however the device copes): `least`, the share of its sharpness kept at least while
  * the camera moves on a slow card (1: never less); `slow`, whether a device found slow loses its
@@ -107,7 +108,7 @@ export type Quality = "low" | "medium" | "high";
  */
 export const QUALITY: Record<Quality, { pixels: number; amount: number; frameMs: number; motion: boolean; smooth: boolean; least: number; slow: boolean }> = {
   high: { pixels: 2, amount: 1, frameMs: 33, motion: true, smooth: true, least: 1, slow: false },
-  medium: { pixels: 1.5, amount: 0.65, frameMs: 40, motion: true, smooth: true, least: 0.75, slow: true },
+  medium: { pixels: 1.5, amount: 0.65, frameMs: 50, motion: true, smooth: true, least: 0.75, slow: true },
   low: { pixels: 1, amount: 0.35, frameMs: 66, motion: false, smooth: false, least: 0.5, slow: false },
 };
 
@@ -197,5 +198,26 @@ export const STONE: [number, number, number] = [138, 128, 112];
 
 /** The texture's longest side at most, in px. */
 export const TEXTURE_MAX = 4096;
+
+/**
+ * The ground's texture's longest side when a detail's drawn over it (see MapComposer): only seen past
+ * the detail (far off) or while it's made.
+ */
+export const BASE_TEXTURE_MAX = 2048;
+
+/**
+ * The map images' small blocks' texels at most, all of them, by quality (see sourceDensity): for the
+ * ground's texture and what's far. About 4 bytes a texel and a third more for their mipmaps (high ~65 MB).
+ */
+export const SOURCE_BUDGET: Record<Quality, number> = { high: 12e6, medium: 8e6, low: 6e6 };
+
+/**
+ * The blocks' texels at most loaded as their files have them, by quality, where the camera looks (see
+ * MapComposer.sharpen): those looked at longest ago let go for others (high ~170 MB).
+ */
+export const FULL_BUDGET: Record<Quality, number> = { high: 32e6, medium: 20e6, low: 12e6 };
+
+/** The map's detail's texture's side, texels, by quality (see MapComposer.detail): high ~89 MB with its mipmaps, low ~22 MB. */
+export const DETAIL_SIZE: Record<Quality, number> = { high: 4096, medium: 3072, low: 2048 };
 
 export const tintOf = (height: number) => `hsl(${200 - height * 34} 75% 50%)`;

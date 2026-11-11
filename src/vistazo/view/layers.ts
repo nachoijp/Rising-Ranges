@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { NOISE_2D } from "../glsl";
 import { CLOUD_GLSL } from "../weather";
 import { BASE_TEX_WIDTH } from "./baseBins";
-import { WALL_GRAIN } from "./shaders";
+import { DETAIL_GLSL, WALL_GRAIN } from "./shaders";
 import { VIEW_CELL } from "./types";
 
 // What the Vistazo's materials work out at each pixel over what they draw (see VistazoView, which
@@ -24,6 +24,25 @@ export function grained<M extends THREE.MeshBasicMaterial>(material: M): M {
       .replace("#include <color_fragment>", `#include <color_fragment>\ndiffuseColor.rgb *= wallGrain(vGrainAt, ${VIEW_CELL.toFixed(1)});`);
   };
   material.customProgramCacheKey = () => `${key()}+rising-ranges/grained`;
+  return material;
+}
+
+/**
+ * A material showing the map's picture read where it's sharpest (see DETAIL_GLSL): the ground's
+ * texture as its map, its uv the texture's box's. Over what its shader had already (the grid: put on
+ * before this, which keeps the map's include for this to stand in for).
+ */
+export function detailed<M extends THREE.MeshBasicMaterial>(material: M, uniforms: Record<string, { value: unknown }>): M {
+  const before = material.onBeforeCompile.bind(material);
+  const key = material.customProgramCacheKey.bind(material);
+  material.onBeforeCompile = (shader, renderer) => {
+    before(shader, renderer);
+    Object.assign(shader.uniforms, uniforms);
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", `#include <common>\n${DETAIL_GLSL}`)
+      .replace("#include <map_fragment>", "#ifdef USE_MAP\n  diffuseColor *= mapDetail(map, vMapUv);\n#endif");
+  };
+  material.customProgramCacheKey = () => `${key()}+rising-ranges/detailed`;
   return material;
 }
 

@@ -7,6 +7,34 @@ import { NOISE_2D } from "../glsl";
  * at a point (view units; `cell` a cell's size in them). Subtle, the height
  * in it too, so a wall gets its own down it.
  */
+/**
+ * The map's picture read where it's sharpest: the detail's texture (the part the camera shows, see
+ * MapComposer.detail) where there's one, faded into the ground's texture over its last few hundredths
+ * (no seam where it ends); the ground's alone elsewhere, or with no detail. `uv`: the ground texture's
+ * (its box's: uDetailUv is the detail's box in it, x, y from its bottom left, w, h). Both read every time:
+ * a texture read under a branch a pixel's neighbours don't all take has no sure mipmap level. The
+ * composer's textures are premultiplied (uMapPremultiplied): turned straight here, after they're mixed
+ * (a texel partly covered keeps its own colour, not darkened).
+ */
+export const DETAIL_GLSL = /* glsl */ `
+  uniform sampler2D uDetail;
+  uniform vec4 uDetailUv;
+  uniform float uDetailOn;
+  uniform float uMapPremultiplied;
+  vec4 mapStraight(vec4 c) {
+    if (uMapPremultiplied < 0.5) return c;
+    return c.a > 0.0 ? vec4(c.rgb / c.a, c.a) : vec4(0.0);
+  }
+  vec4 mapDetail(sampler2D base, vec2 uv) {
+    vec4 color = texture2D(base, uv);
+    if (uDetailOn < 0.5) return mapStraight(color);
+    vec2 d = (uv - uDetailUv.xy) / uDetailUv.zw;
+    vec2 edge = min(d, 1.0 - d);
+    float k = smoothstep(0.0, 0.03, min(edge.x, edge.y));
+    return mapStraight(mix(color, texture2D(uDetail, clamp(d, 0.0, 1.0)), k));
+  }
+`;
+
 export const WALL_GRAIN = /* glsl */ `
   float wallGrain(vec3 p, float cell) {
     vec2 q = vec2(p.x + p.z * 0.7, p.y - p.z * 0.7) / cell;
@@ -102,6 +130,7 @@ export const WATER_VERTEX = /* glsl */ `
 `;
 
 export const WATER_FRAGMENT = /* glsl */ `
+  ${DETAIL_GLSL}
   uniform float uTime;
   uniform sampler2D uMap;
   uniform mat3 uMapMatrix;
@@ -125,7 +154,7 @@ export const WATER_FRAGMENT = /* glsl */ `
     // The map's picture there, wobbling a little (a few hundredths of a cell).
     vec2 wobble = (vec2(a, b) - 0.5) * 0.06 * uCell;
     vec2 q = vAt / uU + wobble;
-    vec3 under = texture2D(uMap, (uMapMatrix * vec3((q.x - uTex.x) / uTex.z, 1.0 - (q.y - uTex.y) / uTex.w, 1.0)).xy).rgb;
+    vec3 under = mapDetail(uMap, (uMapMatrix * vec3((q.x - uTex.x) / uTex.z, 1.0 - (q.y - uTex.y) / uTex.w, 1.0)).xy).rgb;
     // Glints where the two ripple patterns meet.
     float glint = smoothstep(0.82, 0.95, 1.0 - abs(a - b) * 3.0) * 0.35;
     vec3 color = under * vec3(0.82, 0.92, 1.0) + glint;

@@ -114,8 +114,11 @@ export function waterShape(scene: VistazoScene, piece: Piece): MultiPolygon {
   }
 }
 
-/** A water's surface's look: the map seen through it (`u`: view units per scene px), where it reaches. */
-export function waterMaterial(map: THREE.Texture, texture: Texture, u: number, dpi: number, reach: WaterReach): THREE.ShaderMaterial {
+/**
+ * A water's surface's look: the map seen through it (`u`: view units per scene px), where it reaches;
+ * `detail`: the detail's uniforms, shared (see DETAIL_GLSL).
+ */
+export function waterMaterial(map: THREE.Texture, texture: Texture, u: number, dpi: number, reach: WaterReach, detail: Record<string, { value: unknown }>): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     vertexShader: WATER_VERTEX,
     fragmentShader: WATER_FRAGMENT,
@@ -123,6 +126,7 @@ export function waterMaterial(map: THREE.Texture, texture: Texture, u: number, d
     depthWrite: false,
     side: THREE.DoubleSide,
     uniforms: {
+      ...detail,
       uTime: { value: 0 },
       uMap: { value: map },
       // Its place on the map (a lone map image's picture is placed by it: see placed in render.ts).
