@@ -90,8 +90,12 @@ export class AnimatedImage {
       if (!data) {
         return null;
       }
-      // The browser's reader; a GIF it finds no frames in, read in JS all the same.
-      frames = native ? await decoderFrames(data, mime) : null;
+      // A GIF of one frame (most still GIFs): told by walking its blocks, not decoding it whole.
+      if (mime === "image/gif" && gifImageCount(data) < 2) {
+        return null;
+      }
+      // The browser's reader; a GIF it finds no frames in, or can't read, in JS all the same.
+      frames = native ? await decoderFrames(data, mime).catch((error) => (mime === "image/gif" ? null : Promise.reject(error))) : null;
       if (!frames && mime === "image/gif") {
         frames = gifFrames(data);
       }
@@ -296,6 +300,48 @@ function join(chunks: Uint8Array[], length: number): Uint8Array {
   }
   chunks.splice(0, chunks.length, all);
   return all;
+}
+
+/**
+ * How many images a GIF has, at most 2 (its blocks walked, nothing decoded): its header and screen
+ * descriptor, its colour table, then extensions (0x21) and images (0x2C) till the trailer (0x3B). A file
+ * it can't walk counts as 2 (left for the decoders to tell).
+ */
+function gifImageCount(data: Uint8Array): number {
+  const n = data.length;
+  if (n < 13) {
+    return 2;
+  }
+  // A block's data: sub-blocks (a length, then that many bytes) till an empty one.
+  const subBlocks = (at: number) => {
+    while (at < n && data[at] !== 0) {
+      at += data[at] + 1;
+    }
+    return at + 1;
+  };
+  let at = 13 + (data[10] & 0x80 ? 3 * 2 ** ((data[10] & 7) + 1) : 0);
+  let images = 0;
+  while (at < n) {
+    const kind = data[at];
+    if (kind === 0x3b) {
+      return images;
+    }
+    if (kind === 0x21) {
+      at = subBlocks(at + 2);
+    } else if (kind === 0x2c) {
+      if (++images >= 2) {
+        return images;
+      }
+      const flags = data[at + 9];
+      at += 10 + (flags & 0x80 ? 3 * 2 ** ((flags & 7) + 1) : 0);
+      // Its LZW code size, then its data.
+      at = subBlocks(at + 1);
+    } else {
+      return 2;
+    }
+  }
+  // Cut short with one image at most: shown still, as the <img> has it.
+  return 1;
 }
 
 /** A map's or prop's media let go: an animation closed. */

@@ -264,6 +264,8 @@ export class VistazoView {
   /** The one animation loop (videos, weather, water, templates): its frame, and whether a video has a new frame to show (see animate). */
   private animFrame = 0;
   private animDue = false;
+  /** When the loop last drew (rAF time): kept across its stops, so a video restarting it still waits its pace. */
+  private animLast = -Infinity;
   /** The player view's fog: its picture (see drawFog), laid on the terrain by its materials (see fogged). */
   private fogTexture: THREE.CanvasTexture | null = null;
   /** The fog's floor and curtains (see buildFogFloor). */
@@ -1826,6 +1828,10 @@ export class VistazoView {
       });
       return { canvas, context };
     };
+    // The videos, animations and composer made below, till they're handed over (or let go): let go
+    // if anything fails on the way, not left playing.
+    let pendingMedia: CanvasImageSource[] = [];
+    let pendingComposer: MapComposer | null = null;
     Promise.all(
       scene.maps.map(
         (map) =>
@@ -1857,6 +1863,7 @@ export class VistazoView {
         // Those read, with their maps (in order).
         const maps = scene.maps.filter((_, i) => loaded[i] !== null);
         const read = loaded.filter((img): img is CanvasImageSource => img !== null);
+        pendingMedia = read;
         if (read.length === 0) {
           throw new Error("none of the map images could be read");
         }
@@ -1864,6 +1871,7 @@ export class VistazoView {
         const images: CanvasImageSource[] = await Promise.all(
           read.map(async (img, i) => (img instanceof HTMLImageElement && mayAnimate(maps[i].mime) ? ((await AnimatedImage.open(maps[i].url, maps[i].mime))?.canvas ?? img) : img))
         );
+        pendingMedia = images;
         // In steps, the page let go between them (each is long on a slow machine): another map's
         // meanwhile, this one's dropped.
         const pause = () => new Promise((resolve) => setTimeout(resolve));
@@ -1902,6 +1910,7 @@ export class VistazoView {
           let made: MapComposer | null = null;
           made = await MapComposer.make(maps, media, { x0, y0, w, h }, { px, basePx, detailSize, fullBudget }, this.renderer.capabilities.getMaxAnisotropy(), () => this.sharpened(made));
           composer = made;
+          pendingComposer = made;
           if (stale()) {
             composer?.dispose();
             return;
@@ -1930,6 +1939,8 @@ export class VistazoView {
           // The small one for what's read on the page (see fillPixels: the composer's, where there's one).
           this.texture = { canvas: small.canvas, x0, y0, w, h };
           this.mapMedia = { images, maps };
+          pendingMedia = [];
+          pendingComposer = null;
           this.fillCache.clear();
           this.useTexture();
           // The water, the walls' shadows and what's under bridges a moment later (as below).
@@ -1939,6 +1950,7 @@ export class VistazoView {
           return;
         }
         composer?.dispose();
+        pendingComposer = null;
         let bitmap: ImageBitmap | null = null;
         if (lone && typeof createImageBitmap === "function") {
           const [lw, lh] = lone instanceof HTMLVideoElement ? [lone.videoWidth, lone.videoHeight] : [lone.naturalWidth, lone.naturalHeight];
@@ -1958,6 +1970,7 @@ export class VistazoView {
         this.texture?.bitmap?.close();
         this.texture = { canvas: big.canvas, x0, y0, w, h, ...(bitmap ? { bitmap } : {}) };
         this.mapMedia = { images, maps };
+        pendingMedia = [];
         this.fillCache.clear();
         this.useTexture();
         // The water, the walls' shadows and what's under bridges (its fill, from this map) a moment later.
@@ -1967,6 +1980,10 @@ export class VistazoView {
         this.playMaps();
       })
       .catch((error) => {
+        pendingMedia.forEach(stopMedia);
+        if (pendingComposer && pendingComposer !== this.composer) {
+          pendingComposer.dispose();
+        }
         console.error("Rising Ranges: Vistazo couldn't read the map images, drawing plain terrain", error);
       });
   }
@@ -3520,6 +3537,7 @@ export class VistazoView {
       uv: (x, y) => [(x - box.x0) / box.w, 1 - (y - box.y0) / box.h],
       color: this.colors,
       grain: grained,
+      picture: (material) => detailed(material, this.detailUniforms),
     };
     for (const door of this.doors) {
       // Its floor: in its opening's middle (its hinge is on the wall's end).
@@ -3714,7 +3732,6 @@ export class VistazoView {
     if (this.animFrame) {
       return;
     }
-    let last = -Infinity;
     const tick = (time: number) => {
       const weather = !this.paused && this.hasWeather;
       if (!weather && !this.animDue) {
@@ -3722,8 +3739,8 @@ export class VistazoView {
         return;
       }
       // A couple of ms early is on time (frames don't land exactly on the pace).
-      if (time - last >= this.look.frameMs - 2) {
-        last = time;
+      if (time - this.animLast >= this.look.frameMs - 2) {
+        this.animLast = time;
         this.animDue = false;
         if (weather) {
           this.weatherUniforms();

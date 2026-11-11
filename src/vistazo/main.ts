@@ -393,7 +393,11 @@ function setUpResizing() {
       resizePanel(saved.width ?? 900, saved.height ?? 600);
     }
   };
+  // Whether the bar's height has landed since minimizing (its width and height are set one after
+  // the other: a resize meanwhile, still full height, isn't "made big again").
+  let barLanded = false;
   $("minimize").onclick = () => {
+    barLanded = false;
     document.documentElement.classList.add("minimized");
     onMinimized(true);
     void reportPanelMinimized(true);
@@ -409,7 +413,12 @@ function setUpResizing() {
   // Made big while a bar (the button reopening it when the background lost count): no bar left
   // alone in a big panel, it comes back at that size.
   window.addEventListener("resize", () => {
-    if (isMinimized() && window.innerHeight > BAR_HEIGHT * 2) {
+    if (!isMinimized()) {
+      return;
+    }
+    if (window.innerHeight <= BAR_HEIGHT * 2) {
+      barLanded = true;
+    } else if (barLanded) {
       unminimize(false);
     }
   });

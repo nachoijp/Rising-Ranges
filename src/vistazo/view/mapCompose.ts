@@ -579,7 +579,6 @@ function quadMesh(map: MapImage, inner: [number, number, number, number], crop: 
   return new THREE.Mesh(geometry, quadMaterial(texture));
 }
 
-/** A video map: one quad, its texture the video's (its frames as they come, see MapComposer.compose). */
 /** A video's (or an animation's canvas, see AnimatedImage) quad: one texture over the whole map item. */
 function videoQuad(map: MapImage, source: HTMLVideoElement | HTMLCanvasElement): Quad {
   const texture = source instanceof HTMLVideoElement ? new THREE.VideoTexture(source) : new THREE.CanvasTexture(source);

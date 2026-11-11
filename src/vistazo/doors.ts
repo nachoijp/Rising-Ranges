@@ -92,6 +92,8 @@ export type DoorMap = {
   uv: (x: number, y: number) => [number, number];
   color: ((x: number, y: number) => [number, number, number]) | null;
   grain: (material: THREE.MeshBasicMaterial) => THREE.MeshBasicMaterial;
+  /** A material showing the map's picture as the walls do (sharpest where it can, its colours straight). */
+  picture: (material: THREE.MeshBasicMaterial) => THREE.MeshBasicMaterial;
 };
 
 /** The looks of their own: their colours (front and back, ends and bottom, top), tinting their pattern (if they have one). */
@@ -219,7 +221,7 @@ export function doorMesh(door: DoorView, u: number, k: number, ground: number, c
   } else if ((look === "stretch" || look === "picture") && map?.texture) {
     // The map's picture: its pixels on the door's line, stretched up it; or its rectangle, as its face.
     const texture = map.texture;
-    faces = three((s) => new THREE.MeshBasicMaterial({ map: texture, color: new THREE.Color(s, s, s), side: THREE.DoubleSide }));
+    faces = three((s) => map.picture(new THREE.MeshBasicMaterial({ map: texture, color: new THREE.Color(s, s, s), side: THREE.DoubleSide })));
     const pic = door.picture;
     uvOf =
       look === "picture" && pic

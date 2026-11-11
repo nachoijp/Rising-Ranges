@@ -103,6 +103,8 @@ const RESTORE_CHANNEL = getPluginId("vistazoPanel/restore");
 let inTab = false;
 let open = false;
 let minimized = false;
+/** How long the button waits for a minimized page to answer its restore before opening it anew. */
+const RESTORE_WAIT_MS = 800;
 let full = false;
 let closedAt = 0;
 let watching = false;
@@ -201,8 +203,14 @@ export function onRestoreRequested(restore: () => void) {
 /** The toolbar button: opens the panel, brings it back if it's minimized, or closes it if it's open. */
 export async function toggleVistazoPanel() {
   if (open && minimized) {
-    minimized = false;
     await OBR.broadcast.sendMessage(RESTORE_CHANNEL, null, { destination: "LOCAL" }).catch(() => {});
+    // The page answers by reporting itself back (see reportPanelMinimized). No answer: it's gone
+    // (reloaded, closed unseen), so the panel's opened again rather than this click doing nothing.
+    setTimeout(() => {
+      if (open && minimized) {
+        void openVistazoPanel();
+      }
+    }, RESTORE_WAIT_MS);
   } else if (open) {
     await closeVistazoPanel();
   } else {

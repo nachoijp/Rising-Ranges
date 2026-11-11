@@ -3,11 +3,6 @@ import { NOISE_2D } from "../glsl";
 // The fill under bridges (see buildUnderBridges) and the zones' water (see buildWater).
 
 /**
- * A blended wall's (see buildWalls) grain: what its colour is multiplied by
- * at a point (view units; `cell` a cell's size in them). Subtle, the height
- * in it too, so a wall gets its own down it.
- */
-/**
  * The map's picture read where it's sharpest: the detail's texture (the part the camera shows, see
  * MapComposer.detail) where there's one, faded into the ground's texture over its last few hundredths
  * (no seam where it ends); the ground's alone elsewhere, or with no detail. `uv`: the ground texture's
@@ -35,6 +30,11 @@ export const DETAIL_GLSL = /* glsl */ `
   }
 `;
 
+/**
+ * A blended wall's (see buildWalls) grain: what its colour is multiplied by
+ * at a point (view units; `cell` a cell's size in them). Subtle, the height
+ * in it too, so a wall gets its own down it.
+ */
 export const WALL_GRAIN = /* glsl */ `
   float wallGrain(vec3 p, float cell) {
     vec2 q = vec2(p.x + p.z * 0.7, p.y - p.z * 0.7) / cell;
