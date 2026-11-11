@@ -64,6 +64,10 @@ import { mayDo } from "../background/permission";
 import { lockedNow, visibleNow } from "../util/attachments";
 import { MIRROR_CHANNEL, OWN_CHANNEL, REMOTE_DRAG_CHANNEL, RemoteWatch, type Fixed, type Measured, type OwnMessage, type RemoteDrag } from "./remote";
 import { dragSender, othersWatching } from "./remoteObr";
+import { MirrorOut, type Measure } from "./mirrorOut";
+import { heightLabelText } from "../render/computeLectura";
+import { resolveDisplay, showsDistance } from "../settings/display";
+import { fixedGround } from "../settings/globalSettings";
 import { DragPath } from "../util/dragPath";
 import { saveDraggedToken } from "../util/saveDrag";
 import "./vistazo.css";
@@ -1392,6 +1396,7 @@ async function start() {
   const endMove = (saved: Promise<Vector2 | null | void> = Promise.resolve(null)) => {
     moving = null;
     cancelMove = null;
+    mirrorMeasure();
     if (draggingId) {
       const id = draggingId;
       draggingId = null;
@@ -1826,8 +1831,9 @@ async function start() {
             }
           });
           showTokenAt(move.id, position, move.own);
-          // To the others' Vistazos too, unless it's hidden.
+          // To the others' Vistazos too, unless it's hidden; and on the maps, its Medición.
           dragSender().move(move.id, position, visibleNow(itemsById(), move.item));
+          mirrorMeasure();
         }
         return;
       }
@@ -2015,6 +2021,7 @@ async function start() {
         if (moving.own !== before) {
           event.preventDefault();
           showTokenAt(moving.id, moving.position, moving.own);
+          mirrorMeasure();
           return;
         }
       }
@@ -2280,6 +2287,42 @@ async function start() {
   };
   /** The free point (scene px, and its own height over the ground there), or none. */
   let freePoint: { x: number; y: number; own: number } | null = null;
+  /** This Vistazo's Medición (a token dragged, or the free point) on the maps too (see mirrorOut.ts). */
+  const mirrorOut = new MirrorOut();
+  /** What's measured here now, as the maps show it: a token dragged (not a hidden one: secret, as the map's), or the free point. */
+  const measureNow = (): Measure | null => {
+    const move = moving?.started ? moving : null;
+    if (!scene || (!move && !freePoint) || (move && !visibleNow(itemsById(), move.item))) {
+      return null;
+    }
+    const center = move ? move.item.position : { x: freePoint!.x, y: freePoint!.y };
+    const at = move ? move.position : center;
+    const settings = globalSettingsFromMetadata(sceneMetadata);
+    const altitude = settings.enableAltitude ?? true;
+    const own = altitude ? (move ? move.own : freePoint!.own) : 0;
+    const height = scene.measuredAt(at.x, at.y) + own;
+    const radius = move ? getTokenRadius(move.item, dpi, 0) : 0;
+    const bandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
+    const display = resolveDisplay(settings.display, bandSet, settings);
+    const language = languageFromMetadata(sceneMetadata);
+    const byId = itemsById();
+    const owns = new Map(scene.tokens.map((token) => [token.id, token.own]));
+    const tokens = items
+      .filter((item): item is Image => item.type === "IMAGE" && item.layer === "CHARACTER" && item.id !== move?.id && visibleNow(byId, item))
+      .map((token) => ({ token, position: token.position, height: scene!.measuredAt(token.position.x, token.position.y) + (altitude ? (owns.get(token.id) ?? 0) : 0) }));
+    return {
+      key: move ? `token:${move.id}` : "point",
+      center,
+      radius,
+      originTokenId: move?.id,
+      from: { center: at, height, radius },
+      // Above its own ground, or above the fixed one (see GlobalSettings.groundLevel), as the map's.
+      heightText: altitude ? heightLabelText(fixedGround(settings) ? height : own, bandSet, scale, language) : null,
+      ctx: { bandSet, theme: getStoredTheme(), dpi, axonometry: 0, language, gridScale: scale, showDistance: showsDistance(display.lecturaLabel), display },
+      tokens,
+    };
+  };
+  const mirrorMeasure = () => mirrorOut.show(measureNow());
   /** The point's marker: of the Medición from a point shown (see measuring), this client's or someone else's. */
   const showPointMarker = () => {
     const measured = measuring();
@@ -2306,8 +2349,9 @@ async function start() {
     }
     showPointMarker();
     showDistances();
-    // To the others' Vistazos too, as the map's Medición from a point is (see remote.ts).
+    // To the others' Vistazos too, as the map's Medición from a point is (see remote.ts); and on the maps.
     dragSender().point(point);
+    mirrorMeasure();
   }
   clearPoint = () => {
     if (!freePoint) {
@@ -2395,6 +2439,7 @@ async function start() {
       freePoint = null;
       showPointMarker();
       dragSender().point(null);
+      mirrorMeasure();
     }
     showDistances();
   });
@@ -3330,7 +3375,10 @@ async function start() {
   });
   void OBR.broadcast.sendMessage(OWN_CHANNEL, { type: "hello" } satisfies OwnMessage, { destination: "LOCAL" }).catch(() => {});
   // Closed with a free point up: taken away on the others' screens now, not at their timeout.
-  addEventListener("pagehide", () => dragSender().point(null));
+  addEventListener("pagehide", () => {
+    dragSender().point(null);
+    mirrorOut.end();
+  });
   OBR.broadcast.onMessage(REMOTE_DRAG_CHANNEL, (event) => remoteWatch.drag(event.connectionId, event.data as RemoteDrag));
   OBR.broadcast.onMessage(MIRROR_CHANNEL, (event) => remoteWatch.mirror(event.connectionId, event.data as Parameters<RemoteWatch["mirror"]>[1]));
   OBR.party.onChange((players) => remoteWatch.left(new Set(players.map((player) => player.connectionId))));

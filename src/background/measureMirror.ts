@@ -1,5 +1,4 @@
 import OBR, { isImage, isLabel, type Image, type Item, type Vector2 } from "@owlbear-rodeo/sdk";
-import { getPluginId } from "../util/getPluginId";
 import {
   applyLecturaState,
   attachToToken,
@@ -16,7 +15,7 @@ import { buildBandRingItems, buildGradientShaders, reshapeOrigin } from "../rend
 import { getStoredTheme } from "../theme/themes";
 import { showPinnedFixedMedicion } from "./fixedMedicion";
 import { visibleNow } from "../util/attachments";
-import { isRateLimitError } from "../vistazo/remote";
+import { MIRROR_CHANNEL, MirrorSender, type MirrorMessage, type StartMessage } from "./mirrorSend";
 
 // Shows a Medición's rings, gradient, Lecturas and height label to every
 // client, not just the one measuring, each in that client's own color theme.
@@ -34,46 +33,7 @@ import { isRateLimitError } from "../vistazo/remote";
 // - One Medición at a time on each screen: this client's own while it
 //   measures, otherwise the one started last (see showOnly).
 
-const CHANNEL = getPluginId("measureMirror");
-// OBR.broadcast rejects bursts ("RateLimitHit"). Messages only go out when
-// something changed, and bursts are spaced this far apart; if Owlbear still
-// rate-limits, the gap widens for the rest of the session and what was
-// lost is sent again.
-const SEND_INTERVAL_MS = 80;
-const BACKOFF_SEND_INTERVAL_MS = 200;
-let sendIntervalMs = SEND_INTERVAL_MS;
-
-type StartMessage = {
-  type: "start";
-  sessionId: number;
-  ctx: LecturaContext;
-  states: Record<string, LecturaState>;
-  /** The sender's gradient, for receivers before 1.2.0; newer ones draw their own from `origin`. */
-  shaders: Item[];
-  /** The item everything here attaches to: the Origen's anchor (a ring before 1.2.0). */
-  ringId: string;
-  heightLabel: { center: Vector2; text: string } | null;
-  /** Missing from senders before 1.2.0, whose rings are visible themselves. */
-  origin?: { center: Vector2; radius: number };
-  /** The token measured from, if it's one (the Vistazo measures from it, see vistazo/remote.ts). Missing from senders before 2.0.0. */
-  originTokenId?: string;
-};
-type UpdateMessage = {
-  type: "update";
-  sessionId: number;
-  states?: Record<string, LecturaState>;
-  heightText?: string;
-};
-type EndMessage = { type: "end"; sessionId: number };
-/** The Medición was left in place as this Medición fija: shown before the Medición goes (receivers before 1.3.0 ignore it). */
-type PinMessage = { type: "pin"; sessionId: number; fixed: unknown };
-/**
- * A free hex Medición's Origen moved from a cell's center to a corner or
- * back: its rings and gradient take the new shape (see reshapeOrigin).
- * Receivers before 1.4.0 ignore it.
- */
-type ReshapeMessage = { type: "reshape"; sessionId: number; center: Vector2 };
-type MirrorMessage = StartMessage | UpdateMessage | EndMessage | PinMessage | ReshapeMessage;
+const CHANNEL = MIRROR_CHANNEL;
 
 /**
  * One Medición's client-local Lecturas + height label (+ extra items, e.g.
@@ -342,134 +302,31 @@ export class LocalMeasureView {
 // ---------------------------------------------------------------------------
 // Measuring client → everyone else
 
-let nextSessionId = 1;
-let activeSessionId = 0;
-let pendingStates: Record<string, LecturaState> = {};
-let pendingHeightText: string | undefined;
-let lastSendTime = 0;
-let sendTimer: ReturnType<typeof setTimeout> | null = null;
-// Other clients drop any update for a session they haven't started yet, so
-// updates wait here (accumulating in pendingStates/pendingHeightText) until
-// the start has actually gone through — otherwise a rate-limited start,
-// resent later with click-time states, would leave them showing stale
-// Lecturas with the in-between updates already lost.
-let startConfirmed = false;
-
-function send(message: MirrorMessage, attempt = 0) {
-  lastSendTime = Date.now();
-  OBR.broadcast
-    .sendMessage(CHANNEL, message, { destination: "REMOTE" })
-    .then(() => {
-      if (message.type === "start" && message.sessionId === activeSessionId) {
-        startConfirmed = true;
-        scheduleFlush();
-      }
-    })
-    .catch((error) => {
-      if (!isRateLimitError(error) || attempt >= 3) {
-        console.error("Rising Ranges: failed to mirror Medición", error);
-        return;
-      }
-      sendIntervalMs = BACKOFF_SEND_INTERVAL_MS;
-      // An "end" is always retried: its session is already over locally,
-      // but a lost one would leave it stuck on everyone else's screen.
-      if (message.type !== "end" && message.sessionId !== activeSessionId) {
-        return;
-      }
-      if (message.type === "update") {
-        // Newer pending changes win over the lost ones for the same token.
-        pendingStates = { ...message.states, ...pendingStates };
-        if (pendingHeightText === undefined) {
-          pendingHeightText = message.heightText;
-        }
-        scheduleFlush();
-      } else {
-        setTimeout(() => {
-          if (message.type === "end" || message.sessionId === activeSessionId) {
-            send(message, attempt + 1);
-          }
-        }, BACKOFF_SEND_INTERVAL_MS);
-      }
-    });
-}
-
-function flushPending() {
-  sendTimer = null;
-  if (!activeSessionId || !startConfirmed) {
-    return;
-  }
-  const hasStates = Object.keys(pendingStates).length > 0;
-  if (!hasStates && pendingHeightText === undefined) {
-    return;
-  }
-  send({
-    type: "update",
-    sessionId: activeSessionId,
-    states: hasStates ? pendingStates : undefined,
-    heightText: pendingHeightText,
-  });
-  pendingStates = {};
-  pendingHeightText = undefined;
-}
-
-function scheduleFlush() {
-  if (sendTimer) {
-    return;
-  }
-  const wait = Math.max(0, lastSendTime + sendIntervalMs - Date.now());
-  sendTimer = setTimeout(flushPending, wait);
-}
+/** This client's map's Mediciones (it draws its own itself). */
+const sender = new MirrorSender("REMOTE");
 
 export function mirrorStart(message: Omit<StartMessage, "type" | "sessionId">) {
-  activeSessionId = nextSessionId++;
-  startConfirmed = false;
-  pendingStates = {};
-  pendingHeightText = undefined;
-  send({ type: "start", sessionId: activeSessionId, ...message });
+  sender.start(message);
 }
 
 export function mirrorStates(changed: Record<string, LecturaState>) {
-  if (!activeSessionId) {
-    return;
-  }
-  Object.assign(pendingStates, changed);
-  scheduleFlush();
+  sender.states(changed);
 }
 
 export function mirrorHeightText(text: string) {
-  if (!activeSessionId) {
-    return;
-  }
-  pendingHeightText = text;
-  scheduleFlush();
+  sender.heightText(text);
 }
 
 export function mirrorReshape(center: Vector2) {
-  if (!activeSessionId) {
-    return;
-  }
-  send({ type: "reshape", sessionId: activeSessionId, center });
+  sender.reshape(center);
 }
 
 export function mirrorPinned(fixed: unknown) {
-  if (!activeSessionId) {
-    return;
-  }
-  send({ type: "pin", sessionId: activeSessionId, fixed });
+  sender.pinned(fixed);
 }
 
 export function mirrorEnd() {
-  if (!activeSessionId) {
-    return;
-  }
-  if (sendTimer) {
-    clearTimeout(sendTimer);
-    sendTimer = null;
-  }
-  pendingStates = {};
-  pendingHeightText = undefined;
-  send({ type: "end", sessionId: activeSessionId });
-  activeSessionId = 0;
+  sender.end();
 }
 
 // ---------------------------------------------------------------------------

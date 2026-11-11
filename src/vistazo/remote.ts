@@ -18,7 +18,7 @@ import { getPluginId } from "../util/getPluginId";
 //   sender that's gone (closed, crashed: no "end") from one that isn't moving: see DRAG_TIMEOUT_MS.
 
 export const REMOTE_DRAG_CHANNEL = getPluginId("vistazo/remoteDrag");
-/** The Medición's mirror (see measureMirror.ts): listened to here, never sent. */
+/** The Medición's mirror (see measureMirror.ts): listened to here; a Vistazo's own sent for the maps only (see mirrorOut.ts). */
 export const MIRROR_CHANNEL = getPluginId("measureMirror");
 /**
  * From this client's map to its Vistazo, on this client only: what its own Medición measures from while
@@ -253,7 +253,7 @@ export class DragSender {
 export type Measured = { tokenId: string } | { point: Vector2; own?: number; radius?: number };
 
 /** The mirror's messages, as far as they're read here (see measureMirror.ts; anything else, ignored). */
-type Mirror = { type?: unknown; sessionId?: unknown; origin?: { center?: Vector2 }; originTokenId?: unknown };
+type Mirror = { type?: unknown; sessionId?: unknown; origin?: { center?: Vector2 }; originTokenId?: unknown; glance?: unknown };
 
 type Sender = {
   /** Its client: what it was doing goes when that one leaves (see left). */
@@ -296,7 +296,8 @@ export class RemoteWatch {
   }
 
   mirror(connectionId: string, message: Mirror) {
-    if (!message || typeof message.sessionId !== "number") {
+    // A Vistazo's (see mirrorOut.ts): its drag or point comes from it as such already, this is for the maps.
+    if (!message || typeof message.sessionId !== "number" || message.glance) {
       return;
     }
     const sender = this.sender(connectionId, "mirror", true);
