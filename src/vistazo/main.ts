@@ -58,7 +58,7 @@ import {
   readPanelSize as readSize,
   savePanelSize as saveSize,
 } from "./panel";
-import { fogOver, stopAtWalls } from "./fog";
+import { fogOver, slideAtWalls, stopAtWalls, wallReach } from "./fog";
 import * as itemActions from "./itemMenu";
 import { mayDo } from "../background/permission";
 import { lockedNow, visibleNow } from "../util/attachments";
@@ -1342,7 +1342,16 @@ async function start() {
     interaction: Promise<InteractionManager<Image>> | null;
     position: Vector2;
     path: DragPath;
+    /**
+     * How near the fog's walls its middle may come (see wallReach: its light's source radius, and a hair
+     * more, so Owlbear doesn't put it back); null if they don't stop it (no light, hidden). And the local
+     * items it's asked of (lights and walls of this client's own: read when it's grabbed).
+     */
+    reach: number | null;
+    local: Item[];
   } | null = null;
+  /** Kept further from a wall than Owlbear asks (see wallReach): where it's put back is a few px further. */
+  const WALL_MARGIN = 0.02;
   const stagePoint = (event: { clientX: number; clientY: number }) => {
     const rect = stage.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
@@ -1682,7 +1691,19 @@ async function start() {
           interaction: null,
           position: pressed.item.position,
           path: new DragPath(pressed.item.position),
+          reach: null,
+          local: localItems,
         };
+        // The walls stop it as Owlbear's would (see wallReach); this client's own lights and walls read
+        // now (only the player view keeps them), the scene's as they are.
+        const grabbed = moving;
+        const reachOf = (local: Item[]) => {
+          const reach = wallReach(grabbed.item, items, local);
+          grabbed.local = local;
+          grabbed.reach = reach === null ? null : reach + dpi * WALL_MARGIN;
+        };
+        reachOf(localItems);
+        void OBR.scene.local.getItems().then(reachOf, () => {});
       }
     }
     // A press on a template's handle: ready to move it (its origin) or turn it (its tip).
@@ -1794,7 +1815,7 @@ async function start() {
           // those walls here too, as Owlbear's map does (else it'd go through, its light showing
           // what's beyond, and go back once dropped).
           const wanted = { x: ground.x + move.grab.x, y: ground.y + move.grab.y };
-          const position = move.item.visible ? stopAtWalls(move.position, wanted, items, localItems, dpi * 0.05) : wanted;
+          const position = move.reach !== null ? slideAtWalls(move.position, wanted, items, move.local, move.reach) : wanted;
           move.position = position;
           move.path.add(position, dpi * 0.1);
           void move.interaction?.then(([update]) => {
@@ -2686,7 +2707,7 @@ async function start() {
         // Snapped to the grid where it's let go, as Owlbear's own move does; not across a wall (Owlbear
         // would stop it there): then where it was let go.
         const near = await OBR.scene.grid.snapPosition(move.position);
-        const reached = move.item.visible ? stopAtWalls(move.position, near, items, localItems, 0) : near;
+        const reached = move.reach !== null ? stopAtWalls(move.position, near, items, move.local, move.reach) : near;
         const snapped = Math.hypot(reached.x - near.x, reached.y - near.y) < 0.5 ? near : move.position;
         move.position = snapped;
         // Shown there now (not where it was let go, nor the steps it's saved along: see endMove); the

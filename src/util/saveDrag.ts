@@ -1,5 +1,5 @@
 import OBR, { type Item, type Vector2 } from "@owlbear-rodeo/sdk";
-import { stopAtWalls } from "../vistazo/fog";
+import { stopAtWalls, wallReach } from "../vistazo/fog";
 import type { DragPath } from "./dragPath";
 
 // Owlbear refuses bursts of scene writes ("Too many requests"). The waits
@@ -38,11 +38,15 @@ async function retried(write: () => Promise<void>, delays = SAVE_RETRY_DELAYS_MS
  */
 export async function saveDraggedToken(final: Item, path: DragPath): Promise<Vector2 | null> {
   try {
-    // The walls Owlbear stops a token at (the scene's, and this client's own: Smoke & Spectre's); none
-    // for a hidden token, which Owlbear lets through.
+    // The walls Owlbear stops a token at (the scene's, and this client's own: Smoke & Spectre's), as near
+    // as it lets it come (see wallReach); none for a token they don't stop (no light, hidden).
     const [items, local] = final.visible ? await Promise.all([OBR.scene.items.getItems(), OBR.scene.local.getItems().catch(() => [])]) : [[], []];
+    const reach = wallReach(final, items, local);
     const clear = (from: Vector2, to: Vector2) => {
-      const reached = stopAtWalls(from, to, items, local, 0);
+      if (reach === null) {
+        return true;
+      }
+      const reached = stopAtWalls(from, to, items, local, reach);
       return Math.hypot(reached.x - to.x, reached.y - to.y) < 0.5;
     };
     const steps = path.steps(final.position, clear);

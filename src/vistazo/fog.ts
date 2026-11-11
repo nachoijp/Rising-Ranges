@@ -196,30 +196,160 @@ function blockingSegments(walls: Wall[]): Segment[] {
 }
 
 /**
- * A token moved from `from` toward `to` as Owlbear's dynamic fog lets it: up to
- * the first wall in the way that blocks (a closed door does; an open one, no),
- * `gap` (scene px) short of it. The walls: the scene's and this client's own.
+ * How close a token's middle may come to a wall that blocks, as Owlbear's dynamic fog has it (scene px);
+ * null if the walls don't stop it. Measured in a room (2026-11-11): only a token with a light is stopped
+ * (one without goes through), its middle kept its light's source radius off the wall (too close, it's put
+ * a few px further). A hidden token isn't stopped either. Its lights: the scene's or this client's own.
  */
-export function stopAtWalls(from: { x: number; y: number }, to: { x: number; y: number }, items: Item[], local: Item[], gap: number): { x: number; y: number } {
+export function wallReach(token: Item, items: Item[], local: Item[]): number | null {
+  if (!token.visible) {
+    return null;
+  }
+  let reach: number | null = null;
+  for (const item of [...items, ...local]) {
+    if (isLight(item) && item.attachedTo === token.id) {
+      reach = Math.max(reach ?? 0, item.sourceRadius);
+    }
+  }
+  return reach;
+}
+
+/**
+ * A token (its middle) moved from `from` toward `to` as Owlbear's dynamic fog lets it: up to where it
+ * would first come `radius` (scene px) near a wall that blocks (a closed door does; an open one, no), as
+ * a circle that mustn't touch one, whichever way it comes at it (0: up to the wall itself). The walls:
+ * the scene's and this client's own.
+ */
+export function stopAtWalls(from: { x: number; y: number }, to: { x: number; y: number }, items: Item[], local: Item[], radius: number): { x: number; y: number } {
+  const walls = [...items, ...local].filter(isWall);
+  return walls.length === 0 ? to : stopOn(blockingSegments(walls), from, to, radius);
+}
+
+/**
+ * As stopAtWalls, but sliding along a wall it meets, as Owlbear's own drag does: what's left of the move
+ * once it's stopped, less what of it goes into the wall, goes on along it (a few times: a corner's
+ * second wall). Only with a radius (a token's middle kept off the walls: see wallReach).
+ */
+export function slideAtWalls(from: { x: number; y: number }, to: { x: number; y: number }, items: Item[], local: Item[], radius: number): { x: number; y: number } {
+  const walls = [...items, ...local].filter(isWall);
+  if (walls.length === 0) {
+    return to;
+  }
+  const segments = blockingSegments(walls);
+  let [at, goal] = [from, to];
+  for (let k = 0; k < 3; k++) {
+    const stop = stopOn(segments, at, goal, radius);
+    if (Math.hypot(stop.x - goal.x, stop.y - goal.y) < 1e-6) {
+      return stop;
+    }
+    // The wall it's against: the way off it (from its nearest point within reach, a side or an end).
+    let off: [number, number] | null = null;
+    let nearest = Infinity;
+    for (const segment of segments) {
+      const [qx, qy] = awayFrom(stop.x, stop.y, segment);
+      const d = Math.hypot(qx, qy);
+      if (d < nearest && d <= radius + 1) {
+        nearest = d;
+        off = d > 1e-9 ? [qx / d, qy / d] : null;
+      }
+    }
+    if (!off) {
+      return stop;
+    }
+    // What's left of the move, without what goes into the wall.
+    let [rx, ry] = [goal.x - stop.x, goal.y - stop.y];
+    const into = rx * off[0] + ry * off[1];
+    if (into < 0) {
+      rx -= into * off[0];
+      ry -= into * off[1];
+    }
+    if (Math.hypot(rx, ry) < 0.5) {
+      return stop;
+    }
+    [at, goal] = [stop, { x: stop.x + rx, y: stop.y + ry }];
+  }
+  return stopOn(segments, at, goal, radius);
+}
+
+/** A point moved from `from` toward `to` up to where it first meets a segment (`radius` near it: see stopAtWalls). */
+function stopOn(segments: Segment[], from: { x: number; y: number }, to: { x: number; y: number }, radius: number): { x: number; y: number } {
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   const length = Math.hypot(dx, dy);
   if (length < 1e-9) {
     return to;
   }
-  const walls = [...items, ...local].filter(isWall);
-  if (walls.length === 0) {
-    return to;
-  }
+  const [ux, uy] = [dx / length, dy / length];
   let first = Infinity;
-  for (const segment of blockingSegments(walls)) {
-    first = Math.min(first, hit(from.x, from.y, dx / length, dy / length, segment));
+  for (const segment of segments) {
+    first = Math.min(first, radius > 0 ? hitWithin(from.x, from.y, ux, uy, segment, radius) : hit(from.x, from.y, ux, uy, segment));
   }
   if (first > length) {
     return to;
   }
-  const reach = Math.max(0, first - gap);
-  return { x: from.x + (dx / length) * reach, y: from.y + (dy / length) * reach };
+  // A hair short (where it'd touch, rounding could put it a hair inside).
+  const reach = Math.max(0, first - (radius > 0 ? 0.5 : 0));
+  return { x: from.x + ux * reach, y: from.y + uy * reach };
+}
+
+/** From a segment's nearest point to a point (the way off it, and how far). */
+function awayFrom(cx: number, cy: number, [ax, ay, bx, by]: Segment): [number, number] {
+  const [ex, ey] = [bx - ax, by - ay];
+  const len2 = ex * ex + ey * ey;
+  const along = len2 > 0 ? Math.max(0, Math.min(1, ((cx - ax) * ex + (cy - ay) * ey) / len2)) : 0;
+  return [cx - (ax + ex * along), cy - (ay + ey * along)];
+}
+
+/**
+ * How far along a ray (from c, direction d, a unit) it first comes `r` near a segment (into the segment
+ * grown by r all round: its two sides moved out, and a circle round each end), or Infinity. Already that
+ * near: 0 if it's going nearer, Infinity if it's going away (it may leave).
+ */
+function hitWithin(cx: number, cy: number, dx: number, dy: number, [ax, ay, bx, by]: Segment, r: number): number {
+  const [ex, ey] = [bx - ax, by - ay];
+  const len = Math.hypot(ex, ey);
+  // Where it starts: the nearest point of the segment, and how near.
+  const along = len > 0 ? Math.max(0, Math.min(1, ((cx - ax) * ex + (cy - ay) * ey) / (len * len))) : 0;
+  const [qx, qy] = [cx - (ax + ex * along), cy - (ay + ey * along)];
+  const near = Math.hypot(qx, qy);
+  if (near <= r) {
+    // Along it (sliding: see slideAtWalls) isn't nearer, rounding aside.
+    return qx * dx + qy * dy < -1e-6 * near ? 0 : Infinity;
+  }
+  let best = Infinity;
+  if (len > 0) {
+    // Its sides, r out each way: where the ray meets them within the segment's length.
+    const [nx, ny] = [-ey / len, ex / len];
+    const toward = dx * nx + dy * ny;
+    if (Math.abs(toward) > 1e-12) {
+      const off = (cx - ax) * nx + (cy - ay) * ny;
+      for (const side of [r, -r]) {
+        const t = (side - off) / toward;
+        if (t >= 0) {
+          const s = ((cx + dx * t - ax) * ex + (cy + dy * t - ay) * ey) / (len * len);
+          if (s >= 0 && s <= 1) {
+            best = Math.min(best, t);
+          }
+        }
+      }
+    }
+  }
+  // Its ends' circles.
+  for (const [px, py] of [
+    [ax, ay],
+    [bx, by],
+  ]) {
+    const [wx, wy] = [cx - px, cy - py];
+    const b = wx * dx + wy * dy;
+    const disc = b * b - (wx * wx + wy * wy - r * r);
+    if (disc >= 0) {
+      const t = -b - Math.sqrt(disc);
+      if (t >= 0) {
+        best = Math.min(best, t);
+      }
+    }
+  }
+  return best;
 }
 
 /** How far along a ray (from c, direction d) it meets a segment, or Infinity. */
