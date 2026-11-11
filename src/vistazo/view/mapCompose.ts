@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { MapImage } from "../scene";
+import { animationOf } from "./animated";
 
 /**
  * The map images put together on the graphics card: each image cut in blocks (a texture each), drawn as
@@ -17,6 +18,9 @@ import type { MapImage } from "../scene";
  * darken) and drawn over one another so, straight on the target: what's drawn stays premultiplied (its
  * mipmaps right that way too), turned back to straight where it's read (see DETAIL_GLSL; read, here).
  */
+
+/** A map's picture: an image's, a video's, or an animation's canvas (see AnimatedImage). */
+export type MapMedia = HTMLImageElement | HTMLVideoElement | HTMLCanvasElement;
 
 /** A scene box, scene px (x0, y0: its top left). */
 export type MapBox = { x0: number; y0: number; w: number; h: number };
@@ -73,6 +77,8 @@ export class MapComposer {
   private shownBox: MapBox | null = null;
   /** Where the videos are (scene px): all that's drawn again at a new frame of theirs (see compose). */
   private videoBox: MapBox | null;
+  /** The animations (GIFs: see AnimatedImage): where each is, and its frame last sent to the card. */
+  private animated: { texture: THREE.Texture; canvas: HTMLCanvasElement; box: MapBox; sent: number }[];
   private fullBudget: number;
   /** Counts the times the full blocks are asked for (see Full.used). */
   private asked = 0;
@@ -82,8 +88,6 @@ export class MapComposer {
   private sending: { full: Full; texture: THREE.Texture; bitmap: ImageBitmap | null }[] = [];
   private sendFrame = 0;
   private disposed = false;
-  /** When the detail's mipmaps were last made at a video's new frame (see compose). */
-  private detailMipAt = -Infinity;
   /** The target the map's read through (see read): kept for the next read, as big as the biggest yet. */
   private reader: THREE.WebGLRenderTarget | null = null;
   /** Told when the detail's drawn sharper on its own (its full blocks loaded). */
@@ -92,7 +96,16 @@ export class MapComposer {
   /** Whether the camera's moving: the full blocks wait to be sent to the card till it's still (see sendSoon). */
   busy: () => boolean = () => false;
 
-  private constructor(box: MapBox, sizes: ComposerSizes, sharpest: number, quads: Quad[], videoBox: MapBox | null, anisotropy: number, onSharper: () => void) {
+  private constructor(
+    box: MapBox,
+    sizes: ComposerSizes,
+    sharpest: number,
+    quads: Quad[],
+    videoBox: MapBox | null,
+    animated: MapComposer["animated"],
+    anisotropy: number,
+    onSharper: () => void
+  ) {
     this.box = box;
     this.width = Math.max(1, Math.ceil(box.w * sizes.basePx));
     this.height = Math.max(1, Math.ceil(box.h * sizes.basePx));
@@ -101,6 +114,7 @@ export class MapComposer {
     this.fullBudget = sizes.fullBudget;
     this.quads = quads;
     this.videoBox = videoBox;
+    this.animated = animated;
     this.onSharper = onSharper;
     quads.forEach((quad, i) => {
       quad.mesh.renderOrder = i;
@@ -117,7 +131,7 @@ export class MapComposer {
    */
   static async make(
     maps: MapImage[],
-    media: (HTMLImageElement | HTMLVideoElement)[],
+    media: MapMedia[],
     box: MapBox,
     sizes: ComposerSizes,
     anisotropy: number,
@@ -127,19 +141,31 @@ export class MapComposer {
     const made = await Promise.allSettled(
       maps.map((map, i) => {
         const element = media[i];
-        return element instanceof HTMLVideoElement ? Promise.resolve([videoQuad(map, element)]) : imageQuads(map, element, sizes.px);
+        return element instanceof HTMLImageElement ? imageQuads(map, element, sizes.px) : Promise.resolve([videoQuad(map, element)]);
       })
     );
     const failed = made.find((result): result is PromiseRejectedResult => result.status === "rejected");
     const quads = made.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
+    // One that can't be cut (its own quads dropped already, see imageQuads): left out, the rest drawn.
     if (failed) {
-      quads.forEach(dropQuad);
-      console.error("Rising Ranges: Vistazo couldn't cut the map images in blocks", failed.reason);
-      return null;
+      if (quads.length === 0) {
+        console.error("Rising Ranges: Vistazo couldn't cut the map images in blocks", failed.reason);
+        return null;
+      }
+      console.warn("Rising Ranges: Vistazo couldn't cut a map image in blocks, leaving it out", failed.reason);
     }
+    // Where the videos are, and each animation (drawn again at their new frames).
     const videos = maps.map((map, i) => (media[i] instanceof HTMLVideoElement ? boxOf(map.corners) : null)).filter((b): b is MapBox => b !== null);
     const videoBox = videos.length > 0 ? videos.reduce(union) : null;
-    return new MapComposer(box, sizes, sourceDensity(maps, media, Infinity) || sizes.px, quads, videoBox, anisotropy, onSharper);
+    const animated: MapComposer["animated"] = [];
+    maps.forEach((map, i) => {
+      const canvas = media[i];
+      const result = made[i];
+      if (canvas instanceof HTMLCanvasElement && result.status === "fulfilled" && result.value[0]) {
+        animated.push({ texture: result.value[0].texture, canvas, box: boxOf(map.corners), sent: -1 });
+      }
+    });
+    return new MapComposer(box, sizes, sourceDensity(maps, media, Infinity) || sizes.px, quads, videoBox, animated, anisotropy, onSharper);
   }
 
   /** The ground's texture (drawn by compose), premultiplied. */
@@ -164,30 +190,50 @@ export class MapComposer {
 
   /**
    * The ground's texture drawn, and the detail's if there's one: all of them (a new renderer, whose card
-   * had none of it), or only where the videos are (`videos`: a new frame of theirs).
+   * had none of it); or, at new frames (`frames`), only where they are: the videos' (if `videos`, a new
+   * frame of theirs) and each animation's that's gone on since (its canvas sent again only then). Each
+   * such part drawn on its own (not the box round them all, maybe most of the map); the smaller copies
+   * made once, after the last. Whether anything was drawn.
    */
-  compose(renderer: THREE.WebGLRenderer, videos = false) {
+  compose(renderer: THREE.WebGLRenderer, frames?: { videos: boolean }): boolean {
     this.renderer = renderer;
-    const only = videos ? this.videoBox : null;
-    if (videos && !only) {
-      return;
+    const parts: (MapBox | null)[] = frames ? [] : [null];
+    if (frames?.videos && this.videoBox) {
+      parts.push(this.videoBox);
     }
-    this.draw(renderer, this.box, this.target, only);
+    for (const animation of this.animated) {
+      const version = animationOf(animation.canvas)?.version ?? 0;
+      if (!frames || version !== animation.sent) {
+        animation.sent = version;
+        animation.texture.needsUpdate = true;
+        if (frames) {
+          parts.push(animation.box);
+        }
+      }
+    }
+    if (parts.length === 0) {
+      return false;
+    }
+    this.drawParts(renderer, this.box, this.target, parts, true);
     if (this.detailTarget && this.shownBox) {
-      // At a video's new frame, the detail's smaller copies (all of it: those far off) made again a few
-      // times a second only; its own texels each frame.
-      const now = performance.now();
-      const mip = !only || now - this.detailMipAt >= DETAIL_MIP_MS;
-      if (mip) {
-        this.detailMipAt = now;
-      }
-      const texture = this.detailTarget.texture;
-      texture.generateMipmaps = mip;
-      try {
-        this.draw(renderer, this.shownBox, this.detailTarget, only);
-      } finally {
-        texture.generateMipmaps = true;
-      }
+      // Its smaller copies made again with each frame too: seen a bit far off or slanting, they're what
+      // shows (made less often, a video there would jump).
+      const shown = this.shownBox;
+      this.drawParts(renderer, shown, this.detailTarget, parts.filter((part) => !part || meets(part, shown)), true);
+    }
+    return true;
+  }
+
+  /** A box of the map drawn on `into` within each of `parts` (null: all of it), its smaller copies made after the last (if `mip`). */
+  private drawParts(renderer: THREE.WebGLRenderer, box: MapBox, into: THREE.WebGLRenderTarget, parts: (MapBox | null)[], mip: boolean) {
+    const texture = into.texture;
+    try {
+      parts.forEach((part, i) => {
+        texture.generateMipmaps = mip && i === parts.length - 1;
+        this.draw(renderer, box, into, part);
+      });
+    } finally {
+      texture.generateMipmaps = true;
     }
   }
 
@@ -469,9 +515,6 @@ function shownTarget(width: number, height: number, anisotropy: number): THREE.W
   return target;
 }
 
-/** How often the detail's smaller copies are made again while a video plays on it, ms (see MapComposer.compose). */
-const DETAIL_MIP_MS = 250;
-
 /** Drawn premultiplied over what's there (the images are read premultiplied too). */
 function quadMaterial(texture: THREE.Texture): THREE.MeshBasicMaterial {
   return new THREE.MeshBasicMaterial({
@@ -537,8 +580,9 @@ function quadMesh(map: MapImage, inner: [number, number, number, number], crop: 
 }
 
 /** A video map: one quad, its texture the video's (its frames as they come, see MapComposer.compose). */
-function videoQuad(map: MapImage, video: HTMLVideoElement): Quad {
-  const texture = new THREE.VideoTexture(video);
+/** A video's (or an animation's canvas, see AnimatedImage) quad: one texture over the whole map item. */
+function videoQuad(map: MapImage, source: HTMLVideoElement | HTMLCanvasElement): Quad {
+  const texture = source instanceof HTMLVideoElement ? new THREE.VideoTexture(source) : new THREE.CanvasTexture(source);
   texture.flipY = false;
   texture.premultiplyAlpha = true;
   texture.generateMipmaps = false;
@@ -650,7 +694,7 @@ function meets(a: MapBox, b: MapBox): boolean {
  * them lets (a map's file less dense than that kept whole; videos aren't made smaller, not counted).
  * With no budget (Infinity), the densest file's.
  */
-export function sourceDensity(maps: MapImage[], media: (HTMLImageElement | HTMLVideoElement)[], budget: number): number {
+export function sourceDensity(maps: MapImage[], media: MapMedia[], budget: number): number {
   const images = maps
     .map((map, i) => ({ map, element: media[i] }))
     .filter((entry): entry is { map: MapImage; element: HTMLImageElement } => entry.element instanceof HTMLImageElement && entry.element.naturalWidth > 0 && entry.map.width > 0)

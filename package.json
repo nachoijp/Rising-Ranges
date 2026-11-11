@@ -30,6 +30,7 @@
     "@mui/material": "^7.3.1",
     "@owlbear-rodeo/sdk": "^3.1.0",
     "fflate": "0.8.3",
+    "gifuct-js": "^2.1.2",
     "polygon-clipping": "0.15.7",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",

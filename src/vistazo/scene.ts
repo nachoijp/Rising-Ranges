@@ -26,8 +26,11 @@ import { time } from "../timing";
 // see relief/vistazo.ts), and the tokens with their height above the
 // ground and the terrain under them. All in scene px; heights in grid units.
 
-/** An image of the Map layer: drawn as an <img> of its own size under `transform`; `video`: an animated one (webm and the like), drawn with a video element. */
-export type MapImage = { url: string; video: boolean; width: number; height: number; transform: string; corners: Pair[] };
+/**
+ * An image of the Map layer: drawn as an <img> of its own size under `transform`; `video`: an animated one
+ * (webm and the like), drawn with a video element; `mime`: its file's type (a GIF may be animated too).
+ */
+export type MapImage = { url: string; video: boolean; mime: string; width: number; height: number; transform: string; corners: Pair[] };
 
 /** Whether an image item is a video (Owlbear takes webm and the like as images). */
 const isVideo = (item: Image) => item.image.mime.startsWith("video");
@@ -108,6 +111,8 @@ export type Prop = {
   name: string;
   url: string;
   video: boolean;
+  /** Its file's type (a GIF may be animated: see AnimatedImage). */
+  mime: string;
   x: number;
   y: number;
   size: number;
@@ -135,6 +140,7 @@ export function propOf(item: Image, dpi: number, measuredAt: (x: number, y: numb
     name: tokenName(item),
     url: item.image.url,
     video: isVideo(item),
+    mime: item.image.mime,
     x,
     y,
     size: Math.max(item.image.width * Math.abs(item.scale.x), item.image.height * Math.abs(item.scale.y)) * k,
@@ -236,6 +242,7 @@ function mapImage(item: Image, dpi: number): MapImage {
   return {
     url: item.image.url,
     video: isVideo(item),
+    mime: item.image.mime,
     width,
     height,
     transform:

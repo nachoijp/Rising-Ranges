@@ -25,12 +25,13 @@ import { doorMesh, type DoorMap, type DoorView } from "./doors";
 import { BASE_TEXTURE_MAX, DETAIL_SIZE, FULL_BUDGET, LIGHT, QUALITY, SOURCE_BUDGET, STONE, TEXTURE_MAX, VIEW_CELL, type Camera, type DistanceLine, type Options, type Reach, type Texture, type TokenText, type TokenView, type Wall, tintOf } from "./view/types";
 import { isShared, patternTexture } from "./view/patterns";
 import { floorOf, mediaElement, propsKey, stopVideo, propToken, raised, skinAcross, skinPoint, visibleOnScreen } from "./view/helpers";
+import { AnimatedImage, animationOf, mayAnimate, stopAnimation } from "./view/animated";
 import { computeWalls, type Region } from "./view/walls";
 import { BaseBatch, moveBase, ringMaterial, type BaseSeat } from "./view/bases";
 import { UNDER_FRAGMENT, UNDER_VERTEX } from "./view/shaders";
 import { FILL_BANDS, FILL_CELLS, FOG_GLSL, baseTexture, based, clouded, detailed, fogCut, fogCutShader, fogged, foggedToo, grained, gridded, layer, tinted } from "./view/layers";
 import { reachMask, waterMaterial, waterReach, waterShape, type WaterReach } from "./view/water";
-import { MapComposer, sourceDensity, type MapBox } from "./view/mapCompose";
+import { MapComposer, sourceDensity, type MapBox, type MapMedia } from "./view/mapCompose";
 import { record, since, stamp, time, timingOn } from "../timing";
 
 export type { Camera, DistanceLine, Options } from "./view/types";
@@ -153,6 +154,11 @@ export class VistazoView {
    * frame of theirs (see watchVideo).
    */
   private propVideos = new Map<string, PropVideo>();
+  /**
+   * The flat props' GIFs (and animated WebPs), one per file as the videos (see propAnimation): read as an
+   * animation, its texture; or still (not one, or unreadable so), drawn as an image.
+   */
+  private propAnimations = new Map<string, PropAnimation>();
   /** The frame last drawn in (its time, see drawSoon). */
   private drawnAt = -1;
   /**
@@ -365,6 +371,9 @@ export class VistazoView {
   };
   /** Bumped when the video maps start or stop (their frame callbacks see they're stale). */
   private mapsPlaying = 0;
+  /** The maps' new frames waiting to be put together (see composeFrames): any, and a video's among them. */
+  private mapFrameDue = false;
+  private mapVideoDue = false;
   /** A lone video map played as the ground's texture itself (see useTexture): none of it drawn again. */
   private directVideo: HTMLVideoElement | null = null;
   /** Then, its first frame still: for what reads the map by its own reckoning (water, mirrored fills). */
@@ -1786,7 +1795,7 @@ export class VistazoView {
     this.softColors = null;
     this.mapColors = null;
     // The old maps' videos stopped (played, they'd go on decoding unseen).
-    this.mapMedia?.images.forEach((img) => img instanceof HTMLVideoElement && stopVideo(img));
+    this.mapMedia?.images.forEach(stopMedia);
     this.mapMedia = null;
     this.mapsPlaying++;
     this.texture = null;
@@ -1803,14 +1812,14 @@ export class VistazoView {
     const { x0, y0, x1, y1 } = scene.bounds;
     const w = x1 - x0;
     const h = y1 - y0;
-    const draw = (images: CanvasImageSource[], px: number) => {
+    const draw = (images: CanvasImageSource[], maps: MapImage[], px: number) => {
       const canvas = document.createElement("canvas");
       canvas.width = Math.max(1, Math.ceil(w * px));
       canvas.height = Math.max(1, Math.ceil(h * px));
       const context = canvas.getContext("2d", { willReadFrequently: true })!;
       context.imageSmoothingQuality = "high";
       images.forEach((img, index) => {
-        const map = scene.maps[index];
+        const map = maps[index];
         context.setTransform(new DOMMatrix().scale(px).translate(-x0, -y0).multiply(new DOMMatrix(map.transform)));
         // At the size the item says (the file may be another size).
         context.drawImage(img, 0, 0, map.width, map.height);
@@ -1837,24 +1846,38 @@ export class VistazoView {
             img.onload = () => resolve(img);
             img.onerror = reject;
             img.src = map.url;
+          }).catch((error) => {
+            // One that can't be read (CORS, gone): left out, the rest drawn.
+            console.warn(`Rising Ranges: Vistazo couldn't read a map image, leaving it out (${map.url})`, error);
+            return null;
           })
       )
     )
-      .then(async (images) => {
+      .then(async (loaded) => {
+        // Those read, with their maps (in order).
+        const maps = scene.maps.filter((_, i) => loaded[i] !== null);
+        const read = loaded.filter((img): img is CanvasImageSource => img !== null);
+        if (read.length === 0) {
+          throw new Error("none of the map images could be read");
+        }
+        // Animated ones (GIF, WebP): their frames on a canvas each, in their place (see AnimatedImage).
+        const images: CanvasImageSource[] = await Promise.all(
+          read.map(async (img, i) => (img instanceof HTMLImageElement && mayAnimate(maps[i].mime) ? ((await AnimatedImage.open(maps[i].url, maps[i].mime))?.canvas ?? img) : img))
+        );
         // In steps, the page let go between them (each is long on a slow machine): another map's
         // meanwhile, this one's dropped.
         const pause = () => new Promise((resolve) => setTimeout(resolve));
-        // Another map's meanwhile: these videos let go.
+        // Another map's meanwhile: these videos and animations let go.
         const stale = () => {
           if (key === this.colorsFor) return false;
-          images.forEach((img) => img instanceof HTMLVideoElement && stopVideo(img));
+          images.forEach(stopMedia);
           return true;
         };
         if (stale()) {
           return;
         }
-        // A video map played: a smaller texture, drawn again every frame.
-        const played = this.options.videoMaps && scene.maps.some((map) => map.video);
+        // A video map played (or an animated one): a smaller texture, drawn again every frame.
+        const played = this.options.videoMaps && (maps.some((map) => map.video) || images.some((img) => animationOf(img) !== null));
         const cap = played ? (this.options.quality === "high" ? VIDEO_TEXTURE_MAX : VIDEO_TEXTURE_LIGHT) : TEXTURE_MAX;
         const most = Math.min(cap, this.renderer?.capabilities.maxTextureSize ?? TEXTURE_MAX);
         // A lone map (an image, or a video's first frame): its picture itself, made the graphics card's
@@ -1867,17 +1890,17 @@ export class VistazoView {
         // its frames go straight to the card (see useTexture).
         let composer: MapComposer | null = null;
         if (!(lone instanceof HTMLVideoElement && played) && this.renderer) {
-          const media = images as (HTMLImageElement | HTMLVideoElement)[];
+          const media = images as MapMedia[];
           // The small blocks within the quality's budget (their files' where the camera looks: see
           // MapComposer.sharpen); the ground's texture small (seen past the detail only); the detail as big
           // as a texture over the map was, videos or not (a new frame draws only where they are).
           const quality = this.options.quality;
-          const px = sourceDensity(scene.maps, media, SOURCE_BUDGET[quality] ?? SOURCE_BUDGET.high) || 1;
+          const px = sourceDensity(maps, media, SOURCE_BUDGET[quality] ?? SOURCE_BUDGET.high) || 1;
           const basePx = Math.min(px, Math.min(BASE_TEXTURE_MAX, most) / Math.max(w, h));
           const detailSize = Math.min(DETAIL_SIZE[quality] ?? DETAIL_SIZE.high, this.renderer.capabilities.maxTextureSize);
           const fullBudget = FULL_BUDGET[quality] ?? FULL_BUDGET.high;
           let made: MapComposer | null = null;
-          made = await MapComposer.make(scene.maps, media, { x0, y0, w, h }, { px, basePx, detailSize, fullBudget }, this.renderer.capabilities.getMaxAnisotropy(), () => this.sharpened(made));
+          made = await MapComposer.make(maps, media, { x0, y0, w, h }, { px, basePx, detailSize, fullBudget }, this.renderer.capabilities.getMaxAnisotropy(), () => this.sharpened(made));
           composer = made;
           if (stale()) {
             composer?.dispose();
@@ -1885,7 +1908,7 @@ export class VistazoView {
           }
         }
         const smallPx = Math.min(1, 1024 / Math.max(w, h));
-        const small = composer && this.renderer ? smallFrom(composer, this.renderer, w, h, smallPx) : draw(images, smallPx);
+        const small = composer && this.renderer ? smallFrom(composer, this.renderer, w, h, smallPx) : draw(images, maps, smallPx);
         const pixels = { data: small.context.getImageData(0, 0, small.canvas.width, small.canvas.height).data, w: small.canvas.width, h: small.canvas.height };
         const colors: MapColors = { x0, y0, w, h, small: pixels, soft: softPixels(small.canvas, w, h, scene.dpi) };
         this.mapColors = colors;
@@ -1906,7 +1929,7 @@ export class VistazoView {
           this.updateDetail(true);
           // The small one for what's read on the page (see fillPixels: the composer's, where there's one).
           this.texture = { canvas: small.canvas, x0, y0, w, h };
-          this.mapMedia = { images, maps: scene.maps };
+          this.mapMedia = { images, maps };
           this.fillCache.clear();
           this.useTexture();
           // The water, the walls' shadows and what's under bridges a moment later (as below).
@@ -1926,7 +1949,7 @@ export class VistazoView {
             bitmap = null;
           }
         }
-        const big = bitmap ? small : draw(images, Math.min(1, most / Math.max(w, h)));
+        const big = bitmap ? small : draw(images, maps, Math.min(1, most / Math.max(w, h)));
         await pause();
         if (stale()) {
           bitmap?.close();
@@ -1934,7 +1957,7 @@ export class VistazoView {
         }
         this.texture?.bitmap?.close();
         this.texture = { canvas: big.canvas, x0, y0, w, h, ...(bitmap ? { bitmap } : {}) };
-        this.mapMedia = { images, maps: scene.maps };
+        this.mapMedia = { images, maps };
         this.fillCache.clear();
         this.useTexture();
         // The water, the walls' shadows and what's under bridges (its fill, from this map) a moment later.
@@ -2884,6 +2907,10 @@ export class VistazoView {
     for (const entry of this.propVideos.values()) {
       entry.waiting = [];
     }
+    const animationsUsed = new Set<string>();
+    for (const entry of this.propAnimations.values()) {
+      entry.waiting = [];
+    }
     const u = this.u;
     const k = this.k;
     const overlay = document.createDocumentFragment();
@@ -2909,7 +2936,13 @@ export class VistazoView {
     loader.setCrossOrigin("anonymous");
     const shown = this.propsMode;
     const { propShadows, propLines, propLabels } = this.options;
-    for (const prop of shown === "none" ? [] : scene.props) {
+    // The flat props drawn in a set order (transparent, they don't hide one another by depth; left to
+    // their distance from the camera, one over another's middle would come and go as it turns): higher
+    // ones over lower, and at the same height as Owlbear stacks them (the scene's order).
+    const props = shown === "none" ? [] : scene.props;
+    const stacked = props.map((prop, i) => ({ prop, i })).sort((a, b) => a.prop.terrain + a.prop.own - (b.prop.terrain + b.prop.own) || a.i - b.i);
+    const stackOf = new Map(stacked.map(({ prop }, at) => [prop, at]));
+    for (const prop of props) {
       const flat = shown === "flat";
       const zFloor = prop.terrain * k;
       const zTok = (prop.terrain + prop.own) * k;
@@ -2946,11 +2979,16 @@ export class VistazoView {
           // Playing on the ground, as on the map.
           videosUsed.add(prop.url);
           this.propVideo(prop.url, show);
+        } else if (mayAnimate(prop.mime)) {
+          // Playing on the ground if it's animated (a GIF), as on the map; or still, an image.
+          animationsUsed.add(prop.url);
+          this.propAnimation(prop.url, prop.mime, show, () => loader.load(prop.url, show));
         } else {
           loader.load(prop.url, show);
         }
         mesh = new THREE.Mesh(this.propQuad(prop, zTok + 0.6), material);
-        mesh.renderOrder = 2;
+        // Between the shadows (1) and what's drawn over the props (3).
+        mesh.renderOrder = 2 + (stackOf.get(prop) ?? 0) / (props.length + 1);
         mesh.userData.prop = true;
         this.tokenGroup.add(mesh);
         if (dark) {
@@ -3041,6 +3079,13 @@ export class VistazoView {
         this.propVideos.delete(url);
       }
     }
+    for (const [url, entry] of this.propAnimations) {
+      if (!animationsUsed.has(url)) {
+        entry.animation?.close();
+        entry.texture?.dispose();
+        this.propAnimations.delete(url);
+      }
+    }
     // The old standing tokens' and props' videos stopped (off the page they'd pause, but hold on till collected).
     this.tokenOverlay.querySelectorAll("video").forEach(stopVideo);
     this.tokenOverlay.replaceChildren(overlay);
@@ -3102,6 +3147,54 @@ export class VistazoView {
   }
 
   /**
+   * A flat prop's GIF (or WebP), its texture to `show` once it's read as an animation (one canvas and
+   * texture for every prop with the same file, kept from one build to the next, as a video's); `still`
+   * if it isn't one (or can't be read so): drawn as an image then.
+   */
+  private propAnimation(url: string, mime: string, show: (texture: THREE.Texture) => void, still: () => void) {
+    let entry = this.propAnimations.get(url);
+    if (!entry) {
+      const made: PropAnimation = { animation: null, texture: null, still: false, waiting: [] };
+      entry = made;
+      this.propAnimations.set(url, made);
+      void AnimatedImage.open(url, mime).then((animation) => {
+        if (this.propAnimations.get(url) !== made) {
+          animation?.close();
+          return;
+        }
+        const waiting = made.waiting.splice(0);
+        if (!animation) {
+          made.still = true;
+          waiting.forEach((wait) => wait.still());
+          return;
+        }
+        const texture = new THREE.CanvasTexture(animation.canvas);
+        // Shared by the props that show it: not let go with one's material (see clear).
+        texture.userData.shared = true;
+        made.animation = animation;
+        made.texture = texture;
+        // Drawn again on each new frame (see requestRender: at the quality's pace).
+        animation.onFrame = () => {
+          texture.needsUpdate = true;
+          this.requestRender();
+        };
+        waiting.forEach((wait) => wait.show(texture));
+        // Minimized, or at low quality: still (see pauseVideos).
+        if (!this.paused && this.moving) {
+          animation.play();
+        }
+      });
+    }
+    if (entry.texture) {
+      show(entry.texture);
+    } else if (entry.still) {
+      still();
+    } else {
+      entry.waiting.push({ show, still });
+    }
+  }
+
+  /**
    * The view only draws when something changes; a video on the ground
    * changes with each of its frames, so it asks to be drawn again on each
    * new one (see requestRender: at the quality's pace), until it's let go.
@@ -3118,55 +3211,52 @@ export class VistazoView {
   }
 
   /**
-   * The video maps played on the ground (with the option on, not minimized):
-   * at each new frame of theirs, the ground's texture drawn again from all
-   * the maps (the grid over them) and sent to the graphics card. Otherwise
-   * still, at the frame they're on.
+   * The video maps (and animated ones: GIFs) played on the ground (with the option on, not minimized):
+   * at each new frame of theirs, the ground's texture drawn again from all the maps (the grid over them)
+   * and sent to the graphics card. Otherwise still, at the frame they're on.
    */
   private playMaps() {
     const media = this.mapMedia;
     const texture = this.texture;
     const run = ++this.mapsPlaying;
     const videos = (media?.images ?? []).filter((img): img is HTMLVideoElement => img instanceof HTMLVideoElement);
-    if (!media || !texture || videos.length === 0) {
+    const animations = (media?.images ?? []).map(animationOf).filter((animation): animation is AnimatedImage => animation !== null);
+    if (!media || !texture || (videos.length === 0 && animations.length === 0)) {
       return;
     }
     if (!this.options.videoMaps || this.paused) {
       videos.forEach((video) => video.pause());
+      animations.forEach((animation) => animation.pause());
       return;
     }
     const context = texture.canvas.getContext("2d")!;
     const px = texture.canvas.width / texture.w;
     let last = 0;
-    let drawn = -Infinity;
-    const frame = () => {
+    // A new frame of one (a video's or an animation's): drawn. False once these maps aren't the ground's.
+    const frame = (fromVideo: boolean) => {
       if (run !== this.mapsPlaying || !this.mapTexture) {
-        return;
+        return false;
+      }
+      // Put together on the graphics card: noted, and put together once before the scene's next drawing
+      // (see composeFrames), at the animation's pace (see animate). Every video's and animation's new
+      // frames in it, none lost to another's.
+      if (this.composer && this.renderer && !this.directVideo) {
+        this.mapVideoDue ||= fromVideo;
+        this.mapFrameDue = true;
+        this.requestRender();
+        return true;
       }
       // At medium or low quality, 15 frames a second at most (the scene drawn again with each).
       const now = performance.now();
       if (this.options.quality !== "high" && now - last < 1000 / 15 - 2) {
-        videos[0].requestVideoFrameCallback(frame);
-        return;
+        return true;
       }
       last = now;
       // Straight from the video: only the scene drawn again.
       if (this.directVideo) {
         this.mapTexture.needsUpdate = true;
         this.requestRender();
-        videos[0].requestVideoFrameCallback(frame);
-        return;
-      }
-      // Put together again on the graphics card (its videos' textures at their new frames), at the
-      // animation's pace at most (see animate): more would be drawn for nothing.
-      if (this.composer && this.renderer) {
-        if (now - drawn >= this.look.frameMs - 2) {
-          drawn = now;
-          this.composer.compose(this.renderer, true);
-          this.requestRender();
-        }
-        videos[0].requestVideoFrameCallback(frame);
-        return;
+        return true;
       }
       context.setTransform(1, 0, 0, 1, 0, 0);
       context.clearRect(0, 0, texture.canvas.width, texture.canvas.height);
@@ -3178,13 +3268,46 @@ export class VistazoView {
       context.setTransform(1, 0, 0, 1, 0, 0);
       this.mapTexture.needsUpdate = true;
       this.requestRender();
-      videos[0].requestVideoFrameCallback(frame);
+      return true;
     };
     for (const video of videos) {
       video.loop = true;
       void video.play().catch(() => {});
     }
-    videos[0].requestVideoFrameCallback(frame);
+    if (videos.length > 0) {
+      const onVideo = () => {
+        if (frame(true)) {
+          videos[0].requestVideoFrameCallback(onVideo);
+        }
+      };
+      videos[0].requestVideoFrameCallback(onVideo);
+    }
+    for (const animation of animations) {
+      animation.onFrame = () => {
+        if (!frame(false)) {
+          animation.pause();
+        }
+      };
+      animation.play();
+    }
+  }
+
+  /**
+   * The maps' new frames (see playMaps) put together on the graphics card, once for all of them, just
+   * before the scene's drawn: only where they are (see MapComposer.compose).
+   */
+  private composeFrames() {
+    if (!this.mapFrameDue) {
+      return;
+    }
+    const videos = this.mapVideoDue;
+    this.mapFrameDue = false;
+    this.mapVideoDue = false;
+    const composer = this.composer;
+    const renderer = this.renderer;
+    if (composer && renderer && this.mapTexture === composer.texture) {
+      time("3d.mapFrames", () => composer.compose(renderer, { videos }));
+    }
   }
 
   /** The picture drawn again on the animation loop's next step (see animate), however many videos ask. */
@@ -3950,6 +4073,13 @@ export class VistazoView {
         void video.play().catch(() => {});
       }
     }
+    for (const { animation } of this.propAnimations.values()) {
+      if (this.paused || !this.moving) {
+        animation?.pause();
+      } else {
+        animation?.play();
+      }
+    }
   }
 
   /** A flat prop's picture as two triangles in view units, at height z (its uv the picture's). */
@@ -4318,6 +4448,7 @@ export class VistazoView {
 
   private render() {
     if (this.renderer && this.scene && this.width > 0 && this.height > 0 && !this.compiling) {
+      this.composeFrames();
       time("3d.render", () => this.draw());
       this.drawnAt = Number(document.timeline.currentTime ?? -1);
       if (this.composer && this.camVersion !== this.detailCam) {
@@ -4857,6 +4988,23 @@ const VIDEO_TEXTURE_LIGHT = 1536;
 
 /** A flat prop's video, shared by the props that show its file (see Renderer.propVideo). */
 type PropVideo = { video: HTMLVideoElement; texture: THREE.VideoTexture | null; waiting: ((texture: THREE.Texture) => void)[] };
+
+/** A flat prop's GIF (see propAnimation): its animation and texture once read, or `still` (an image). */
+type PropAnimation = {
+  animation: AnimatedImage | null;
+  texture: THREE.CanvasTexture | null;
+  still: boolean;
+  waiting: { show: (texture: THREE.Texture) => void; still: () => void }[];
+};
+
+/** A map's media let go: a video stopped and emptied, an animation closed. */
+function stopMedia(media: CanvasImageSource) {
+  if (media instanceof HTMLVideoElement) {
+    stopVideo(media);
+  } else {
+    stopAnimation(media);
+  }
+}
 
 /** A surface's arrays as a three.js geometry (see surfaces.ts). */
 function geometryOf(surface: Surface): THREE.BufferGeometry {
