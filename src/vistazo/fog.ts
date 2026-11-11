@@ -109,10 +109,70 @@ function boxOf(ring: Point[]): Box {
 const inBox = (x: number, y: number, [x0, y0, x1, y1]: Box) => x >= x0 && x <= x1 && y >= y0 && y <= y1;
 
 function inRing(x: number, y: number, ring: Point[]): boolean {
+  if (ring.length >= INDEXED_RING) {
+    return inIndexedRing(x, y, ring);
+  }
   let inside = false;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
     const [xi, yi] = ring[i];
     const [xj, yj] = ring[j];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/**
+ * From how many points a ring is asked through its bands (see inIndexedRing): a light's lit area has
+ * hundreds, and the curtains ask the fog hundreds of times for each frame of a lit token's drag (most of
+ * their time, measured in a room: 6 of 7 ms a frame).
+ */
+const INDEXED_RING = 24;
+
+/** A ring's edges by horizontal band (each edge in every band its height crosses), and the bands' span. */
+type RingBands = { y0: number; step: number; bands: Uint32Array[] };
+const ringBands = new WeakMap<Point[], RingBands>();
+
+function bandsOf(ring: Point[]): RingBands {
+  let index = ringBands.get(ring);
+  if (index) {
+    return index;
+  }
+  let [y0, y1] = [Infinity, -Infinity];
+  for (const [, y] of ring) {
+    y0 = Math.min(y0, y);
+    y1 = Math.max(y1, y);
+  }
+  const count = Math.max(1, Math.min(512, Math.ceil(ring.length / 4)));
+  const step = (y1 - y0) / count || 1;
+  const lists: number[][] = Array.from({ length: count }, () => []);
+  const band = (y: number) => Math.min(count - 1, Math.max(0, Math.floor((y - y0) / step)));
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [a, b] = [band(Math.min(ring[i][1], ring[j][1])), band(Math.max(ring[i][1], ring[j][1]))];
+    for (let k = a; k <= b; k++) {
+      lists[k].push(i);
+    }
+  }
+  index = { y0, step, bands: lists.map((list) => Uint32Array.from(list)) };
+  ringBands.set(ring, index);
+  return index;
+}
+
+/**
+ * inRing through the ring's bands: only the edges whose height crosses the point's band are counted (the
+ * others can't cross its ray), so the same answer for a fraction of the work.
+ */
+function inIndexedRing(x: number, y: number, ring: Point[]): boolean {
+  const { y0, step, bands } = bandsOf(ring);
+  const k = Math.min(bands.length - 1, Math.floor((y - y0) / step));
+  if (k < 0) {
+    return false;
+  }
+  let inside = false;
+  for (const i of bands[k]) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[i === 0 ? ring.length - 1 : i - 1];
     if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
       inside = !inside;
     }

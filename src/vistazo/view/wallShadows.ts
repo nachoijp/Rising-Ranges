@@ -11,7 +11,8 @@ import { VIEW_CELL, type Wall } from "./types";
 export function wallShadowBuffers(
   list: Wall[],
   heightAt: (x: number, y: number) => number | undefined,
-  c: { u: number; k: number; relief: number }
+  c: { u: number; k: number; relief: number },
+  around: Wall[] = list
 ): { positions: Float32Array; colors: Float32Array } | null {
   const { u, k } = c;
   if (c.relief <= 0) {
@@ -28,8 +29,11 @@ export function wallShadowBuffers(
   // Each end goes out along the walls' normals there, averaged with the next wall's: the shadows of
   // a wall's pieces meet at their ends (out along each piece's own normal, a curve's left wedges between).
   const key = (x: number, y: number) => `${Math.round(x * 100)},${Math.round(y * 100)}`;
+  // Of all the walls round them, not only those drawn (a tile's: see the Glance's reheight), so a
+  // wall's shadow meets its neighbour's the same, whichever tile that's in.
+  const near = around === list ? inside : around.filter((wall) => !wall.edge);
   const normals = new Map<string, [number, number]>();
-  for (const wall of inside) {
+  for (const wall of near) {
     for (const [x, y] of [[wall.ax, wall.ay], [wall.bx, wall.by]]) {
       const sum = normals.get(key(x, y)) ?? [0, 0];
       normals.set(key(x, y), [sum[0] + wall.nx, sum[1] + wall.ny]);
@@ -46,7 +50,7 @@ export function wallShadowBuffers(
   // spikes. They reach only almost that far there; at each end the least of the strips meeting there
   // (the next one's far corner the same: no light gap between them).
   const ends = new Map<string, number>();
-  for (const wall of inside) {
+  for (const wall of near) {
     const [na, nb] = [out(wall.ax, wall.ay, wall), out(wall.bx, wall.by, wall)];
     const [ex, ey] = [(wall.bx - wall.ax) * u, (wall.by - wall.ay) * u];
     const closing = (nb[0] - na[0]) * ex + (nb[1] - na[1]) * ey;

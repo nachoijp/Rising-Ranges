@@ -501,6 +501,7 @@ export class VistazoView {
     }
     const [x0, y0, x1, y1] = [region.x0 * u, region.y0 * u, region.x1 * u, region.y1 * u];
     let refine = false;
+    const t0 = stamp();
     for (const mesh of pieces) {
       const piece = mesh.userData.piece as Piece;
       let geometry = mesh.geometry;
@@ -538,12 +539,73 @@ export class VistazoView {
       }
       position.needsUpdate = true;
     }
+    since("3d.reheight.vertices", t0);
+    this.scene = scene;
+    // The heights grid there too (what the pointer finds on the terrain: the 3D brush paints on it).
+    time("3d.reheight.grid", () => this.regridIn(region));
+    // The walls of the edges through the region worked out again; the others as they were.
+    const done = new Set<string>();
+    const fresh = time("3d.reheight.computeWalls", () => computeWalls(scene, this.base, region, done));
+    const before = this.walls;
+    this.walls = [...before.filter((wall) => !done.has(wall.seg)), ...fresh];
+    // Drawn by tiles of the map (see wallTile): the first stroke since the scene was built puts every wall
+    // in its tile; the next ones build again only the tiles whose walls changed (all of them each stroke
+    // was most of its time: 25 of 26 ms, measured in a room).
+    const touched = this.wallsTiled ? new Set([...before.filter((wall) => done.has(wall.seg)), ...fresh].map((wall) => this.wallTile(wall))) : null;
+    this.dropWalls(touched);
+    // Every wall by its tile (the shadows want the tiles round a tile's too).
+    const all = new Map<string, Wall[]>();
+    for (const wall of this.walls) {
+      const tile = this.wallTile(wall);
+      const list = all.get(tile);
+      if (list) {
+        list.push(wall);
+      } else {
+        all.set(tile, [wall]);
+      }
+    }
+    const built = [...all].filter(([tile]) => !touched || touched.has(tile));
+    time("3d.reheight.buildWalls", () => built.forEach(([tile, walls]) => this.buildWalls(walls, null, undefined, tile)));
+    // Each tile's with the walls of the tiles round it (where its walls' neighbours may be: see wallShadowBuffers).
+    time("3d.reheight.wallShadows", () =>
+      built.forEach(([tile, walls]) => {
+        const [i, j] = tile.split(",").map(Number);
+        const around: Wall[] = [];
+        for (let dj = -1; dj <= 1; dj++) {
+          for (let di = -1; di <= 1; di++) {
+            around.push(...(all.get(`${i + di},${j + dj}`) ?? []));
+          }
+        }
+        this.buildWallShadows(walls, undefined, tile, around);
+      })
+    );
+    this.wallsTiled = true;
+    if (refine) {
+      this.highlight(this.picked.shapes);
+    }
+    this.requestApply();
+    return true;
+  }
+
+  /** Whether the walls are drawn by tiles (see reheight): till the next whole build of them. */
+  private wallsTiled = false;
+
+  /** A wall's tile of the map (WALL_TILE cells a side), by its first end. */
+  private wallTile(wall: Wall): string {
+    const side = (this.scene?.dpi ?? 1) * WALL_TILE;
+    return `${Math.floor(wall.ax / side)},${Math.floor(wall.ay / side)}`;
+  }
+
+  /** The walls' meshes (and their shadows) taken away: all, or those of the tiles given. */
+  private dropWalls(tiles: Set<string> | null) {
+    const geometries = new Set<THREE.BufferGeometry>();
     for (const group of [this.terrainGroup, this.edgeGroup]) {
-      const walls = group.children.filter((child) => child.userData.wall);
+      const walls = group.children.filter((child) => child.userData.wall && (!tiles || tiles.has(child.userData.wallTile)));
       const gone = new Set<THREE.Material>();
       for (const child of walls) {
         group.remove(child);
         const mesh = child as THREE.Mesh;
+        geometries.add(mesh.geometry);
         mesh.geometry.dispose();
         for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
           gone.add(material);
@@ -552,20 +614,8 @@ export class VistazoView {
       }
       this.pieceMaterials = this.pieceMaterials.filter((material) => !gone.has(material));
     }
-    this.scene = scene;
-    // The heights grid there too (what the pointer finds on the terrain: the 3D brush paints on it).
-    this.regridIn(region);
-    // The walls of the edges through the region worked out again; the others as they were.
-    const done = new Set<string>();
-    const fresh = computeWalls(scene, this.base, region, done);
-    this.walls = [...this.walls.filter((wall) => !done.has(wall.seg)), ...fresh];
-    this.buildWalls();
-    this.buildWallShadows();
-    if (refine) {
-      this.highlight(this.picked.shapes);
-    }
-    this.requestApply();
-    return true;
+    // Nor found by the pointer any more.
+    this.surfaces = this.surfaces.filter((surface) => !geometries.has(surface.geometry));
   }
 
   /**
@@ -2222,9 +2272,12 @@ export class VistazoView {
    * the terrain, or `into`) and at the map's edge (which can be hidden),
    * shaded top to bottom and by the light, their faces as the wall style
    * has them (their zone's, or the Vistazo's), and level lines at every
-   * whole cell of height.
+   * whole cell of height. `tile`: those of one tile (see reheight), marked so.
    */
-  private buildWalls(list: Wall[] = this.walls, into: THREE.Group | null = null, worked?: WallBuffers[]) {
+  private buildWalls(list: Wall[] = this.walls, into: THREE.Group | null = null, worked?: WallBuffers[], tile?: string) {
+    if (tile === undefined && !into) {
+      this.wallsTiled = false;
+    }
     const t = this.texture;
     const sets = worked ?? wallBuffers(list, { u: this.u, k: this.k, shade: this.options.shade, levels: this.options.levels, box: t ? { x0: t.x0, y0: t.y0, w: t.w, h: t.h } : null, colors: this.mapColors });
     for (const { edge, style, fromMap, positions, colors, uvs, levels } of sets) {
@@ -2258,6 +2311,7 @@ export class VistazoView {
       this.pieceMaterials.push(material);
       const mesh = new THREE.Mesh(geometry, material);
       mesh.userData.wall = true;
+      mesh.userData.wallTile = tile;
       group.add(mesh);
       if (!edge) {
         this.keepSurface(geometry);
@@ -2267,15 +2321,19 @@ export class VistazoView {
         lines.setAttribute("position", new THREE.BufferAttribute(levels, 3));
         const levelLines = new THREE.LineSegments(lines, fogCut(new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, forceSinglePass: true, opacity: 0.3 }), this.fogUniforms));
         levelLines.userData.wall = true;
+        levelLines.userData.wallTile = tile;
         group.add(levelLines);
       }
     }
   }
 
-  /** A soft shadow on the ground at the foot of each wall (all of them, or those given), fading out from it. */
-  private buildWallShadows(list: Wall[] = this.walls, worked?: TerrainBuffers["shadows"]) {
+  /** A soft shadow on the ground at the foot of each wall (all of them, or those given: `tile`'s), fading out from it. */
+  private buildWallShadows(list: Wall[] = this.walls, worked?: TerrainBuffers["shadows"], tile?: string, around?: Wall[]) {
+    if (tile === undefined) {
+      this.wallsTiled = false;
+    }
     const scene = this.scene!;
-    const shade = worked !== undefined ? worked : wallShadowBuffers(list, scene.heightAt, { u: this.u, k: this.k, relief: this.options.relief });
+    const shade = worked !== undefined ? worked : wallShadowBuffers(list, scene.heightAt, { u: this.u, k: this.k, relief: this.options.relief }, around);
     if (shade) {
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.BufferAttribute(shade.positions, 3));
@@ -2304,6 +2362,7 @@ export class VistazoView {
       const shadows = new THREE.Mesh(geometry, material);
       shadows.renderOrder = 1;
       shadows.userData.wall = true;
+      shadows.userData.wallTile = tile;
       this.terrainGroup.add(shadows);
     }
   }
@@ -5020,6 +5079,9 @@ type PropAnimation = {
   still: boolean;
   waiting: { show: (texture: THREE.Texture) => void; still: () => void }[];
 };
+
+/** A wall tile's side (cells): the walls a brush stroke changes are built again by these (see reheight). */
+const WALL_TILE = 8;
 
 /** A map's media let go: a video stopped and emptied, an animation closed. */
 function stopMedia(media: CanvasImageSource) {
