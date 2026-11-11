@@ -21,12 +21,12 @@ The 3D Glance shows the scene as a small diorama: the map's terrain raised to it
 The Glance has its own button in the toolbar. Who gets it is chosen in **Settings → General → 3D Glance**:
 
 - **Hidden** — no button for anyone. The GM can still edit the relief from a map image's right-click menu.
-- **GM only** — the default.
-- **Everyone** — players open it too, and see the scene as their fog lets them.
+- **GM only** — only the GM gets the button.
+- **Everyone** — the default: players open it too, and see the scene as their fog lets them.
 
 ![Who gets the 3D Glance](screenshots/glance/settings-general.png)
 
-The window can be moved by its grip, minimised, or taken full screen. The panel on the right opens and closes with the button at its top.
+The window can be moved by its grip, minimised (the toolbar button brings it back), or taken full screen. The panel on the right opens and closes with the button at its top.
 
 **Open in a tab** (the button beside full screen) moves the Glance to a browser tab of its own: drag it to another screen and keep Owlbear in view. It works as the panel does (the relief editor stays in Owlbear), and follows the scene as it changes. If Owlbear is reloaded, the tab links to it again by itself; if Owlbear is closed, open the Glance from Owlbear and press the same button. The tab keeps its own options.
 
@@ -75,7 +75,7 @@ The rest is folded into sections:
 
 ![Camera](screenshots/glance/camera.jpg)
 
-**Relief.** The height scale (to make heights read better), walls at the map's edge, the grid on the ground, and under **Look**: wall shading, shading by height, coloring the terrain by height, see-through terrain, animated water, animated video maps (a video map played on the ground), and level lines on the walls.
+**Relief.** The height scale (to make heights read better), walls at the map's edge, the grid on the ground, and under **Look**: wall shading, shading by height, coloring the terrain by height, see-through terrain, animated water, animated maps (video maps, animated GIFs and WebPs played on the ground), and level lines on the walls.
 
 **Props.** Items on the Prop layer, on the ground or standing, with shadows, lines to the ground, labels and distances.
 

@@ -98,7 +98,8 @@ readings in 3D. Place spell templates (sphere, cube, cylinder, cone, line),
 show props and weather, play camera moves, and sync your view to the players —
 each still sees through their own fog. Doors open and shut with the fog's, from
 a button over each. Open it in a browser tab of its own to put it on another
-screen. The GM decides who gets it.
+screen. Video maps and animated GIFs play on the ground. The GM decides who
+gets it.
 
 ![The 3D Glance](https://raw.githubusercontent.com/nachoijp/Rising-Ranges/main/docs/screenshots/glance/fullscreen.jpg)
 
