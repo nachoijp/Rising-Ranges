@@ -853,11 +853,12 @@ export class VistazoView {
     const sameBase = base === this.base;
     this.terrainKey = scene.terrainKey;
     this.base = base;
-    // Its walls kept when a brush's let go settles (its outlines haven't changed), as its level.
+    // Its walls kept when a brush's let go settles (its outlines haven't changed), as its level: for the
+    // page, if it works the terrain out itself (the worker works them out again, away from the page).
     this.keepWalls = settling && sameBase ? this.walls : undefined;
     if (settling) {
-      // Its relief changed where it is, its key the same: the terrain worked out from it again (here, with
-      // the walls kept; the worker sent it again for next time).
+      // Its relief changed where it is, its key the same: the terrain worked out from it again (by the
+      // worker, sent the relief again; meanwhile what the brush left stays drawn).
       this.terrainFor = "";
       this.jobs?.touched();
     }
@@ -1688,7 +1689,7 @@ export class VistazoView {
       return true;
     }
     const recipe = scene.recipe;
-    if (this.jobs && recipe && !now && !this.keepWalls) {
+    if (this.jobs && recipe && !now) {
       if (this.asked !== want) {
         this.asked = want;
         if (this.mapColors) {
