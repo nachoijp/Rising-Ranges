@@ -49,6 +49,8 @@ The **camera** button beside it opens a list of camera moves — a full orbit ro
 
 The **?** in the corner lists these too.
 
+A token you drag, or a point you measure from, shows its Measurement on everyone's map too (its rings, the Readings and its height), as a Measurement on the map does; a hidden token's doesn't. Owlbear keeps it there for 15 seconds at most; a point moved or raised after that shows again.
+
 ## The panel
 
 ![The Glance's panel](screenshots/glance/overview.jpg)
@@ -58,7 +60,7 @@ At the top:
 - **Top-down view** — the camera straight down, as the map.
 - **Sync view** (GM) — players with the Glance see what your camera sees (it opens for them if it's set to Everyone). Each still sees through their own fog.
 - **Edit relief** (GM) — the relief editor (see below).
-- **Show tokens** and **View as a player** — the scene as a player sees it: with the fog (Owlbear's or Smoke & Spectre's), without hidden tokens or what's under the fog. The fog is as on Owlbear's map: fog shapes, rooms you've cut open, and what the lights reveal, with their soft edges. A secondary light (a campfire) shows only once a character's light sees it. The fog opens around a token as it's dragged, and a token dragged in the Glance stops at the fog's walls, as on the map. Under the fog the terrain isn't shown: a flat floor of fog, with a curtain of it along its edge, stands in for it, and heights read 0 there.
+- **Show tokens** and **View as a player** — the scene as a player sees it: with the fog (Owlbear's or Smoke & Spectre's), without hidden tokens or what's under the fog. The fog is as on Owlbear's map: fog shapes, rooms you've cut open, and what the lights reveal, with their soft edges. A secondary light (a campfire) shows only once a character's light sees it. The fog opens around a token as it's dragged, and a token with a light dragged in the Glance stops at the fog's walls and slides along them, as on the map (one without a light goes through, as there). Under the fog the terrain isn't shown: a flat floor of fog, with a curtain of it along its edge, stands in for it, and heights read 0 there.
 - **Quality** — High as designed, always as sharp; Medium is a little less sharp on dense screens, with less weather, and on a slow device it's drawn less sharp while the camera moves; Low for slower devices, the same, more so. Dragging a token never makes it less sharp.
 
 The rest is folded into sections:
