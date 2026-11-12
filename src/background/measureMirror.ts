@@ -15,7 +15,8 @@ import { buildBandRingItems, buildGradientShaders, reshapeOrigin } from "../rend
 import { getStoredTheme } from "../theme/themes";
 import { showPinnedFixedMedicion } from "./fixedMedicion";
 import { visibleNow } from "../util/attachments";
-import { MIRROR_CHANNEL, MirrorSender, type MirrorMessage, type StartMessage } from "./mirrorSend";
+import { GLANCE_MIRROR_MS, MirrorSender, type MirrorMessage, type StartMessage } from "./mirrorSend";
+import { MIRROR_CHANNEL } from "../vistazo/remote";
 
 // Shows a Medición's rings, gradient, Lecturas and height label to every
 // client, not just the one measuring, each in that client's own color theme.
@@ -33,7 +34,6 @@ import { MIRROR_CHANNEL, MirrorSender, type MirrorMessage, type StartMessage } f
 // - One Medición at a time on each screen: this client's own while it
 //   measures, otherwise the one started last (see showOnly).
 
-const CHANNEL = MIRROR_CHANNEL;
 
 /**
  * One Medición's client-local Lecturas + height label (+ extra items, e.g.
@@ -462,8 +462,30 @@ export function startMeasureMirrorReceiver() {
     }
   }
 
-  OBR.broadcast.onMessage(CHANNEL, (event) => {
-    const connectionId = event.connectionId;
+  // A Vistazo's Mediciones apart from its client's map's (they send on the same connection: see
+  // MirrorMessage), by this mark on the connection.
+  const GLANCE = "|glance";
+  OBR.broadcast.onMessage(MIRROR_CHANNEL, (event) => {
+    const message = event.data as MirrorMessage;
+    const connectionId = message?.glance ? `${event.connectionId}${GLANCE}` : event.connectionId;
+    // Owlbear stops showing its anchor after 15 s (see vistazo/mirrorOut.ts), which ends it then; ended
+    // here too, in case its page went without saying so (closed all at once).
+    if (message?.glance && message.type === "start") {
+      setTimeout(() => {
+        const chain = chains.get(connectionId) ?? Promise.resolve();
+        chains.set(
+          connectionId,
+          chain.then(async () => {
+            const session = sessions.get(connectionId);
+            if (session?.sessionId === message.sessionId) {
+              sessions.delete(connectionId);
+              await session.view.end();
+              showOnly();
+            }
+          })
+        );
+      }, GLANCE_MIRROR_MS);
+    }
     const previous = chains.get(connectionId) ?? Promise.resolve();
     chains.set(
       connectionId,
@@ -504,10 +526,17 @@ export function startMeasureMirrorReceiver() {
   // its gradient/Lecturas would stay on everyone else's screen. Queued on
   // the sender's own chain, so it can't run before a start that's still
   // being set up has registered its session.
+  // This client's own Vistazo sends here too (its client isn't among the party's: kept).
+  let myConnectionId = "";
+  OBR.player.getConnectionId().then(
+    (id) => (myConnectionId = id),
+    () => {}
+  );
   OBR.party.onChange((players) => {
     const connected = new Set(players.map((player) => player.connectionId));
+    connected.add(myConnectionId);
     for (const [connectionId, chain] of chains) {
-      if (connected.has(connectionId)) {
+      if (connected.has(connectionId.replace(GLANCE, ""))) {
         continue;
       }
       chains.set(

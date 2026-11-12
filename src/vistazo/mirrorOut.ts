@@ -50,7 +50,7 @@ type Session = {
 };
 
 export class MirrorOut {
-  private readonly sender = new MirrorSender("ALL", FIRST_SESSION);
+  private readonly sender = new MirrorSender("ALL", FIRST_SESSION, true);
   private session: Session | null = null;
 
   /** What's measured now (null: nothing): the maps told what changed. */
@@ -123,7 +123,6 @@ export class MirrorOut {
           originTokenId: latest.originTokenId,
           heightLabel: latest.heightText === null ? null : { center: session.center, text: latest.heightText },
           origin: { center: session.center, radius: latest.radius },
-          glance: true,
         });
         // Moved while it began: there now.
         if (Math.hypot(latest.center.x - session.center.x, latest.center.y - session.center.y) > 0.5) {

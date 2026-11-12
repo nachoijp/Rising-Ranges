@@ -47,7 +47,17 @@ export async function saveDraggedToken(final: Item, path: DragPath): Promise<Vec
         return true;
       }
       const reached = stopAtWalls(from, to, items, local, reach);
-      return Math.hypot(reached.x - to.x, reached.y - to.y) < 0.5;
+      if (Math.hypot(reached.x - to.x, reached.y - to.y) < 0.5) {
+        return true;
+      }
+      // From within a wall's reach already (a drag on the map, which isn't kept off them: see
+      // createMeasureTool.ts), stopped at once: not through a wall is enough, or every point of a way
+      // along it would be a step of its own (as many writes).
+      if (Math.hypot(reached.x - from.x, reached.y - from.y) < 0.5) {
+        const crossed = stopAtWalls(from, to, items, local, 0);
+        return Math.hypot(crossed.x - to.x, crossed.y - to.y) < 0.5;
+      }
+      return false;
     };
     const steps = path.steps(final.position, clear);
     for (const step of steps.slice(0, -1)) {

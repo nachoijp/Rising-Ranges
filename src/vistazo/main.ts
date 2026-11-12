@@ -1394,9 +1394,13 @@ async function start() {
    * started) is what the scene has (see landing); then the scene's own place, the rings following it.
    */
   const endMove = (saved: Promise<Vector2 | null | void> = Promise.resolve(null)) => {
+    const dragged = !!moving?.started;
     moving = null;
     cancelMove = null;
-    mirrorMeasure();
+    // Its Medición off the maps (a press that never became a drag had none there).
+    if (dragged) {
+      mirrorMeasure();
+    }
     if (draggingId) {
       const id = draggingId;
       draggingId = null;

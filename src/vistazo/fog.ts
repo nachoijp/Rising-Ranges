@@ -222,7 +222,7 @@ export function wallReach(token: Item, items: Item[], local: Item[]): number | n
  */
 export function stopAtWalls(from: { x: number; y: number }, to: { x: number; y: number }, items: Item[], local: Item[], radius: number): { x: number; y: number } {
   const walls = [...items, ...local].filter(isWall);
-  return walls.length === 0 ? to : stopOn(blockingSegments(walls), from, to, radius);
+  return walls.length === 0 ? to : stopOn(blockingSegments(walls), from, to, radius).at;
 }
 
 /**
@@ -238,24 +238,17 @@ export function slideAtWalls(from: { x: number; y: number }, to: { x: number; y:
   const segments = blockingSegments(walls);
   let [at, goal] = [from, to];
   for (let k = 0; k < 3; k++) {
-    const stop = stopOn(segments, at, goal, radius);
-    if (Math.hypot(stop.x - goal.x, stop.y - goal.y) < 1e-6) {
+    const { at: stop, by } = stopOn(segments, at, goal, radius);
+    if (!by || Math.hypot(stop.x - goal.x, stop.y - goal.y) < 1e-6) {
       return stop;
     }
-    // The wall it's against: the way off it (from its nearest point within reach, a side or an end).
-    let off: [number, number] | null = null;
-    let nearest = Infinity;
-    for (const segment of segments) {
-      const [qx, qy] = awayFrom(stop.x, stop.y, segment);
-      const d = Math.hypot(qx, qy);
-      if (d < nearest && d <= radius + 1) {
-        nearest = d;
-        off = d > 1e-9 ? [qx / d, qy / d] : null;
-      }
-    }
-    if (!off) {
+    // The wall that stopped it: the way off it (from its nearest point, a side or an end).
+    const [qx, qy] = awayFrom(stop.x, stop.y, by);
+    const d = Math.hypot(qx, qy);
+    if (d <= 1e-9) {
       return stop;
     }
+    const off = [qx / d, qy / d];
     // What's left of the move, without what goes into the wall.
     let [rx, ry] = [goal.x - stop.x, goal.y - stop.y];
     const into = rx * off[0] + ry * off[1];
@@ -268,28 +261,36 @@ export function slideAtWalls(from: { x: number; y: number }, to: { x: number; y:
     }
     [at, goal] = [stop, { x: stop.x + rx, y: stop.y + ry }];
   }
-  return stopOn(segments, at, goal, radius);
+  return stopOn(segments, at, goal, radius).at;
 }
 
-/** A point moved from `from` toward `to` up to where it first meets a segment (`radius` near it: see stopAtWalls). */
-function stopOn(segments: Segment[], from: { x: number; y: number }, to: { x: number; y: number }, radius: number): { x: number; y: number } {
+/**
+ * A point moved from `from` toward `to` up to where it first meets a segment (`radius` near it: see
+ * stopAtWalls); and the segment that stopped it (none: it got there).
+ */
+function stopOn(segments: Segment[], from: { x: number; y: number }, to: { x: number; y: number }, radius: number): { at: { x: number; y: number }; by: Segment | null } {
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   const length = Math.hypot(dx, dy);
   if (length < 1e-9) {
-    return to;
+    return { at: to, by: null };
   }
   const [ux, uy] = [dx / length, dy / length];
   let first = Infinity;
+  let by: Segment | null = null;
   for (const segment of segments) {
-    first = Math.min(first, radius > 0 ? hitWithin(from.x, from.y, ux, uy, segment, radius) : hit(from.x, from.y, ux, uy, segment));
+    const t = radius > 0 ? hitWithin(from.x, from.y, ux, uy, segment, radius) : hit(from.x, from.y, ux, uy, segment);
+    if (t < first) {
+      first = t;
+      by = segment;
+    }
   }
   if (first > length) {
-    return to;
+    return { at: to, by: null };
   }
   // A hair short (where it'd touch, rounding could put it a hair inside).
   const reach = Math.max(0, first - (radius > 0 ? 0.5 : 0));
-  return { x: from.x + ux * reach, y: from.y + uy * reach };
+  return { at: { x: from.x + ux * reach, y: from.y + uy * reach }, by };
 }
 
 /** From a segment's nearest point to a point (the way off it, and how far). */
@@ -313,6 +314,10 @@ function hitWithin(cx: number, cy: number, dx: number, dy: number, [ax, ay, bx, 
   const [qx, qy] = [cx - (ax + ex * along), cy - (ay + ey * along)];
   const near = Math.hypot(qx, qy);
   if (near <= r) {
+    // Right on its line: across it is through it, along it isn't (nor off an end).
+    if (near < 1e-9) {
+      return len > 0 && Math.abs(dx * ey - dy * ex) > 1e-6 * len && along > 0 && along < 1 ? 0 : Infinity;
+    }
     // Along it (sliding: see slideAtWalls) isn't nearer, rounding aside.
     return qx * dx + qy * dy < -1e-6 * near ? 0 : Infinity;
   }

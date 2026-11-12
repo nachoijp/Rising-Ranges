@@ -1,18 +1,18 @@
 import OBR, { type Item, type Vector2 } from "@owlbear-rodeo/sdk";
-import { getPluginId } from "../util/getPluginId";
 import type { LecturaContext, LecturaState } from "../render/lecturaItems";
-import { isRateLimitError } from "../vistazo/remote";
+import { MIRROR_CHANNEL, isRateLimitError } from "../vistazo/remote";
 
 // A Medición as it's sent to the other clients' maps (see measureMirror.ts, which draws them): from the
 // map's Medición, and from a Vistazo's drag or free point (see vistazo/mirrorOut.ts).
 
-export const MIRROR_CHANNEL = getPluginId("measureMirror");
 // OBR.broadcast rejects bursts ("RateLimitHit"). Messages only go out when
 // something changed, and bursts are spaced this far apart; if Owlbear still
 // rate-limits, the gap widens for the rest of the session and what was
 // lost is sent again.
 const SEND_INTERVAL_MS = 80;
 const BACKOFF_SEND_INTERVAL_MS = 200;
+/** How long the maps keep a Vistazo's Medición at most (see measureMirror.ts, vistazo/mirrorOut.ts): its page gone without its end, it goes then. */
+export const GLANCE_MIRROR_MS = 15000;
 
 export type StartMessage = {
   type: "start";
@@ -28,8 +28,6 @@ export type StartMessage = {
   origin?: { center: Vector2; radius: number };
   /** The token measured from, if it's one (the Vistazo measures from it, see vistazo/remote.ts). Missing from senders before 2.0.0. */
   originTokenId?: string;
-  /** Sent by a Vistazo (its drag or free point), which the Vistazos have from it already (see vistazo/remote.ts): only for the maps. */
-  glance?: true;
 };
 export type UpdateMessage = {
   type: "update";
@@ -46,13 +44,17 @@ export type PinMessage = { type: "pin"; sessionId: number; fixed: unknown };
  * Receivers before 1.4.0 ignore it.
  */
 export type ReshapeMessage = { type: "reshape"; sessionId: number; center: Vector2 };
-export type MirrorMessage = StartMessage | UpdateMessage | EndMessage | PinMessage | ReshapeMessage;
+/**
+ * `glance`: sent by a Vistazo (its drag or free point), every message of it: the maps keep it apart from
+ * its client's map's own (both send on its connection), the Vistazos leave it out (they have it from
+ * the Vistazo already, see vistazo/remote.ts).
+ */
+export type MirrorMessage = (StartMessage | UpdateMessage | EndMessage | PinMessage | ReshapeMessage) & { glance?: true };
 
 /**
  * One page's Mediciones, sent one at a time. `destination`: Owlbear's (the map's own client draws its
  * Medición itself; a Vistazo's goes to its own client's map too). `firstSession`: where its sessions'
- * numbers start (a client's map and its Vistazo send on the same connection: apart, an end of one's
- * isn't taken for the other's).
+ * numbers start. `glance`: a Vistazo's (see MirrorMessage).
  */
 export class MirrorSender {
   private nextSessionId: number;
@@ -71,7 +73,8 @@ export class MirrorSender {
 
   constructor(
     private readonly destination: "REMOTE" | "ALL",
-    firstSession = 1
+    firstSession = 1,
+    private readonly glance = false
   ) {
     this.nextSessionId = firstSession;
   }
@@ -79,7 +82,7 @@ export class MirrorSender {
   private send(message: MirrorMessage, attempt = 0) {
     this.lastSendTime = Date.now();
     OBR.broadcast
-      .sendMessage(MIRROR_CHANNEL, message, { destination: this.destination })
+      .sendMessage(MIRROR_CHANNEL, this.glance ? { ...message, glance: true } : message, { destination: this.destination })
       .then(() => {
         if (message.type === "start" && message.sessionId === this.activeSessionId) {
           this.startConfirmed = true;
