@@ -67,7 +67,7 @@ The rest is folded into sections:
 
 **Templates.** Spell areas in 3D: a sphere, cube, cylinder, cone or line, with a texture (fire, ice, poison, lightning, darkness, arcane, force, necrotic, acid, thunder, psychic, radiant) and a size. **Place**, then click where it goes; a cone or a line then points where you click. Drag its handle to move it, or a cone's or a line's tip to turn it; the elevation hotkeys raise and lower the one you last placed or grabbed (a cone's or a line's tip: tilts it).
 
-Templates are part of the scene, so everyone sees them, on the map too: there, each one is an animated area in its texture, under the tokens, that can be moved and turned like any drawing (the Glance follows). Players can place their own if the room lets them create drawings (Owlbear's player permissions); if not, the Glance tells them. They're listed under the buttons to remove one by one; **Remove all** removes everyone's. A template the GM hides isn't shown to players.
+Templates are part of the scene, so everyone sees them, on the map too: there, each one is an animated area in its texture (each texture moves its own way; in a cone or a line it flows away from its point), under the tokens, that can be moved and turned like any drawing (the Glance follows). Players can place their own if the room lets them create drawings (Owlbear's player permissions); if not, the Glance tells them. They're listed under the buttons to remove one by one; **Remove all** removes everyone's. A template the GM hides isn't shown to players.
 
 ![Templates](screenshots/glance/templates.jpg)
 

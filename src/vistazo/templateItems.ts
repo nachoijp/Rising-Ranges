@@ -164,19 +164,11 @@ export function isTemplateLook(item: Item): boolean {
   return isEffect(item) && item.metadata[LOOK_KEY] === true;
 }
 
-/**
- * Kinds made a little different on the map: in the Glance, fire glows (adds light), which a map's
- * effect doesn't; its deep colour as dark as it is there looks dull, so it's yellower and fuller here.
- */
-const ON_MAP: Partial<Record<TemplateLook, { deep?: [number, number, number]; opacity?: number }>> = {
-  fire: { deep: [1, 0.5, 0.05], opacity: 0.65 },
-};
-
 const SHAPE_INDEX: Record<TemplateShape, number> = { sphere: 0, cylinder: 0, cube: 1, line: 2, cone: 3 };
 
 /** What the look's shader is told (see templateSksl.ts): its shape and its kind. */
 function lookUniforms(template: Template, dpi: number): Uniform[] {
-  const look = { ...templateLook(template.look), ...ON_MAP[template.look] };
+  const look = templateLook(template.look);
   const v3 = ([x, y, z]: [number, number, number]) => ({ x, y, z });
   return [
     { name: "uShape", value: SHAPE_INDEX[template.shape] },
@@ -184,6 +176,7 @@ function lookUniforms(template: Template, dpi: number): Uniform[] {
     { name: "uAcross", value: templateTip(template).across * dpi },
     { name: "uCell", value: dpi },
     { name: "uDeep", value: v3(look.deep) },
+    { name: "uMid", value: v3(look.mid) },
     { name: "uBright", value: v3(look.bright) },
     { name: "uOpacity", value: look.opacity },
     { name: "uRise", value: look.rise },
