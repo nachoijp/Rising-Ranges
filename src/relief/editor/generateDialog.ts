@@ -96,7 +96,7 @@ export function openGenerate(o: { root: HTMLElement; t: T; editor: ReliefEditor;
       </section>
       <section class="re-gen-row">
         <h4>${esc(t("relief.gen.wallH"))}</h4>
-        <input type="number" class="num" data-k="wallH" min="0.5" max="10" step="0.5" value="2" />
+        <input type="text" class="num" inputmode="decimal" maxlength="5" autocomplete="off" spellcheck="false" data-k="wallH" value="2" />
       </section>
     </div>
     <div class="re-gen-progress" data-k="progress" hidden><div class="bar"><div data-k="fill"></div></div><span data-k="stage"></span></div>
@@ -151,8 +151,9 @@ export function openGenerate(o: { root: HTMLElement; t: T; editor: ReliefEditor;
   $<HTMLInputElement>("stairs").onchange = () => (stairs = $<HTMLInputElement>("stairs").checked);
   panel.querySelectorAll<HTMLInputElement>('input[name="x"]').forEach((el) => (el.onchange = () => (replace = el.value === "replace")));
   $<HTMLInputElement>("wallH").onchange = () => {
-    const v = Number($<HTMLInputElement>("wallH").value);
-    wallH = Number.isFinite(v) && v > 0 ? Math.min(10, v) : 2;
+    const v = Number($<HTMLInputElement>("wallH").value.replace(/,/g, "."));
+    wallH = Number.isFinite(v) && v > 0 ? Math.max(0.5, Math.min(10, v)) : 2;
+    $<HTMLInputElement>("wallH").value = String(wallH);
   };
 
   const show = (stage: GenStage | "loading") => {

@@ -490,6 +490,7 @@ const es = {
   "relief.bars.show": "Mostrar barras",
   "relief.hand": "Mano",
   "relief.deselect": "Cerrar (deseleccionar)",
+  "relief.flipSign": "Cambiar el signo",
   "relief.multiHint": "Varias: tocá formas para sumarlas o quitarlas",
   "relief.shapeMore": "Más acciones",
   "relief.squareOn": "Cuadrado",

@@ -496,6 +496,7 @@ const ptBR: Record<TranslationKey, string> = {
   "relief.bars.show": "Mostrar barras",
   "relief.hand": "Mão",
   "relief.deselect": "Fechar (desmarcar)",
+  "relief.flipSign": "Trocar o sinal",
   "relief.multiHint": "Várias: toque formas para somá-las ou tirá-las",
   "relief.shapeMore": "Mais ações",
   "relief.squareOn": "Quadrado",

@@ -495,6 +495,7 @@ const en: Record<TranslationKey, string> = {
   "relief.bars.show": "Show toolbars",
   "relief.hand": "Hand",
   "relief.deselect": "Close (deselect)",
+  "relief.flipSign": "Flip the sign",
   "relief.multiHint": "Several: tap shapes to add or remove them",
   "relief.shapeMore": "More actions",
   "relief.squareOn": "Square",

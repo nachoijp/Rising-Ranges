@@ -680,6 +680,83 @@ export function renderTools(el: HTMLElement, ed: ReliefEditor, t: T, onTool: (id
   }
 }
 
+/** How long (ms) a finger held on a row of the list opens what its right click does. */
+const ROW_HOLD_MS = 550;
+
+/** A finger on a row (see holdRow): kept for the list, not the row (it's drawn again by what the hold does). */
+let rowTouched = false;
+
+/**
+ * The click that ends a finger's hold (a row's, the map's), dropped wherever it lands: what the hold did
+ * (the list closed, the panel shown) may have put a button under that finger.
+ */
+let swallowing = false;
+let swallowInstalled = false;
+export function swallowNextClick() {
+  swallowing = true;
+  if (swallowInstalled) {
+    return;
+  }
+  swallowInstalled = true;
+  document.addEventListener(
+    "click",
+    (event) => {
+      if (swallowing) {
+        swallowing = false;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    },
+    true
+  );
+  // A new press: the hold's click didn't come (or went): nothing more dropped.
+  document.addEventListener("pointerdown", () => (swallowing = false), true);
+}
+
+/**
+ * A row held by a finger: `held`, as its right click (our own timer: an iPhone sends no contextmenu, an
+ * Android one does, then taken as this). The click that ends the press does nothing more.
+ */
+function holdRow(row: HTMLElement, held: () => void) {
+  let timer = 0;
+  let start: [number, number] | null = null;
+  row.addEventListener("pointerdown", (event) => {
+    if (event.pointerType !== "touch") {
+      return;
+    }
+    rowTouched = true;
+    start = [event.clientX, event.clientY];
+    clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      swallowNextClick();
+      held();
+    }, ROW_HOLD_MS);
+  });
+  row.addEventListener("pointermove", (event) => {
+    if (start && Math.hypot(event.clientX - start[0], event.clientY - start[1]) > 8) {
+      clearTimeout(timer);
+    }
+  });
+  const up = () => {
+    clearTimeout(timer);
+    start = null;
+    rowTouched = false;
+  };
+  row.addEventListener("pointerup", up);
+  row.addEventListener("pointercancel", up);
+  // A finger's: the timer's (the right click's own handlers not run again).
+  row.addEventListener(
+    "contextmenu",
+    (event) => {
+      if (rowTouched || swallowing) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    },
+    true
+  );
+}
+
 /** The tools as a menu (the column's stand-in on a narrow map). */
 export function toolsMenu(ed: ReliefEditor, t: T, onTool: (id: ToolId) => void, hand?: { on: boolean; take: () => void }): MenuItem[] {
   const tools = TOOLS.map((tool): MenuItem =>
@@ -1867,6 +1944,23 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, ui: Shapes
         ed.hover = -1;
         ed.host.redraw();
       };
+    }
+    holdRow(row, () => {
+      // As its right click: a group's menu; a shape, picking several (the touch layout: see session's onMenu).
+      const r = row.getBoundingClientRect();
+      if ("group" in item) {
+        pickAll(item.group, false);
+        ui.onGroupMenu(item.group, r.left + 24, r.top);
+      } else {
+        if (!ed.multi && !chosen.has(item.shape)) {
+          pick(item.shape, false);
+        }
+        ui.onMenu(item.shape, r.left + 24, r.top);
+      }
+    });
+    // A finger's long press starts a drag on a draggable row (some phones): none in the touch layout.
+    if (el.closest(".re-touch")) {
+      row.draggable = false;
     }
     row.ondragstart = (event) => {
       dragged = item;

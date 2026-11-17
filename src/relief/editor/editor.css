@@ -1435,6 +1435,21 @@
 .re-map.re-touch .re-ui.re-picking .re-shapesbtn {
   display: none;
 }
+/* Typing in the panel, or in the bar (touch layout): it up under the top bar, the keyboard below. */
+.re-map.re-touch .re-ui.re-typing-drawer .re-drawer {
+  top: var(--re-bar);
+  bottom: auto;
+  max-height: 40%;
+}
+.re-map.re-touch .re-ui.re-typing-bar .re-optbar {
+  top: var(--re-bar);
+  bottom: auto;
+}
+/* A height's ±. */
+.re-map .re-sign {
+  font-size: 18px;
+  font-weight: 600;
+}
 /* The shapes' list opened by its button: no title of its own to fold it (the button does). */
 .re-map.re-touch .re-shapes .lheadrow {
   display: none;

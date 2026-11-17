@@ -24,6 +24,7 @@ import {
   gesturesHtml,
   menuToggle,
   pressedAt,
+  swallowNextClick,
   openMenu,
   placeUnder,
   renderOptions,
@@ -495,7 +496,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   const shapeMoreButton = () => {
     const sel = editor.sel;
     const head = $("props").querySelector<HTMLElement>(".head");
-    if (!head || sel?.kind !== "shape" || !root.classList.contains("re-touch")) {
+    if (!head || (sel?.kind !== "shape" && sel?.kind !== "door") || !root.classList.contains("re-touch")) {
       return;
     }
     const before = head.querySelector('[data-k="del"]') ?? head.querySelector('[data-k="deselect"]');
@@ -507,12 +508,72 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     menuToggle(button, () => {
       const r = button.getBoundingClientRect();
       const area = root.getBoundingClientRect();
-      const menu = shapeMenu(sel.i, r.left, r.top);
+      const menu =
+        sel.kind === "shape"
+          ? shapeMenu(sel.i, r.left, r.top)
+          : openMenu(root, 0, 0, [
+              {
+                icon: "duplicate",
+                label: t("relief.menu.duplicate"),
+                key: "Ctrl+D",
+                run: () => {
+                  editor.key({ key: "d", code: "KeyD", ctrl: true });
+                  editor.host.showProps();
+                  editor.host.redraw();
+                },
+              },
+            ]);
       // Over the panel (it's at the bottom), its right end at the button's.
       menu.style.left = `${Math.max(4, Math.min(area.width - menu.offsetWidth - 4, r.right - area.left - menu.offsetWidth))}px`;
       menu.style.top = `${Math.max(4, r.top - area.top - menu.offsetHeight - 6)}px`;
     });
   };
+
+  /**
+   * A ± beside the fields that can be below zero (heights), in the touch layout: an iPhone's number keypad
+   * has no minus. It turns the sign of the field last in use there (a ramp's two: the one last touched).
+   */
+  const signButtons = () => {
+    if (!root.classList.contains("re-touch")) {
+      return;
+    }
+    for (const row of pieces.querySelectorAll<HTMLElement>(".re-props .height, .re-options .numbox")) {
+      const inputs = [...row.querySelectorAll<HTMLInputElement>("input.num")].filter((input) => Number(input.dataset.min) < 0);
+      if (!inputs.length || row.querySelector(".re-sign")) {
+        continue;
+      }
+      row.insertAdjacentHTML("beforeend", `<button type="button" class="ib sm re-sign" aria-label="${esc(t("relief.flipSign"))}">±</button>`);
+      let last = inputs[0];
+      for (const input of inputs) {
+        input.addEventListener("focus", () => (last = input));
+      }
+      row.querySelector<HTMLButtonElement>(".re-sign")!.onclick = () => {
+        const v = Number(last.value.replace(/,/g, "."));
+        if (!last.value || !Number.isFinite(v) || v === 0) {
+          return;
+        }
+        last.value = String(-v);
+        // As typed: its step to undo armed, the value set, then shown as kept.
+        for (const type of ["focus", "input", "change"]) {
+          last.dispatchEvent(new Event(type));
+        }
+      };
+    }
+  };
+  // Typing in a field of the panel or of the bar at the bottom (touch layout): that one up under the top bar,
+  // over the keyboard coming up from below (wherever the browser leaves the page).
+  pieces.addEventListener("focusin", (event) => {
+    const field = event.target as HTMLElement;
+    if (!root.classList.contains("re-touch") || !field.matches('input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]), textarea')) {
+      return;
+    }
+    const where = field.closest(".re-drawer") ? "re-typing-drawer" : field.closest(".re-optbar") ? "re-typing-bar" : "";
+    if (where) {
+      pieces.classList.add(where);
+      requestAnimationFrame(() => field.scrollIntoView({ block: "nearest" }));
+    }
+  });
+  pieces.addEventListener("focusout", () => pieces.classList.remove("re-typing-drawer", "re-typing-bar"));
 
   // A notice for a moment (only what went wrong, or what came of a choice).
   const toast = $("toast");
@@ -621,6 +682,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       pieces.classList.toggle("re-picking", editor.skinPick !== null || editor.doorPick !== null);
       time("editor.panel.props", () => renderProps($("props"), editor, t, o.unit, panelFolds));
       shapeMoreButton();
+      signButtons();
       time("editor.panel.shapes", () => renderShapes($("shapes"), editor, t, listUi()));
       history();
       tellPicked();
@@ -943,6 +1005,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     // the ⋯ in the panel).
     if (touch && root.classList.contains("re-touch")) {
       if (i >= 0) {
+        swallowNextClick();
         pickSeveral(i);
       }
       return;
@@ -1086,8 +1149,17 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
             "-",
           ]
         : [];
+    let copied = false;
+    try {
+      copied = !!localStorage.getItem(CLIP_KEY);
+    } catch {
+      // No storage: nothing kept to paste.
+    }
     const items = (): MenuItem[] => [
       ...narrow(),
+      // What was copied (the shape's menu), here (the key's Ctrl+V).
+      { icon: "duplicate", label: t("relief.menu.paste"), key: "Ctrl+V", disabled: !copied, run: () => void pasteCopied() },
+      "-",
       {
         label: t("relief.export"),
         run: () => {
