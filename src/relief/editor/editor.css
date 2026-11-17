@@ -64,6 +64,57 @@
 .re-split.edge:hover .grip {
   color: var(--accent);
 }
+/* One view at a time (split.ts): the 2D | 3D switch, top left over either, where the top bar starts. */
+.re-views {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 16;
+  height: 56px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px;
+  background: var(--glass-outer, rgba(48, 52, 63, 0.62));
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  border: 1px solid color-mix(in srgb, var(--stage-fg) 12%, transparent);
+  border-radius: 12px;
+  box-shadow: 0 10px 34px -10px rgba(0, 0, 0, 0.5);
+}
+.re-views[hidden] {
+  display: none;
+}
+.re-views button {
+  min-width: 48px;
+  height: 44px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: color-mix(in srgb, var(--stage-fg) 87%, transparent);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.re-views button:hover {
+  background: color-mix(in srgb, var(--stage-fg) 8%, transparent);
+}
+.re-views button.on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.re-views button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* The top bar starts after it. */
+.re-single .re-ui .re-top {
+  left: 134px;
+}
 /* While it's dragged: no pointer for what's under it (a canvas would take the drag). */
 .re-splitting .re-map,
 .re-splitting .stage {
@@ -133,6 +184,8 @@
 }
 .re-ui > * {
   pointer-events: auto;
+  /* A finger's taps on them: clicks at once (no double tap to zoom held for). */
+  touch-action: manipulation;
 }
 .re-ui [hidden] {
   display: none !important;
@@ -958,6 +1011,20 @@
   color: var(--muted);
   font-size: 12px;
 }
+/* A fact told at its end (how big the relief is): text, not a choice. */
+.re-menu .minfo {
+  padding: 6px 10px 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+/* The one in use (a tool), as a toolbar's button on. */
+.re-menu .mi.on,
+.re-menu .mi.on svg.ri {
+  color: var(--accent);
+}
+.re-menu .mi.on {
+  background: var(--re-picked);
+}
 .re-menu .mi.more::after {
   content: "";
   border-left: 5px solid var(--muted);
@@ -1113,7 +1180,8 @@
 .re-map .re-toolsep {
   display: none;
 }
-.re-map .re-toolbtn .sr {
+.re-map .re-toolbtn .sr,
+.re-map .re-barspill .sr {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -1205,6 +1273,273 @@
   margin-left: auto;
 }
 
+/* ---------- Touch layout (one view at a time: split.ts) ----------
+ * Finger-sized (44 px, 8 apart), the tools in a bar at the bottom and their options over it; both
+ * minimized to one button (.re-bars-min). What's picked and the shapes over them (--re-bottom, measured).
+ */
+.re-map .re-barshide,
+.re-map .re-barsep,
+.re-map .re-barspill,
+.re-map .re-shapesbtn {
+  display: none;
+}
+.re-map.re-touch .re-ui {
+  --re-bar: 72px;
+  --re-below: var(--re-bar);
+}
+.re-map.re-touch .ib,
+.re-map.re-touch .ib.sm {
+  width: 44px;
+  height: 44px;
+}
+.re-map.re-touch .re-top {
+  height: 56px;
+  gap: 8px;
+  padding: 0 8px;
+}
+.re-map.re-touch .re-top .done {
+  height: 44px;
+}
+.re-map.re-touch .field:not(select),
+.re-map.re-touch input.num,
+.re-map.re-touch select {
+  height: 40px;
+}
+.re-map.re-touch .numbox {
+  height: 44px;
+  gap: 4px;
+}
+.re-map.re-touch .numbox .ib.sm {
+  width: 38px;
+  height: 38px;
+}
+.re-map.re-touch .numbox input.num {
+  height: 38px;
+}
+.re-map.re-touch .seg {
+  gap: 8px;
+}
+.re-map.re-touch .re-menu .mi {
+  height: 44px;
+}
+/* No keys to tell (a finger's): the menus as wide as their names. */
+.re-map.re-touch .re-menu {
+  min-width: 0;
+}
+.re-map.re-touch .re-menu .mk {
+  display: none;
+}
+.re-map.re-touch .re-menu .mi {
+  padding-right: 16px;
+}
+.re-map.re-touch .re-shapes .item {
+  height: 44px;
+}
+/* One row at the bottom: the tool in hand (its menu over it), its options, minimize. */
+.re-map.re-touch .re-tools {
+  display: none;
+}
+.re-map.re-touch .re-optbar .re-toolbtn {
+  display: grid;
+  flex-shrink: 0;
+  align-self: center;
+  color: var(--accent);
+}
+.re-map.re-touch .re-optbar .re-barsep {
+  display: block;
+}
+.re-map.re-touch .re-barshide {
+  display: grid;
+  flex-shrink: 0;
+  align-self: center;
+}
+/* Minimize, and get back: narrow, a smaller chevron (still a finger's height). */
+.re-map.re-touch .re-ui .ib.re-barshide {
+  width: 32px;
+}
+.re-map.re-touch .re-barshide svg.ri,
+.re-map.re-touch .re-barspill svg.ri {
+  width: 20px;
+  height: 20px;
+}
+.re-map.re-touch .re-optbar {
+  top: auto;
+  left: 8px;
+  right: auto;
+  bottom: 8px;
+  max-width: calc(100% - 16px);
+  height: 56px;
+  gap: 4px;
+  padding: 0 6px;
+}
+.re-map.re-touch .re-optbar .re-options {
+  height: 54px;
+  gap: 8px;
+}
+/* The tool's button: its icon and a chevron for the menu it opens (up, from here). */
+.re-map .re-ui .ib.sm.re-toolbtn {
+  width: auto;
+  grid-auto-flow: column;
+  align-items: center;
+  gap: 0;
+  padding: 0 2px 0 8px;
+}
+.re-map .re-toolbtn .tchev svg.ri {
+  width: 16px;
+  height: 16px;
+  opacity: 0.8;
+}
+.re-map.re-touch .re-toolbtn .tchev svg.ri {
+  transform: rotate(180deg);
+}
+/* A tool's modes (the brush's, the roller's): one button with the one in use (its menu over the bar), not their row. */
+.re-map .re-options .segpick {
+  display: none;
+}
+.re-map.re-touch .re-options .segpick {
+  display: inline-flex;
+}
+.re-map.re-touch .re-options .seg:has(+ .segpick) {
+  display: none;
+}
+.re-map.re-touch .re-options button.field.under.segpick svg.ri:first-child {
+  width: 22px;
+  height: 22px;
+  color: var(--accent);
+}
+/* A finger's stand-ins for keys (a pen's buttons, square/round): only in the touch layout. */
+.re-map .re-touchonly {
+  display: none;
+}
+.re-map.re-touch .re-touchonly {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.re-map.re-touch .ib.re-touchonly {
+  display: grid;
+}
+.re-map.re-touch .re-desktoponly {
+  display: none;
+}
+/* A name in the bar cut short (…) rather than pushing what follows out of it. */
+.re-map.re-touch .re-options .re-cut {
+  display: block;
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Taking a texture from the map: the map clear (the panel, the list and their button out till it's done). */
+.re-map.re-touch .re-ui.re-picking .re-drawer,
+.re-map.re-touch .re-ui.re-picking .re-shapesbtn {
+  display: none;
+}
+/* The shapes' list opened by its button: no title of its own to fold it (the button does). */
+.re-map.re-touch .re-shapes .lheadrow {
+  display: none;
+}
+.re-map.re-touch .re-shapes .lrows {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+/* Its ends' arrows narrow: a finger slides it too. */
+.re-map.re-touch .re-optbar .scr {
+  width: 24px;
+}
+/* Minimized: one button to get it back, just where the one that minimized it was (the row's first). */
+.re-map.re-touch .re-ui.re-bars-min .re-barspill {
+  display: grid;
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  width: 46px;
+  height: 56px;
+}
+/* The shapes: a button over the bar's start; their list, and what's picked, at its right. */
+.re-map.re-touch .re-shapesbtn {
+  display: grid;
+  position: absolute;
+  left: 8px;
+  bottom: var(--re-bottom, 72px);
+  width: 56px;
+  height: 56px;
+}
+/* Buttons of their own over the map: the bars' glass, not a button's clear. */
+.re-map .ib.glass {
+  background: var(--re-glass);
+}
+.re-map .ib.glass.on {
+  background: color-mix(in srgb, var(--accent) 18%, var(--re-panel));
+}
+.re-map.re-touch .re-ui.re-bars-min .re-shapesbtn {
+  display: none;
+}
+.re-map .re-shapesbtn .count {
+  position: absolute;
+  right: 5px;
+  bottom: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.re-map .re-shapesbtn.on .count {
+  color: var(--accent);
+}
+.re-map.re-touch .re-ui:not(.re-shapes-open) .re-drawer .re-shapes {
+  display: none;
+}
+/* What's picked, over the bar: its title (and its fold) at the bottom, by the bar, where it stays folded
+   or not; what's under it above, scrolled on its own. */
+.re-map.re-touch .re-drawer .re-props {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.re-map.re-touch .re-drawer .re-props .head {
+  order: 2;
+  flex: none;
+}
+/* Its close (nothing picked), only here: Esc does it with a keyboard. */
+.re-map .re-props .re-propsclose {
+  display: none;
+}
+.re-map.re-touch .re-props .re-propsclose {
+  display: grid;
+  /* Well apart from the bin beside it. */
+  margin-left: 12px;
+}
+.re-map.re-touch .re-props .head {
+  gap: 8px;
+}
+.re-map.re-touch .re-drawer .re-props > :not(.head) {
+  min-height: 0;
+  overflow: auto;
+}
+.re-map.re-touch .re-drawer .re-props .body {
+  margin: 0 0 6px;
+}
+.re-map.re-touch .re-drawer {
+  left: 72px;
+  right: auto;
+  width: min(420px, calc(100% - 80px));
+  bottom: var(--re-bottom, 72px);
+  max-height: calc(100% - var(--re-bar) - var(--re-bottom, 140px));
+}
+.re-map.re-touch .re-chip {
+  top: var(--re-below);
+  bottom: auto;
+  max-width: calc(100% - 16px);
+}
+.re-map.re-touch .re-toast {
+  bottom: var(--re-bottom, 140px);
+}
+.re-map.re-touch .re-pop {
+  left: 8px;
+  width: auto;
+}
+
 /* "Generar relieve" (generateDialog.ts): a panel in the middle of the map, over everything of the editor's. */
 .re-gen {
   position: absolute;
@@ -1228,6 +1563,55 @@
 }
 .re-gen .ptitle {
   font-size: 15px;
+}
+/* A list to pick one of (pickDialog.ts): its rows finger-sized, the one in use in the accent colour; a
+   click on what's round it closes it. */
+.re-pick-back {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+}
+.re-pick {
+  width: min(340px, calc(100% - 32px));
+  padding: 10px 10px 12px;
+}
+.re-pick-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0 6px 6px;
+}
+.re-pick-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.re-pick-row {
+  height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--re-radius-m);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+.re-pick-row:hover,
+.re-pick-row:focus-visible {
+  background: var(--re-hover);
+  outline: none;
+}
+.re-pick-row.on {
+  background: var(--re-picked);
+  color: var(--accent);
+}
+.re-pick-empty,
+.re-pick-foot {
+  margin: 8px 6px 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 .re-gen-intro {
   margin: 6px 0 10px;

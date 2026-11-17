@@ -193,17 +193,28 @@ export function installTips(root: HTMLElement): () => void {
     box.style.left = `${x - area.left}px`;
     box.style.top = `${y - area.top}px`;
   };
-  const over = (event: Event) => show((event.target as HTMLElement).closest<HTMLElement>("[data-tip]"));
+  // A mouse's hover, or the keyboard's focus (Tab); not a finger's (the button it pressed keeps the focus, its tip would stay).
+  const over = (event: PointerEvent) => {
+    if (event.pointerType === "mouse") {
+      show((event.target as HTMLElement).closest<HTMLElement>("[data-tip]"));
+    }
+  };
+  const focus = (event: FocusEvent) => {
+    const el = (event.target as HTMLElement).closest<HTMLElement>("[data-tip]");
+    if (el?.matches(":focus-visible")) {
+      show(el);
+    }
+  };
   const hide = () => show(null);
   root.addEventListener("pointerover", over);
-  root.addEventListener("focusin", over);
+  root.addEventListener("focusin", focus);
   root.addEventListener("pointerdown", hide);
   root.addEventListener("pointerleave", hide);
   root.addEventListener("focusout", hide);
   return () => {
     box.remove();
     root.removeEventListener("pointerover", over);
-    root.removeEventListener("focusin", over);
+    root.removeEventListener("focusin", focus);
     root.removeEventListener("pointerdown", hide);
     root.removeEventListener("pointerleave", hide);
     root.removeEventListener("focusout", hide);
@@ -224,21 +235,56 @@ export type MenuItem =
       disabled?: boolean;
       /** Kept open after it runs (a second click to be sure). */
       keep?: boolean;
+      /** The one in use (a tool): in the accent colour. */
+      on?: boolean;
+      /** Only told (a fact, not a choice): plain text, nothing to press. */
+      info?: boolean;
     };
 
 let openMenus: HTMLElement[] = [];
 
 export function closeMenus() {
+  dropMenus();
+  menuOpener = null;
+}
+
+function dropMenus() {
   for (const menu of openMenus) {
     menu.remove();
   }
   openMenus = [];
 }
 
+/** The button whose menu is open (see menuToggle), and the one whose menu is being opened. */
+let menuOpener: HTMLElement | null = null;
+let pendingOpener: HTMLElement | null = null;
+
+/** A press anywhere (taken first, at the capture): the menus closed, unless it's on one, or on the button of the open one (its click closes it). */
+export function pressedAt(target: HTMLElement) {
+  if (target.closest(".re-menu") || (openMenus.length && menuOpener?.contains(target))) {
+    return;
+  }
+  closeMenus();
+}
+
+/** A button that opens a menu: its click opens it, or closes it if it's open. */
+export function menuToggle(button: HTMLElement, open: () => void | Promise<void>) {
+  button.onclick = () => {
+    if (openMenus.length && menuOpener === button) {
+      closeMenus();
+      return;
+    }
+    pendingOpener = button;
+    void open();
+  };
+}
+
 /** A menu at (x, y) within `root` (px from its corner), as Owlbear's; gone on a click elsewhere or Esc. */
 export function openMenu(root: HTMLElement, x: number, y: number, items: MenuItem[], level = 0): HTMLElement {
   if (level === 0) {
-    closeMenus();
+    dropMenus();
+    menuOpener = pendingOpener;
+    pendingOpener = null;
   } else {
     openMenus.splice(level).forEach((menu) => menu.remove());
   }
@@ -250,7 +296,9 @@ export function openMenu(root: HTMLElement, x: number, y: number, items: MenuIte
       .map((item, i) =>
         item === "-"
           ? '<div class="sep" role="separator"></div>'
-          : `<button type="button" role="menuitem" class="mi${item.items ? " more" : ""}" data-i="${i}" ${item.disabled ? "disabled" : ""}>${item.icon ? icon(item.icon) : '<span class="ri"></span>'}<span class="ml">${esc(item.label)}</span>${item.key ? `<span class="mk">${esc(item.key)}</span>` : ""}</button>`
+          : item.info
+            ? `<div class="minfo">${esc(item.label)}</div>`
+            : `<button type="button" role="menuitem" class="mi${item.items ? " more" : ""}${item.on ? " on" : ""}" data-i="${i}" ${item.disabled ? "disabled" : ""}${item.on ? ' aria-current="true"' : ""}>${item.icon ? icon(item.icon) : '<span class="ri"></span>'}<span class="ml">${esc(item.label)}</span>${item.key ? `<span class="mk">${esc(item.key)}</span>` : ""}</button>`
       )
       .join("");
   };
@@ -268,8 +316,7 @@ export function openMenu(root: HTMLElement, x: number, y: number, items: MenuIte
       return;
     }
     if (item.items) {
-      const r = button!.getBoundingClientRect();
-      openMenu(root, r.right - area.left + 2, r.top - area.top - 4, item.items, level + 1);
+      openSub(button!, item.items);
       return;
     }
     item.run?.();
@@ -279,12 +326,31 @@ export function openMenu(root: HTMLElement, x: number, y: number, items: MenuIte
       closeMenus();
     }
   };
+  /** Its own menu beside an item: at its right, or its left if there's no room; over it only if neither. */
+  const openSub = (button: HTMLButtonElement, sub: MenuItem[]) => {
+    const r = button.getBoundingClientRect();
+    const box = openMenu(root, r.right - area.left + 2, r.top - area.top - 4, sub, level + 1);
+    const w = box.offsetWidth;
+    if (r.right - area.left + 2 + w > area.width - 4 && r.left - area.left - w - 2 >= 4) {
+      box.style.left = `${r.left - area.left - w - 2}px`;
+    }
+    return box;
+  };
+  // Opened as the mouse comes over (a finger's press, its click opens it: what lands where the menu then is,
+  // the finger let go, would be picked); not where it would cover the item itself (a click there picking
+  // what's over it): a click opens it then.
   menu.onpointerover = (event) => {
+    if (event.pointerType !== "mouse") {
+      return;
+    }
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button.mi");
     const item = button ? items[Number(button.dataset.i)] : null;
     if (item && item !== "-" && item.items && !item.disabled) {
-      const r = button!.getBoundingClientRect();
-      openMenu(root, r.right - area.left + 2, r.top - area.top - 4, item.items, level + 1);
+      const box = openSub(button!, item.items);
+      const [a, b] = [box.getBoundingClientRect(), button!.getBoundingClientRect()];
+      if (a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top) {
+        openMenus.splice(level + 1).forEach((m) => m.remove());
+      }
     }
   };
   (menu.querySelector("button.mi:not([disabled])") as HTMLButtonElement | null)?.focus({ preventScroll: true });
@@ -308,6 +374,33 @@ function onSeg(el: HTMLElement, name: string, f: (v: string) => void) {
       }
     };
   }
+}
+
+/**
+ * A row of buttons' stand-in in the touch layout (see the CSS: one or the other shown, right after the
+ * row): one button with the one in use, its menu (their icons and names) over the bar.
+ */
+const segPick = (name: string, options: [string, IconName, string, string?][], value: string) => {
+  const on = options.find(([v]) => v === value) ?? options[0];
+  return `<button type="button" class="field under segpick" data-segpick="${name}" aria-haspopup="menu" ${tip(on[2])}>${icon(on[1])}${icon("expand", 180)}</button>`;
+};
+
+function onSegPick(el: HTMLElement, name: string, options: [string, IconName, string, string?][], value: string, f: (v: string) => void) {
+  const button = el.querySelector<HTMLButtonElement>(`[data-segpick="${name}"]`)!;
+  menuToggle(button, () => {
+    const root = el.closest<HTMLElement>(".re-map");
+    if (!root) {
+      return;
+    }
+    const [r, area] = [button.getBoundingClientRect(), root.getBoundingClientRect()];
+    const menu = openMenu(
+      root,
+      r.left - area.left,
+      r.top - area.top,
+      options.map(([v, ic, label]) => ({ icon: ic, label, on: v === value, run: () => v !== value && f(v) }))
+    );
+    menu.style.top = `${Math.max(4, r.top - area.top - menu.offsetHeight - 6)}px`;
+  });
 }
 
 /**
@@ -542,7 +635,8 @@ export function renderTools(el: HTMLElement, ed: ReliefEditor, t: T, onTool: (id
   const drawMenu = (): MenuItem[] =>
     TOOL_LIST.filter((tool) => DRAW_TOOLS.includes(tool.id)).map((tool) => ({
       icon: tool.icon,
-      label: ed.tool === tool.id ? `${t(toolLabel(tool.id))} ✓` : t(toolLabel(tool.id)),
+      label: t(toolLabel(tool.id)),
+      on: ed.tool === tool.id,
       key: tool.key.toUpperCase(),
       run: () => onTool(tool.id),
     }));
@@ -587,12 +681,13 @@ export function renderTools(el: HTMLElement, ed: ReliefEditor, t: T, onTool: (id
 }
 
 /** The tools as a menu (the column's stand-in on a narrow map). */
-export function toolsMenu(ed: ReliefEditor, t: T, onTool: (id: ToolId) => void): MenuItem[] {
-  return TOOLS.map((tool): MenuItem =>
+export function toolsMenu(ed: ReliefEditor, t: T, onTool: (id: ToolId) => void, hand?: { on: boolean; take: () => void }): MenuItem[] {
+  const tools = TOOLS.map((tool): MenuItem =>
     tool === null
       ? "-"
-      : { icon: tool.icon, label: ed.tool === tool.id ? `${t(toolLabel(tool.id))} ✓` : t(toolLabel(tool.id)), key: tool.key.toUpperCase(), run: () => onTool(tool.id) }
+      : { icon: tool.icon, label: t(toolLabel(tool.id)), on: ed.tool === tool.id && !hand?.on, key: tool.key.toUpperCase(), run: () => onTool(tool.id) }
   );
+  return hand ? [{ icon: "hand", label: t("relief.hand"), on: hand.on, run: hand.take }, "-", ...tools] : tools;
 }
 
 /** The tool in hand, as the button that opens that menu shows it. */
@@ -602,6 +697,12 @@ export function toolButton(ed: ReliefEditor, t: T): string {
 }
 
 /** Every key of the tool in hand, and those for everything. */
+/** What a finger does (the touch layout's help, in place of the keys'). */
+export function gesturesHtml(t: T): string {
+  const list = (["hold", "two", "hand", "second", "double", "more"] as const).map((g) => `<dt>${esc(t(`relief.gesture.${g}`))}</dt><dd>${esc(t(`relief.gesture.${g}Do`))}</dd>`).join("");
+  return `<p class="ptitle">${esc(t("relief.gestures"))}</p><dl>${list}</dl>`;
+}
+
 export function shortcutsHtml(ed: ReliefEditor, t: T): string {
   const tool = TOOL_LIST.find((x) => x.id === ed.tool)!;
   const list = (keys: [TranslationKey, TranslationKey][]) => keys.map(([k, v]) => `<dt>${esc(t(k))}</dt><dd>${esc(t(v))}</dd>`).join("");
@@ -652,9 +753,13 @@ function measureOf(ed: ReliefEditor, t: T, unit: (cells: number) => string): str
  * an outline being clicked, the brush painting...), with its measure first,
  * as a line: empty when nothing is.
  */
-export function liveHint(ed: ReliefEditor, t: T, unit: (cells: number) => string = fmt): string {
+export function liveHint(ed: ReliefEditor, t: T, unit: (cells: number) => string = fmt, withKeys = true): string {
   const measure = measureOf(ed, t, unit);
-  const keys = keysHint(ed, t);
+  // A finger's: what to do, without the keys (Esc's the bar's ✕ then).
+  if (!withKeys && (ed.skinPick !== null || ed.doorPick !== null)) {
+    return measure || t("relief.shape.pickingTouch");
+  }
+  const keys = withKeys ? keysHint(ed, t) : "";
   return measure && keys ? `${measure}  ·  ${keys}` : measure || keys;
 }
 
@@ -859,7 +964,9 @@ function place(ui: HTMLElement, box: HTMLElement, button: HTMLElement) {
   const bar = button.closest(".re-top, .re-optbar")?.getBoundingClientRect() ?? b;
   const left = b.left + b.width / 2 - box.offsetWidth / 2 - area.left;
   box.style.left = `${Math.max(8, Math.min(area.width - box.offsetWidth - 8, left))}px`;
-  box.style.top = `${bar.bottom - area.top + 6}px`;
+  // The options' bar at the bottom (touch layout): over it.
+  const over = !!ui.closest(".re-touch") && !!button.closest(".re-optbar");
+  box.style.top = over ? `${bar.top - area.top - box.offsetHeight - 6}px` : `${bar.bottom - area.top + 6}px`;
 }
 
 export function renderOptions(el: HTMLElement, ed: ReliefEditor, t: T) {
@@ -871,8 +978,9 @@ export function renderOptions(el: HTMLElement, ed: ReliefEditor, t: T) {
     const s = ed.skinPick !== null ? ed.data.shapes[ed.skinPick] : undefined;
     const door = ed.doorPick !== null ? ed.data.doors?.[ed.doorPick] : undefined;
     const name = s ? nameOf(t, s, ed.skinPick!) : door ? door.name || t("relief.door.name", { n: ed.doorPick! + 1 }) : "";
-    el.innerHTML = `${icon("texture")}<span class="opt-label">${esc(t("relief.taking", { name }))}</span><button type="button" class="field" data-k="cancelSkin" ${tip(t("relief.key.cancelDo"), "", "Esc")}>${esc(t("relief.cancel"))}</button>`;
-    el.querySelector<HTMLButtonElement>('[data-k="cancelSkin"]')!.onclick = () => {
+    // The touch layout's: its ✕ first (always in sight), the name shorter, cut if it doesn't fit (see the CSS).
+    el.innerHTML = `<button type="button" class="ib sm re-touchonly" data-k="cancelSkin" aria-label="${esc(t("relief.cancel"))}">${icon("close")}</button>${icon("texture")}<span class="opt-label re-desktoponly">${esc(t("relief.taking", { name }))}</span><span class="opt-label re-touchonly re-cut">${esc(t("relief.takingShort", { name }))}</span><button type="button" class="field re-desktoponly" data-k="cancelSkin" ${tip(t("relief.key.cancelDo"), "", "Esc")}>${esc(t("relief.cancel"))}</button>`;
+    for (const button of el.querySelectorAll<HTMLButtonElement>('[data-k="cancelSkin"]')) button.onclick = () => {
       ed.skinPick = null;
       ed.doorPick = null;
       ed.skinBox = null;
@@ -904,7 +1012,9 @@ export function renderOptions(el: HTMLElement, ed: ReliefEditor, t: T) {
     const modes = BRUSHES.map((b, i): [string, IconName, string, string] => [b, b as IconName, `${t(`relief.brush.${b}` as TranslationKey)} (${i + 1})`, t(`relief.brush.${b}Text` as TranslationKey)]);
     unders.radius = { html: rangeHtml("radius", t("relief.size"), 0.25, 6, 0.25), get: () => s.radius, set: (v) => (s.radius = v) };
     unders.strength = { html: rangeHtml("strength", t("relief.brush.strength"), 0.1, 2, 0.1), get: () => s.strength, set: (v) => (s.strength = v) };
-    el.innerHTML = `${seg("mode", modes, s.brushMode)}
+    // In the touch layout, the five in one button (their names without the keys).
+    const named = BRUSHES.map((b): [string, IconName, string] => [b, b as IconName, t(`relief.brush.${b}` as TranslationKey)]);
+    el.innerHTML = `${seg("mode", modes, s.brushMode)}${segPick("mode", named, s.brushMode)}
       ${underButton("radius", "size", t("relief.size"), "", "[ ]")}
       ${
         s.brushMode === "flatten"
@@ -913,11 +1023,13 @@ export function renderOptions(el: HTMLElement, ed: ReliefEditor, t: T) {
           : underButton("strength", "strength", t("relief.brush.strength"))
       }
       <button type="button" class="field toggle${s.groundOnly ? " on" : ""}" data-k="ground" aria-pressed="${s.groundOnly}" ${tip(t("relief.brush.ground"), t("relief.brush.paintsHint"))}>${icon("terrain")}<span class="ct">${esc(t("relief.brush.ground"))}</span></button>`;
-    onSeg(el, "mode", (v) => {
+    const setMode = (v: string) => {
       s.brushMode = v as BrushKind;
       saved();
       ed.host.showProps();
-    });
+    };
+    onSeg(el, "mode", setMode);
+    onSegPick(el, "mode", named, s.brushMode, setMode);
     const level = el.querySelector<HTMLInputElement>('[data-k="level"]');
     if (level) {
       level.value = String(s.level);
@@ -959,13 +1071,16 @@ export function renderOptions(el: HTMLElement, ed: ReliefEditor, t: T) {
     return;
   }
   if (ed.tool === "stamp") {
-    el.innerHTML = seg("stamp", PREFABS.map(({ id, icon: ic, label, hint }): [string, IconName, string, string] => [id, ic, t(label), t(hint)]), s.stamp);
-    onSeg(el, "stamp", (v) => {
+    const prefabs = PREFABS.map(({ id, icon: ic, label, hint }): [string, IconName, string, string] => [id, ic, t(label), t(hint)]);
+    el.innerHTML = seg("stamp", prefabs, s.stamp) + segPick("stamp", prefabs, s.stamp);
+    const setStamp = (v: string) => {
       s.stamp = v as PrefabId;
       saved();
       ed.host.showProps();
       ed.host.redraw();
-    });
+    };
+    onSeg(el, "stamp", setStamp);
+    onSegPick(el, "stamp", prefabs, s.stamp, setStamp);
     bindUnders(el, unders, saved);
     return;
   }
@@ -978,25 +1093,52 @@ export function renderOptions(el: HTMLElement, ed: ReliefEditor, t: T) {
   };
   unders.shapeRadius = { html: rangeHtml("shapeRadius", t("relief.size"), 0.25, 5, 0.25), get: () => s.shapeRadius, set: (v) => (s.shapeRadius = v) };
   unders.lassoSmooth = { html: rangeHtml("lassoSmooth", t("relief.lasso.smooth"), 0, 3, 1), get: () => s.lassoSmooth, set: (v) => (s.lassoSmooth = v) };
+  const rollers: [string, IconName, string, string][] = [
+    ["new", "roller", t("relief.roller.new"), t("relief.roller.newHint")],
+    ["grow", "plus", t("relief.roller.grow"), t("relief.roller.growHint")],
+    ["cut", "minus", t("relief.roller.cut"), t("relief.roller.cutHint")],
+  ];
+  // A finger's stand-ins for the keys (see the CSS: only in the touch layout): a pen's outline closed (Enter),
+  // its last point taken back (Backspace), dropped (Esc); a rectangle square, an ellipse round (Shift).
+  const drawing = ed.tool === "polygon" && ed.drawing
+    ? `<button type="button" class="field re-touchonly" data-k="penFinish" ${(ed.drawing.length < 3 ? "disabled " : "") + tip(t("relief.pen.finish"), "", "Enter")}>${icon("done")}<span>${esc(t("relief.pen.finish"))}</span></button><button type="button" class="ib sm re-touchonly" data-k="penBack" aria-label="${esc(t("relief.pen.back"))}" ${tip(t("relief.pen.back"), "", "⌫")}>${icon("undo")}</button><button type="button" class="ib sm re-touchonly" data-k="penCancel" aria-label="${esc(t("relief.pen.cancel"))}" ${tip(t("relief.pen.cancel"), "", "Esc")}>${icon("close")}</button>`
+    : "";
+  const square = ed.tool === "rect" || ed.tool === "ellipse"
+    ? `<button type="button" class="field toggle re-touchonly${s.square ? " on" : ""}" data-k="square" aria-pressed="${s.square}">${icon(ed.tool === "rect" ? "rect" : "ellipse")}<span class="ct">${esc(t(ed.tool === "rect" ? "relief.squareOn" : "relief.circleOn"))}</span></button>`
+    : "";
   el.innerHTML =
-    (ed.tool === "paintShape"
-      ? seg(
-          "roller",
-          [
-            ["new", "roller", t("relief.roller.new"), t("relief.roller.newHint")],
-            ["grow", "plus", t("relief.roller.grow"), t("relief.roller.growHint")],
-            ["cut", "minus", t("relief.roller.cut"), t("relief.roller.cutHint")],
-          ],
-          s.rollerMode
-        ) + underButton("shapeRadius", "size", t("relief.size"))
-      : "") +
+    drawing +
+    square +
+    (ed.tool === "paintShape" ? seg("roller", rollers, s.rollerMode) + segPick("roller", rollers, s.rollerMode) + underButton("shapeRadius", "size", t("relief.size")) : "") +
     (ed.tool === "lasso" ? underButton("lassoSmooth", "smooth", t("relief.lasso.smooth"), t("relief.lasso.smoothHint")) : "") +
     underButton("lastSoft", "edge-soft", edge, t("relief.shape.edgeHint"));
-  onSeg(el, "roller", (v) => {
+  const setRoller = (v: string) => {
     s.rollerMode = v as RollerMode;
     saved();
     ed.host.showProps();
-  });
+  };
+  onSeg(el, "roller", setRoller);
+  if (ed.tool === "paintShape") {
+    onSegPick(el, "roller", rollers, s.rollerMode, setRoller);
+  }
+  for (const [k, key] of [["penFinish", "Enter"], ["penBack", "Backspace"], ["penCancel", "Escape"]] as const) {
+    const button = el.querySelector<HTMLButtonElement>(`[data-k="${k}"]`);
+    if (button) {
+      button.onclick = () => {
+        ed.key({ key });
+        ed.host.showProps();
+        ed.host.redraw();
+      };
+    }
+  }
+  const squareButton = el.querySelector<HTMLButtonElement>('[data-k="square"]');
+  if (squareButton) {
+    squareButton.onclick = () => {
+      s.square = !s.square;
+      saved();
+      ed.host.showProps();
+    };
+  }
   bindUnders(el, unders, saved);
 }
 
@@ -1017,6 +1159,16 @@ export function renderProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: n
     }
   } else {
     pointProps(el, ed, t, unit);
+  }
+  // Closed (the touch layout's: see the CSS): nothing picked, as Esc.
+  const head = ed.sel ? el.querySelector<HTMLElement>(".head") : null;
+  if (head) {
+    head.insertAdjacentHTML("beforeend", `<button type="button" class="ib sm re-propsclose" data-k="deselect" aria-label="${esc(t("relief.deselect"))}" ${tip(t("relief.deselect"), "", "Esc")}>${icon("close")}</button>`);
+    head.querySelector<HTMLButtonElement>('[data-k="deselect"]')!.onclick = () => {
+      ed.sel = null;
+      ed.host.showProps();
+      ed.host.redraw();
+    };
   }
 }
 
@@ -1670,7 +1822,7 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, ui: Shapes
     const same = (other: ListItem | null) => !!other && ("group" in item ? "group" in other && other.group === item.group : "shape" in other && other.shape === item.shape);
     if ("group" in item) {
       const id = item.group;
-      row.onclick = (event) => pickAll(id, event.ctrlKey || event.metaKey);
+      row.onclick = (event) => pickAll(id, event.ctrlKey || event.metaKey || ed.multi);
       row.onkeydown = (event) => {
         if ((event.key === "Enter" || event.key === " ") && event.target === row) {
           event.preventDefault();
@@ -1688,7 +1840,7 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, ui: Shapes
       };
     } else {
       const i = item.shape;
-      row.onclick = (event) => pick(i, event.ctrlKey || event.metaKey);
+      row.onclick = (event) => pick(i, event.ctrlKey || event.metaKey || ed.multi);
       row.onkeydown = (event) => {
         if ((event.key === "Enter" || event.key === " ") && event.target === row) {
           event.preventDefault();

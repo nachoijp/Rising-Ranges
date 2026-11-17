@@ -10,6 +10,7 @@ import type { Affine, ReliefData, Shape } from "../types";
 import { withZones } from "../zones";
 import { importUvtt } from "./uvttImport";
 import { openGenerate } from "./generateDialog";
+import { openPick } from "./pickDialog";
 import { fogPlans } from "../trace/fogPlan";
 import { DEFAULT_SETTINGS, ReliefEditor, type Mods, type Settings, type ToolId } from "./editor";
 import { icon } from "./icons";
@@ -20,6 +21,9 @@ import {
   esc,
   installTips,
   liveHint,
+  gesturesHtml,
+  menuToggle,
+  pressedAt,
   openMenu,
   placeUnder,
   renderOptions,
@@ -36,8 +40,8 @@ import {
   type T,
 } from "./panel";
 import { groupPicked, nameGroups, ungroup } from "./groups";
-import { copyShapes, duplicate, nameShapes, paste, prunePoints, setType, swap } from "./shapes";
-import { installSplit } from "./split";
+import { copyShapes, duplicate, nameShapes, paste, prunePoints, setType, swap, togglePick } from "./shapes";
+import { installSplit, type Split } from "./split";
 import { MapView } from "./view2d";
 import { time } from "../../timing";
 
@@ -113,6 +117,8 @@ export type SessionOptions = {
   onPick?: (shapes: number[]) => void;
   /** "Done" (or the X): editing over. */
   onDone: () => void;
+  /** The 3D shown or hidden beside the map (not worth drawing while it's hidden). */
+  onStage?: (shown: boolean) => void;
 };
 
 function loadJson<V extends object>(key: string, fallback: V): V {
@@ -197,6 +203,9 @@ async function pictureOf(url: string, video: boolean): Promise<HTMLCanvasElement
 /** An image's name, as the list shows it. */
 const imageName = (image: Image, i: number) => image.text?.plainText || image.name || `#${i + 1}`;
 
+/** Where the bars at the bottom being minimized (touch layout) is kept. */
+const BARS_KEY = "rising-ranges/relief-editor/bars";
+
 /** Under this width (or height) of the map, the narrow layout: the tools in a menu, the panels at the bottom. */
 const NARROW_W = 600;
 const NARROW_H = 520;
@@ -277,8 +286,10 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       <button type="button" class="ib sm" data-k="exit">${icon("close")}</button>
       <button type="button" class="done" data-k="done"></button>
     </div>
-    <div class="re-optbar glass" data-k="optbar" hidden><button type="button" class="ib sm scr" data-k="prev">${icon("expand")}</button><button type="button" class="ib sm scr next" data-k="next">${icon("expand")}</button></div>
+    <div class="re-optbar glass" data-k="optbar" hidden><button type="button" class="ib re-barshide" data-k="barsHide">${icon("expand")}</button><div class="vsep re-barsep"></div><button type="button" class="ib sm scr" data-k="prev">${icon("expand")}</button><button type="button" class="ib sm scr next" data-k="next">${icon("expand")}</button></div>
     <div class="re-tools glass" data-k="tools"></div>
+    <button type="button" class="ib re-barspill glass" data-k="barsPill">${icon("expand", 180)}</button>
+    <button type="button" class="ib re-shapesbtn glass" data-k="shapesBtn" aria-expanded="false"></button>
     <div class="re-props glass" data-k="props" hidden></div>
     <div class="re-shapes glass" data-k="shapes"></div>
     <div class="re-drawer" data-k="drawer" hidden></div>
@@ -286,6 +297,14 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     <div class="re-chip" data-k="chip" aria-live="polite" hidden></div>
     <div class="re-toast" data-k="toast" role="status" hidden></div>`;
   root.append(pieces);
+  /** The hand in hand (touch layout only: see setHand). */
+  let hand = false;
+  let barsMin = false;
+  try {
+    barsMin = localStorage.getItem(BARS_KEY) === "min";
+  } catch {
+    // No storage: the bars shown.
+  }
   const $ = <E extends HTMLElement = HTMLElement>(k: string) => pieces.querySelector<E>(`[data-k="${k}"]`)!;
   /** The bar's own names and tooltips (again when the language changes: see retext). */
   const barTexts = () => {
@@ -314,6 +333,9 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     $("done").textContent = t("vistazo.editDone");
     $("prev").setAttribute("aria-label", t("relief.scrollPrev"));
     $("next").setAttribute("aria-label", t("relief.scrollNext"));
+    name("barsHide", t("relief.bars.hide"));
+    name("barsPill", t("relief.bars.show"));
+    name("shapesBtn", t("relief.shapes"));
   };
   barTexts();
   const untip = installTips(root);
@@ -325,21 +347,37 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   const fitOptions = () => {
     // A narrow (or short) map: the tools in a menu, the image and the heights in "⋯", what's
     // picked and the shapes stacked at the bottom.
+    // Touch layout (one view at a time, see split.ts): the tools and their options in bars at the
+    // bottom, by the thumb, what's picked and the shapes stacked over them.
+    const touch = root.classList.contains("re-touch");
     const area = pieces.getBoundingClientRect();
     const narrow = area.width > 0 && (area.width < NARROW_W || area.height < NARROW_H);
     pieces.classList.toggle("re-narrow", narrow);
     const drawer = $("drawer");
-    drawer.hidden = !narrow;
-    if (narrow && $("props").parentElement !== drawer) {
+    const stacked = narrow || touch;
+    drawer.hidden = !stacked;
+    if (stacked && $("props").parentElement !== drawer) {
       drawer.append($("props"), $("shapes"));
-    } else if (!narrow && $("props").parentElement === drawer) {
+    } else if (!stacked && $("props").parentElement === drawer) {
       pieces.insertBefore($("props"), drawer);
       pieces.insertBefore($("shapes"), drawer);
     }
     const el = $("options");
     const top = pieces.querySelector<HTMLElement>(".re-top")!;
-    if (el.parentElement !== top) {
-      top.insertBefore(el, $("help"));
+    if (touch) {
+      if (el.parentElement !== $("optbar")) {
+        $("optbar").insertBefore(el, $("next"));
+      }
+      if ($("toolBtn").parentElement !== $("optbar")) {
+        $("optbar").insertBefore($("toolBtn"), $("prev"));
+      }
+    } else {
+      if (el.parentElement !== top) {
+        top.insertBefore(el, $("help"));
+      }
+      if ($("toolBtn").parentElement !== top) {
+        top.insertBefore($("toolBtn"), top.firstChild);
+      }
     }
     // The top bar itself, when even its own buttons don't fit: no separators, then the "?" in "⋯",
     // then redo too (Done never cut off: the X beside it throws the changes away).
@@ -357,7 +395,15 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     $("optbar").hidden = true;
     pieces.classList.remove("re-compact", "re-wrapped");
     const fits = () => el.scrollWidth <= el.clientWidth + 1;
-    if (el.childElementCount && !fits()) {
+    if (touch) {
+      $("optbar").hidden = barsMin;
+      if (!barsMin && el.childElementCount && !fits()) {
+        pieces.classList.add("re-compact");
+      }
+      // What sits over the bar (the shapes' button, the drawer, the toast) starts where it (or its button, minimized) does.
+      const r = (barsMin ? $("barsPill") : $("optbar")).getBoundingClientRect();
+      pieces.style.setProperty("--re-bottom", `${r.height > 0 ? Math.max(8, area.bottom - r.top + 8) : 8}px`);
+    } else if (el.childElementCount && !fits()) {
       pieces.classList.add("re-compact");
       if (!fits()) {
         pieces.classList.remove("re-compact");
@@ -375,7 +421,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   /** The bar of their own's ends: a button each side while there's more of it that way. */
   const arrows = () => {
     const el = $("options");
-    const more = pieces.classList.contains("re-wrapped") && el.scrollWidth > el.clientWidth + 1;
+    const more = (pieces.classList.contains("re-wrapped") || root.classList.contains("re-touch")) && el.scrollWidth > el.clientWidth + 1;
     $("prev").hidden = $("next").hidden = !more;
     $<HTMLButtonElement>("prev").disabled = el.scrollLeft <= 0;
     $<HTMLButtonElement>("next").disabled = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
@@ -398,7 +444,75 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   toolsEnd.observe($("tools"));
   toolsEnd.observe(pieces);
   // The line between the map and the 3D, dragged.
-  const split = root.parentElement ? installSplit(root.parentElement, t) : { stop() {}, retext() {} };
+  // On a small screen (or in touch mode), one view at a time instead (see split.ts).
+  const split: Split = root.parentElement
+    ? installSplit(root.parentElement, t, (shown) => o.onStage?.(shown), (single) => {
+        root.classList.toggle("re-touch", single);
+        // The hand's only the touch layout's.
+        if (!single && hand) {
+          setHand(false);
+        }
+        closeMenus();
+        fitOptions();
+      })
+    : { stop() {}, retext() {}, single: () => false, small: () => false, touch: () => false, setTouch() {} };
+
+  // The bars at the bottom, minimized (touch layout): only a button with the tool in hand, to get them back.
+  const setBarsMin = (min: boolean) => {
+    barsMin = min;
+    try {
+      if (min) {
+        localStorage.setItem(BARS_KEY, "min");
+      } else {
+        localStorage.removeItem(BARS_KEY);
+      }
+    } catch {
+      // Not kept (no storage): only this time.
+    }
+    pieces.classList.toggle("re-bars-min", min);
+    if (min) {
+      setShapesOpen(false);
+    }
+    closeMenus();
+    fitOptions();
+  };
+  pieces.classList.toggle("re-bars-min", barsMin);
+  $("barsPill").onclick = () => setBarsMin(false);
+  $("barsHide").onclick = () => setBarsMin(true);
+  // The shapes' list (touch layout): behind a button, over the map while it's open; what's picked beside it.
+  const setShapesOpen = (open: boolean) => {
+    pieces.classList.toggle("re-shapes-open", open);
+    $("shapesBtn").setAttribute("aria-expanded", String(open));
+    $("shapesBtn").classList.toggle("on", open);
+    if (open && shapesFold.value) {
+      shapesFold.value = false;
+      list();
+    }
+  };
+  $("shapesBtn").onclick = () => setShapesOpen(!pieces.classList.contains("re-shapes-open"));
+
+  /** The shape's menu (what a right click opens) from a ⋯ in its panel's title: the touch layout's (a finger held picks several). */
+  const shapeMoreButton = () => {
+    const sel = editor.sel;
+    const head = $("props").querySelector<HTMLElement>(".head");
+    if (!head || sel?.kind !== "shape" || !root.classList.contains("re-touch")) {
+      return;
+    }
+    const before = head.querySelector('[data-k="del"]') ?? head.querySelector('[data-k="deselect"]');
+    before?.insertAdjacentHTML("beforebegin", `<button type="button" class="ib sm" data-k="shapeMore" aria-haspopup="menu" aria-label="${esc(t("relief.shapeMore"))}">${icon("more")}</button>`);
+    const button = head.querySelector<HTMLElement>('[data-k="shapeMore"]');
+    if (!button) {
+      return;
+    }
+    menuToggle(button, () => {
+      const r = button.getBoundingClientRect();
+      const area = root.getBoundingClientRect();
+      const menu = shapeMenu(sel.i, r.left, r.top);
+      // Over the panel (it's at the bottom), its right end at the button's.
+      menu.style.left = `${Math.max(4, Math.min(area.width - menu.offsetWidth - 4, r.right - area.left - menu.offsetWidth))}px`;
+      menu.style.top = `${Math.max(4, r.top - area.top - menu.offsetHeight - 6)}px`;
+    });
+  };
 
   // A notice for a moment (only what went wrong, or what came of a choice).
   const toast = $("toast");
@@ -467,6 +581,9 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     const key = shapes.join(",");
     if (key !== toldPicked) {
       toldPicked = key;
+      if (shapes.length && root.classList.contains("re-touch")) {
+        setShapesOpen(false);
+      }
       o.onPick?.(shapes);
     }
   };
@@ -487,14 +604,28 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
         openMenu(root, x, y, items);
       }));
       time("editor.panel.options", () => renderOptions($("options"), editor, t));
-      $("toolBtn").innerHTML = toolButton(editor, t);
+      // The hand has no options.
+      if (hand) {
+        $("options").innerHTML = "";
+      }
+      // A chevron: it opens a menu (down from the top bar, up from the touch layout's bottom one: see the CSS).
+      const tool = hand ? `${icon("hand")}<span class="sr">${esc(t("relief.hand"))}</span>` : toolButton(editor, t);
+      $("toolBtn").innerHTML = `${tool}<span class="tchev">${icon("expand")}</span>`;
+      $("shapesBtn").innerHTML = `${icon("layers")}<span class="count">${editor.data.shapes.length}</span>`;
       time("editor.panel.fit", fitOptions);
+      // Picking several ends with nothing picked, or out of the touch layout.
+      if (editor.multi && (editor.sel?.kind !== "shape" || !root.classList.contains("re-touch"))) {
+        editor.multi = false;
+      }
+      // Taking a texture (or a door's picture) from the map: the map clear for it (the touch layout's panel and list hidden: see the CSS).
+      pieces.classList.toggle("re-picking", editor.skinPick !== null || editor.doorPick !== null);
       time("editor.panel.props", () => renderProps($("props"), editor, t, o.unit, panelFolds));
+      shapeMoreButton();
       time("editor.panel.shapes", () => renderShapes($("shapes"), editor, t, listUi()));
       history();
       tellPicked();
       if (!$("pop").hidden) {
-        $("pop").innerHTML = shortcutsHtml(editor, t);
+        $("pop").innerHTML = root.classList.contains("re-touch") ? gesturesHtml(t) : shortcutsHtml(editor, t);
       }
     });
   };
@@ -547,7 +678,8 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       },
       redraw: () => map.redraw(),
       setCursor: (cursor) => (o.map.style.cursor = cursor),
-      snapReach: () => 10 / map.scale,
+      // Some pixels on screen; more for a finger (the touch layout).
+      snapReach: () => (root.classList.contains("re-touch") ? 20 : 10) / map.scale,
       toScreen: (x, y) => map.toScreen(x, y),
       saveSettings: () => keepJson(SETTINGS_KEY, editor.settings),
       doorsChanged: (terrain) => {
@@ -577,7 +709,9 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   const drawMap = map.redraw.bind(map);
   map.redraw = () => {
     drawMap();
-    const text = liveHint(editor, t, o.unit);
+    // Picking several (a finger's): how it goes; and, a finger's, no keys.
+    const touch = root.classList.contains("re-touch");
+    const text = editor.multi ? t("relief.multiHint") : liveHint(editor, t, o.unit, !touch);
     if (chip.textContent !== text) {
       chip.textContent = text;
     }
@@ -598,14 +732,29 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     if (was !== "none") {
       o.onRelief(image.id, editor.relief, false, null, null, was === "heights");
     }
+    // A finger's: the bar again (a pen's outline's buttons, as its points come).
+    if (root.classList.contains("re-touch")) {
+      panel();
+    }
   };
   void pictureOf(image.image.url, image.image.mime.startsWith("video")).then((picture) => {
     map.picture = picture;
     map.fit();
   });
   const setTool = (id: ToolId) => {
+    if (hand) {
+      setHand(false);
+    }
     editor.setTool(id);
     closeMenus();
+  };
+  /** The hand (touch layout): one finger moves the map, nothing edited; the tool in hand before, back with another pick. */
+  const setHand = (on: boolean) => {
+    hand = on;
+    map.hand = on;
+    o.map.style.cursor = on ? "grab" : "";
+    closeMenus();
+    panel();
   };
 
   // ---------- Menus ----------
@@ -629,7 +778,14 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       }
     }
     groupsSeen = now;
-    return { folded: shapesFold, groupsOpen, onMenu: shapeMenu, onGroupMenu: groupMenu, focusName };
+    return {
+      folded: shapesFold,
+      groupsOpen,
+      // A row held (a finger's, the touch layout): picking several, as on the map.
+      onMenu: (i: number, x: number, y: number) => (root.classList.contains("re-touch") ? pickSeveral(i) : shapeMenu(i, x, y)),
+      onGroupMenu: groupMenu,
+      focusName,
+    };
   };
   const redoAll = () => {
     editor.changed();
@@ -663,7 +819,25 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     openMenu(root, x + 2, y + 2, items);
   }
   /** A shape's menu (what's picked, with it). */
-  function shapeMenu(i: number, clientX: number, clientY: number) {
+  /** Picking several (the touch layout): started on a shape held (it picked, alone or among those already), then a tap adds or takes one. */
+  function pickSeveral(i: number) {
+    if (editor.tool !== "edit") {
+      setTool("edit");
+    }
+    const sel = editor.sel;
+    if (!editor.multi) {
+      editor.multi = true;
+      if (!(sel?.kind === "shape" && (sel.i === i || sel.more?.includes(i)))) {
+        editor.sel = { kind: "shape", i };
+      }
+    } else {
+      togglePick(editor, i);
+    }
+    editor.host.showProps();
+    editor.host.redraw();
+  }
+
+  function shapeMenu(i: number, clientX: number, clientY: number): HTMLElement {
     const shapes = editor.data.shapes;
     const many = editor.sel?.kind === "shape" && (editor.sel.more?.length ?? 0) > 0;
     const redo = redoAll;
@@ -760,11 +934,19 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       { icon: "delete", label: t("relief.delete"), key: "Supr", run: () => editor.remove() },
     ];
     const [x, y] = rootPoint(clientX, clientY);
-    openMenu(root, x + 2, y + 2, items);
+    return openMenu(root, x + 2, y + 2, items);
   }
   // A right click on the map: on a shape, its menu (picked first, unless it's among what's picked).
-  map.onMenu = (sx, sy, at) => {
+  map.onMenu = (sx, sy, at, touch) => {
     const i = editor.shapeAt(at.x, at.y);
+    // A finger held on a shape (the touch layout): picking several, as photos in a phone's gallery (its menu's
+    // the ⋯ in the panel).
+    if (touch && root.classList.contains("re-touch")) {
+      if (i >= 0) {
+        pickSeveral(i);
+      }
+      return;
+    }
     if (i < 0) {
       closeMenus();
       return;
@@ -777,12 +959,8 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     const r = o.map.getBoundingClientRect();
     shapeMenu(i, r.left + sx, r.top + sy);
   };
-  // A click anywhere else closes a menu.
-  const outside = (event: PointerEvent) => {
-    if (!(event.target as HTMLElement).closest(".re-menu")) {
-      closeMenus();
-    }
-  };
+  // A click anywhere else closes a menu (on the button that opened it, that button's click does: see menuToggle).
+  const outside = (event: PointerEvent) => pressedAt(event.target as HTMLElement);
   document.addEventListener("pointerdown", outside, true);
 
   // ---------- The top bar ----------
@@ -840,19 +1018,30 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     }
     editor.replace(read);
   };
-  $("toolBtn").onclick = () => {
+  menuToggle($("toolBtn"), () => {
     const r = $("toolBtn").getBoundingClientRect();
+    if (root.classList.contains("re-touch")) {
+      const [x, y] = rootPoint(r.left, r.top);
+      const menu = openMenu(root, x, y, toolsMenu(editor, t, setTool, { on: hand, take: () => setHand(true) }));
+      menu.style.top = `${Math.max(4, y - menu.offsetHeight - 6)}px`;
+      return;
+    }
     const [x, y] = rootPoint(r.left, r.bottom + 4);
     openMenu(root, x, y, toolsMenu(editor, t, setTool));
-  };
-  $("more").onclick = async () => {
+  });
+  menuToggle($("more"), async () => {
     const r = $("more").getBoundingClientRect();
     const [x, y] = rootPoint(r.right, r.bottom + 4);
     let sure = false;
     // How big it is as the scene keeps it, and the versions kept here.
     const [packed, backups] = await Promise.all([pack(JSON.stringify(toStored(editor.data))).catch(() => ""), backupsOf(image.id)]);
-    const versions: MenuItem[] = backups.length
-      ? backups.map((backup) => ({
+    // Picked in a window of their own (pickDialog.ts), the newest first; going back to one is a step to undo.
+    const versions = () =>
+      openPick({
+        root,
+        t,
+        title: t("relief.versions"),
+        rows: backups.map((backup) => ({
           label: new Date(backup.at).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }),
           run: () => {
             const read = fromStored(JSON.parse(backup.json));
@@ -861,28 +1050,38 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
               notice(t("relief.versionBack"));
             }
           },
-        }))
-      : [{ label: t("relief.versionsNone"), disabled: true }];
+        })),
+        empty: t("relief.versionsNone"),
+        foot: t("relief.versionsUndo"),
+      });
     // On a narrow map, what the top bar has no room for.
     const narrow = (): MenuItem[] =>
       pieces.classList.contains("re-narrow")
         ? [
             {
-              label: t("relief.image"),
-              items: o.images.map((i, k): MenuItem => ({
-                label: i.id === image.id ? `${imageName(i, k)} ✓` : imageName(i, k),
-                run: () => {
-                  if (i.id !== image.id) {
-                    const select = $<HTMLSelectElement>("image");
-                    select.value = i.id;
-                    select.dispatchEvent(new Event("change"));
-                  }
-                },
-              })),
+              icon: "image",
+              label: t("relief.imageMenu"),
+              run: () =>
+                openPick({
+                  root,
+                  t,
+                  title: t("relief.image"),
+                  rows: o.images.map((i, k) => ({
+                    label: imageName(i, k),
+                    on: i.id === image.id,
+                    run: () => {
+                      if (i.id !== image.id) {
+                        const select = $<HTMLSelectElement>("image");
+                        select.value = i.id;
+                        select.dispatchEvent(new Event("change"));
+                      }
+                    },
+                  })),
+                }),
             },
-            { icon: "heights", label: map.showHeights ? `${t("relief.heights")} ✓` : t("relief.heights"), run: () => $("heights").click() },
-            { icon: "magnet", label: editor.settings.grid ? `${t("relief.grid")} ✓` : t("relief.grid"), run: () => $("grid").click() },
-            ...(pieces.classList.contains("re-tighter") ? [{ label: t("relief.shortcuts"), key: "?", run: toggleHelp }] : []),
+            { icon: "heights", label: t("relief.heights"), on: map.showHeights, run: () => $("heights").click() },
+            { icon: "magnet", label: t("relief.grid"), on: editor.settings.grid, run: () => $("grid").click() },
+            ...(pieces.classList.contains("re-tighter") ? [{ label: t(root.classList.contains("re-touch") ? "relief.gestures" : "relief.shortcuts"), key: "?", run: toggleHelp }] : []),
             ...(pieces.classList.contains("re-tightest") ? [{ icon: "redo" as const, label: t("relief.redo"), key: "Ctrl+Y", run: () => editor.redo() }] : []),
             "-",
           ]
@@ -903,7 +1102,14 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       { icon: "terrain", label: t("relief.gen.menu"), run: () => openGenerate({ root, t, editor, image, scene: o.scene, notice }) },
       "-",
       { label: t("relief.import"), run: () => file.click() },
-      { label: t("relief.versions"), items: versions },
+      { icon: "history", label: t("relief.versionsMenu"), run: versions },
+      // One view at a time, for a tablet with no mouse or keyboard (on a small screen it's so anyway).
+      {
+        label: t("relief.touchMode"),
+        on: split.single(),
+        disabled: split.small(),
+        run: () => split.setTouch(!split.touch()),
+      },
       {
         icon: "terrain",
         label: t("relief.zones"),
@@ -936,10 +1142,10 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
         },
       },
       "-",
-      { label: t("relief.size", { size: packed ? sizeOf(packed.length) : "?" }), disabled: true },
+      { label: t("relief.sceneSize", { size: packed ? sizeOf(packed.length) : "?" }), info: true },
     ];
     openMenu(root, x - 220, y, items());
-  };
+  });
   // Done: this version kept on this device too (see backups.ts).
   $("done").onclick = () => {
     void keepBackup(image.id, JSON.stringify(toStored(editor.data)));
@@ -1020,7 +1226,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   function toggleHelp() {
     const pop = $("pop");
     pop.hidden = !pop.hidden;
-    pop.innerHTML = pop.hidden ? "" : shortcutsHtml(editor, t);
+    pop.innerHTML = pop.hidden ? "" : root.classList.contains("re-touch") ? gesturesHtml(t) : shortcutsHtml(editor, t);
     $("help").classList.toggle("on", !pop.hidden);
   }
 

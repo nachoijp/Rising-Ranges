@@ -105,9 +105,11 @@ export type Settings = {
   grid: boolean;
   /** The ready-made shape the Formas listas tool puts down. */
   stamp: PrefabId;
+  /** Rectangles drawn square and ellipses round (the touch layout's Shift). */
+  square: boolean;
 };
 
-export const DEFAULT_SETTINGS: Settings = { pickMode: "shapes", rollerMode: "new", lassoSmooth: 0, radius: 1.5, strength: 0.5, level: 1, lastSoft: 0, groundOnly: false, shapeRadius: 1, brushMode: "raise", grid: true, stamp: "column" };
+export const DEFAULT_SETTINGS: Settings = { pickMode: "shapes", rollerMode: "new", lassoSmooth: 0, radius: 1.5, strength: 0.5, level: 1, lastSoft: 0, groundOnly: false, shapeRadius: 1, brushMode: "raise", grid: true, stamp: "column", square: false };
 
 /** An ellipse's points. */
 const SHAPE_POINTS = 24;
@@ -133,6 +135,8 @@ export class ReliefEditor {
   host: EditorHost;
   tool: ToolId = "rect";
   sel: Selection | null = null;
+  /** Picking several (the touch layout's Ctrl, a shape held to start it): a tap adds or takes a shape. */
+  multi = false;
   settings: Settings;
 
   // What's under way (each only while it lasts).
@@ -176,6 +180,8 @@ export class ReliefEditor {
 
   private undoStack: string[] = [];
   private redoStack: string[] = [];
+  /** Steps kept so far, ever (the stack drops its oldest): see undoMark. */
+  private undoCount = 0;
 
   constructor(data: ReliefData, host: EditorHost, settings: Partial<Settings> = {}) {
     unshare(data);
@@ -374,6 +380,21 @@ export class ReliefEditor {
       this.undoStack.shift();
     }
     this.redoStack = [];
+    this.undoCount++;
+  }
+
+  /** Where the steps are now, to take back what's done after it (see dropSince). */
+  undoMark(): number {
+    return this.undoCount;
+  }
+
+  /** What was done since `mark` taken back, and not kept to redo either: a gesture called off (a second finger). */
+  dropSince(mark: number) {
+    for (let n = this.undoCount - mark; n > 0 && this.undoStack.length; n--) {
+      this.undo();
+      this.redoStack.pop();
+    }
+    this.undoCount = Math.min(this.undoCount, mark);
   }
 
   get canUndo(): boolean {
@@ -423,6 +444,9 @@ export class ReliefEditor {
   /** Another tool in hand: what's picked stays picked (to cut only it, or paint onto it); an outline half drawn is dropped. */
   setTool(tool: ToolId) {
     this.tool = tool;
+    if (tool !== "edit") {
+      this.multi = false;
+    }
     this.skinPick = null;
     this.doorPick = null;
     this.doorDraw = null;
@@ -517,7 +541,7 @@ export class ReliefEditor {
       this.host.showProps();
       return;
     }
-    if (this.tool === "edit" && !this.drawing && mods.ctrl) {
+    if (this.tool === "edit" && !this.drawing && (mods.ctrl || this.multi)) {
       const si = this.shapeAt(p.x, p.y);
       if (si >= 0) {
         togglePick(this, si);
@@ -528,7 +552,7 @@ export class ReliefEditor {
       }
     }
     // Picking shapes, a double click on one: its vertices (as in most drawing programs).
-    if (this.tool === "edit" && this.settings.pickMode === "shapes" && mods.clicks === 2 && !mods.ctrl) {
+    if (this.tool === "edit" && this.settings.pickMode === "shapes" && mods.clicks === 2 && !mods.ctrl && !this.multi) {
       const si = this.shapeAt(p.x, p.y);
       if (si >= 0) {
         this.xf = null;
@@ -741,7 +765,7 @@ export class ReliefEditor {
       const o = this.shape.origin;
       const q = this.gridded(p);
       let [dx, dy] = [q.x - o.x, q.y - o.y];
-      if (mods.shift) {
+      if (mods.shift || this.settings.square) {
         const d = Math.max(Math.abs(dx), Math.abs(dy));
         [dx, dy] = [(dx < 0 ? -1 : 1) * d, (dy < 0 ? -1 : 1) * d];
       }

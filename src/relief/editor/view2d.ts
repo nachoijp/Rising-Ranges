@@ -70,6 +70,8 @@ const WIDTH = 2.5;
 const LONG_PRESS_MS = 550;
 /** How far (px) a finger moves before it's a drag (not still, for a tap or the menu). */
 const TOUCH_SLOP = 8;
+/** A second finger this soon (ms) after the first one's stroke started: that stroke taken back, a pinch instead. */
+const SECOND_FINGER_MS = 200;
 
 export class MapView {
   canvas: HTMLCanvasElement;
@@ -86,9 +88,11 @@ export class MapView {
   oy = 0;
   /** Told when the pointer's pressed on the map (before the editor), and let go (after it). */
   onDown: () => void = () => {};
+  /** The hand (the touch layout's tool): one finger, or the left button, moves the map; nothing's edited. */
+  hand = false;
   onUp: () => void = () => {};
   /** A right click (pressed and let go without moving): its menu, at (sx, sy) on the canvas. */
-  onMenu: (sx: number, sy: number, at: { x: number; y: number }) => void = () => {};
+  onMenu: (sx: number, sy: number, at: { x: number; y: number }, touch: boolean) => void = () => {};
   private ctx: CanvasRenderingContext2D;
   private frame = 0;
   private fitted = false;
@@ -172,6 +176,10 @@ export class MapView {
     let pinch: { d: number; scale: number; world: { x: number; y: number }; mid: [number, number] } | null = null;
     /** A pinch ended with a finger still down: nothing more till every one's lifted. */
     let spent = false;
+    /** The hand's finger: where it started, and the map then. */
+    let grab: { sx: number; sy: number; ox: number; oy: number } | null = null;
+    /** The finger's press, when and the steps then (a second finger soon after takes it back). */
+    let pressed = { at: 0, mark: 0 };
     const midOf = (): [number, number] => {
       const [a, b] = [...touches.values()];
       return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
@@ -186,12 +194,22 @@ export class MapView {
       clearTimeout(w.menu);
       waiting = null;
       held = true;
+      pressed = { at: performance.now(), mark: this.editor.undoMark() };
       this.onDown();
       this.editor.down(this.toWorld(w.sx, w.sy), w.mods);
     };
     const touchDown = (event: PointerEvent, sx: number, sy: number) => {
       touches.set(event.pointerId, [sx, sy]);
+      // The first finger's stroke just started (its finger a little quicker than the other): taken back, not
+      // kept to undo, and a pinch instead.
+      if (touches.size === 2 && held && performance.now() - pressed.at < SECOND_FINGER_MS) {
+        held = false;
+        this.editor.up();
+        this.editor.dropSince(pressed.mark);
+        this.onUp();
+      }
       if (touches.size === 2 && !held) {
+        grab = null;
         if (waiting) {
           clearTimeout(waiting.menu);
           waiting = null;
@@ -201,6 +219,10 @@ export class MapView {
         return;
       }
       if (touches.size > 1 || spent) {
+        return;
+      }
+      if (this.hand) {
+        grab = { sx, sy, ox: this.ox, oy: this.oy };
         return;
       }
       const now = performance.now();
@@ -216,7 +238,7 @@ export class MapView {
           if (waiting?.id === event.pointerId) {
             waiting = null;
             spent = true;
-            this.onMenu(sx, sy, this.toWorld(sx, sy));
+            this.onMenu(sx, sy, this.toWorld(sx, sy), true);
           }
         }, LONG_PRESS_MS),
       };
@@ -234,6 +256,12 @@ export class MapView {
         this.redraw();
         return;
       }
+      if (grab && touches.size === 1) {
+        this.ox = grab.ox + sx - grab.sx;
+        this.oy = grab.oy + sy - grab.sy;
+        this.redraw();
+        return;
+      }
       if (waiting?.id === event.pointerId && Math.hypot(sx - waiting.sx, sy - waiting.sy) > TOUCH_SLOP) {
         press();
       }
@@ -243,6 +271,9 @@ export class MapView {
     };
     const touchUp = (event: PointerEvent) => {
       touches.delete(event.pointerId);
+      if (touches.size === 0) {
+        grab = null;
+      }
       if (pinch) {
         pinch = null;
         spent = touches.size > 0;
@@ -267,7 +298,7 @@ export class MapView {
         touchDown(event, sx, sy);
         return;
       }
-      if (event.button !== 0) {
+      if (event.button !== 0 || this.hand) {
         pan = { sx, sy, ox: this.ox, oy: this.oy, right: event.button === 2, moved: false };
         return;
       }
@@ -292,11 +323,15 @@ export class MapView {
         this.redraw();
         return;
       }
+      // The hand: no tool's preview under the pointer either.
+      if (this.hand) {
+        return;
+      }
       this.editor.move(this.toWorld(sx, sy), mods(event), held);
     }, { signal });
     const end = () => {
       if (pan?.right && !pan.moved) {
-        this.onMenu(pan.sx, pan.sy, this.toWorld(pan.sx, pan.sy));
+        this.onMenu(pan.sx, pan.sy, this.toWorld(pan.sx, pan.sy), false);
       }
       pan = null;
       if (held) {

@@ -193,8 +193,10 @@ export class VistazoView {
    * material uses any more is deleted, and built again (slowly) for the next that does.
    */
   private retired: THREE.Material[] = [];
-  /** The panel minimized: every video paused (see setPaused). */
+  /** The panel minimized or the view hidden: every video paused (see setPaused, setHidden). */
   private paused = false;
+  private minimized = false;
+  private hidden = false;
   /** The weather's particles (see weather.ts), what they were built from, and the frames they're drawn on. */
   private weatherGroup = new THREE.Group();
   /** The clouds' shadows, worked out at each pixel of the terrain (see clouded): their zones, and the time they've drifted to. */
@@ -3402,7 +3404,21 @@ export class VistazoView {
 
   /** Every video and the weather stopped (the panel minimized), or going again. */
   setPaused(paused: boolean) {
-    this.paused = paused;
+    this.minimized = paused;
+    this.pauseNow();
+  }
+
+  /** The view hidden (the relief editor showing only its 2D map): stopped as when minimized; shown, drawn again. */
+  setHidden(hidden: boolean) {
+    this.hidden = hidden;
+    this.pauseNow();
+    if (!hidden) {
+      this.apply();
+    }
+  }
+
+  private pauseNow() {
+    this.paused = this.minimized || this.hidden;
     this.pauseVideos();
     this.playMaps();
     this.playWeather();

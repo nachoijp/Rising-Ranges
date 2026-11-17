@@ -4,19 +4,32 @@ import type { T } from "./panel";
 // No limit: let go with one of them narrower than MIN and it's hidden (a thin
 // bar left at its edge to bring it back, by a click or a drag). A double
 // click: half and half again. Kept for the next time.
+//
+// On a small screen (a phone, a tablet upright), or in touch mode (asked for
+// in the "⋯" menu: a tablet with neither mouse nor keyboard), one view at a
+// time instead, the whole of it: a 2D | 3D switch, no line.
 
 const KEY = "rising-ranges/relief-editor/split";
 /** Narrower than this (of the width) when it's let go: hidden. */
 const MIN = 0.15;
+/** Smaller than this, one view at a time (side by side, each would be too narrow to work in). */
+const SINGLE_W = 900;
+const SINGLE_H = 500;
 
-type State = { ratio: number; hidden: "" | "map" | "stage" };
+type View = "map" | "stage";
+type State = { ratio: number; hidden: "" | View; touch: boolean; single: View };
 
 function load(): State {
   try {
     const s = JSON.parse(localStorage.getItem(KEY) ?? "{}") as Partial<State>;
-    return { ratio: typeof s.ratio === "number" && s.ratio > 0 && s.ratio < 1 ? s.ratio : 0.5, hidden: s.hidden === "map" || s.hidden === "stage" ? s.hidden : "" };
+    return {
+      ratio: typeof s.ratio === "number" && s.ratio > 0 && s.ratio < 1 ? s.ratio : 0.5,
+      hidden: s.hidden === "map" || s.hidden === "stage" ? s.hidden : "",
+      touch: s.touch === true,
+      single: s.single === "stage" ? "stage" : "map",
+    };
   } catch {
-    return { ratio: 0.5, hidden: "" };
+    return { ratio: 0.5, hidden: "", touch: false, single: "map" };
   }
 }
 
@@ -28,22 +41,59 @@ function keep(state: State) {
   }
 }
 
-/** The line in `box` (the grid with the map and the 3D side by side): taken away (stop), its names again (retext). */
-export function installSplit(box: HTMLElement, t: T): { stop(): void; retext(): void } {
+export type Split = {
+  stop(): void;
+  /** Its names again (the language changed). */
+  retext(): void;
+  /** One view at a time now (a small screen, or touch mode). */
+  single(): boolean;
+  /** One view at a time because the screen is small (touch mode can't be turned off then). */
+  small(): boolean;
+  /** Touch mode, as asked for in the menu. */
+  touch(): boolean;
+  setTouch(on: boolean): void;
+};
+
+/**
+ * The line in `box` (the grid with the map and the 3D side by side), or the 2D | 3D switch.
+ * `onStage`: the 3D shown or hidden (not worth drawing then), and at the start.
+ * `onSingle`: one view at a time or not, and at the start.
+ */
+export function installSplit(box: HTMLElement, t: T, onStage: (shown: boolean) => void = () => {}, onSingle: (single: boolean) => void = () => {}): Split {
   const state = load();
   const line = document.createElement("div");
   line.className = "re-split";
   line.setAttribute("role", "separator");
   line.setAttribute("aria-orientation", "vertical");
   line.tabIndex = 0;
-  box.append(line);
+  // The switch: always in the same corner, over whichever view shows.
+  const views = document.createElement("div");
+  views.className = "re-views";
+  views.setAttribute("role", "group");
+  views.innerHTML = `<button type="button" data-v="map">2D</button><button type="button" data-v="stage">3D</button>`;
+  box.append(line, views);
+
+  let small = false;
+  let stageShown: boolean | null = null;
+  let wasSingle: boolean | null = null;
+  const single = () => small || state.touch;
   const apply = (ratio = state.ratio, hidden = state.hidden) => {
-    box.style.setProperty(
-      "--re-cols",
-      hidden === "map" ? "0px minmax(0, 1fr)" : hidden === "stage" ? "minmax(0, 1fr) 0px" : `minmax(0, ${ratio}fr) minmax(0, ${1 - ratio}fr)`
-    );
-    box.classList.toggle("re-map-hidden", hidden === "map");
-    box.classList.toggle("re-stage-hidden", hidden === "stage");
+    const one = single();
+    // One at a time: the other one hidden, the same way the line hides it.
+    const off: "" | View = one ? (state.single === "map" ? "stage" : "map") : hidden;
+    box.style.setProperty("--re-cols", off === "map" ? "0px minmax(0, 1fr)" : off === "stage" ? "minmax(0, 1fr) 0px" : `minmax(0, ${ratio}fr) minmax(0, ${1 - ratio}fr)`);
+    box.classList.toggle("re-single", one);
+    box.classList.toggle("re-map-hidden", off === "map");
+    box.classList.toggle("re-stage-hidden", off === "stage");
+    line.hidden = one;
+    views.hidden = !one;
+    for (const button of views.querySelectorAll<HTMLButtonElement>("button")) {
+      const on = button.dataset.v === state.single;
+      button.classList.toggle("on", on);
+      button.setAttribute("aria-pressed", String(on));
+      button.title = t(button.dataset.v === "map" ? "relief.split.showMap" : "relief.split.show3d");
+    }
+    views.setAttribute("aria-label", t("relief.split.views"));
     line.classList.toggle("edge", hidden !== "");
     line.style.left = hidden === "map" ? "0px" : hidden === "stage" ? "100%" : `${ratio * 100}%`;
     const text = hidden === "map" ? t("relief.split.showMap") : hidden === "stage" ? t("relief.split.show3d") : t("relief.split.drag");
@@ -51,8 +101,41 @@ export function installSplit(box: HTMLElement, t: T): { stop(): void; retext(): 
     // Outside the map, where the editor's own tooltips are: the browser's.
     line.title = hidden ? text : `${text}. ${t("relief.split.dragHint")}`;
     line.setAttribute("aria-label", text);
+    // While the line's dragged, the 3D stays as it is (drawn, or not) till it's let go.
+    if (!box.classList.contains("re-splitting")) {
+      const shown = off !== "stage";
+      if (shown !== stageShown) {
+        stageShown = shown;
+        onStage(shown);
+      }
+    }
+    if (one !== wasSingle) {
+      wasSingle = one;
+      onSingle(one);
+    }
   };
+
+  views.onclick = (event) => {
+    const v = (event.target as HTMLElement).closest<HTMLButtonElement>("button")?.dataset.v;
+    if ((v === "map" || v === "stage") && v !== state.single) {
+      state.single = v;
+      apply();
+      keep(state);
+    }
+  };
+  // The screen's size: one view at a time when it's small.
+  const sizer = new ResizeObserver(() => {
+    const r = box.getBoundingClientRect();
+    const now = r.width > 0 && (r.width < SINGLE_W || r.height < SINGLE_H);
+    if (now !== small) {
+      small = now;
+      apply();
+    }
+  });
+  const r = box.getBoundingClientRect();
+  small = r.width > 0 && (r.width < SINGLE_W || r.height < SINGLE_H);
   apply();
+  sizer.observe(box);
 
   let drag: { moved: boolean; ratio: number } | null = null;
   const ratioAt = (clientX: number) => {
@@ -125,11 +208,24 @@ export function installSplit(box: HTMLElement, t: T): { stop(): void; retext(): 
   };
   return {
     stop() {
+      sizer.disconnect();
       line.remove();
+      views.remove();
       box.style.removeProperty("--re-cols");
-      box.classList.remove("re-map-hidden", "re-stage-hidden", "re-splitting");
+      box.classList.remove("re-map-hidden", "re-stage-hidden", "re-splitting", "re-single");
+      // Out of the editor: the 3D shown again, whatever it was here.
+      if (stageShown === false) {
+        onStage(true);
+      }
     },
-    // Its names (the language changed).
     retext: () => apply(),
+    single,
+    small: () => small,
+    touch: () => state.touch,
+    setTouch(on) {
+      state.touch = on;
+      apply();
+      keep(state);
+    },
   };
 }

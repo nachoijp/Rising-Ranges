@@ -3124,7 +3124,15 @@ async function start() {
   const backToPanel = FULL && new URLSearchParams(location.search).has("back");
   /** While editing, the scene drawn again a few times a second at most (not only once it's still). */
   let soonTimer = 0;
+  /** The 3D hidden beside the relief editor's map (see onStage), and a build it's owed meanwhile. */
+  let stageHidden = false;
+  let refreshOwed = false;
   const soon = (ms = 150) => {
+    // The 3D hidden while the relief's edited (its 2D map alone): built once it shows again.
+    if (stageHidden) {
+      refreshOwed = true;
+      return;
+    }
     if (!soonTimer) {
       soonTimer = window.setTimeout(() => {
         soonTimer = 0;
@@ -3248,9 +3256,19 @@ async function start() {
         );
       },
       onDone: leaveEdit,
+      onStage: (shown) => {
+        stageHidden = !shown;
+        view.setHidden(!shown);
+        if (shown && refreshOwed) {
+          refreshOwed = false;
+          soon(0);
+        }
+      },
     }, images.some((image) => image.id === asked) ? asked! : undefined);
   }
   function leaveEdit() {
+    // Built just below, all of it (not once more for the 3D shown again).
+    refreshOwed = false;
     session?.stop();
     session = null;
     $("app").classList.remove("editing");
