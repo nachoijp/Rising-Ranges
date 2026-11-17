@@ -29,7 +29,7 @@ import { AnimatedImage, animationOf, mayAnimate, stopAnimation } from "./view/an
 import { computeWalls, type Region } from "./view/walls";
 import { BaseBatch, moveBase, ringMaterial, type BaseSeat } from "./view/bases";
 import { UNDER_FRAGMENT, UNDER_VERTEX } from "./view/shaders";
-import { FILL_BANDS, FILL_CELLS, FOG_GLSL, baseTexture, based, clouded, detailed, fogCut, fogCutShader, fogged, foggedToo, grained, gridded, layer, tinted } from "./view/layers";
+import { FILL_BANDS, FILL_CELLS, FOG_GLSL, baseTexture, based, clouded, detailed, fogCut, fogCutShader, fogged, foggedToo, grained, gridded, layer, tinted, toneAttribute, toned } from "./view/layers";
 import { reachMask, waterMaterial, waterReach, waterShape, type WaterReach } from "./view/water";
 import { MapComposer, sourceDensity, type MapBox, type MapMedia } from "./view/mapCompose";
 import { record, since, stamp, time, timingOn } from "../timing";
@@ -66,6 +66,18 @@ const MOTION_SETTLE_MS = 300;
 /** Frames slower than this (ms) lose sharpness while moving; faster than that, they get it back. */
 const MOTION_SLOW_MS = 28;
 const MOTION_FAST_MS = 18;
+/** How long (ms) a brush stops before the shadows its dabs took away are drawn again (see reheight). */
+const SHADOWS_AFTER_MS = 400;
+/** How long (ms) after a build, the relief editor open, a brush's first dab is readied (see prepareBrush). */
+const PREPARE_AFTER_MS = 300;
+/** A frame's CPU work (see applyNow) over this share of it: the CPU's the slow part, not the card (see trackMotion). */
+const MOTION_CPU_SHARE = 0.4;
+/**
+ * The main thread in long frames over this share of the time (see cpuBusy): the CPU's the slow part. A slow
+ * card leaves it mostly idle (its frames aren't long ones); a slow CPU fills it (DevTools' throttling shows
+ * a third to two thirds of it).
+ */
+const MOTION_BUSY_SHARE = 0.25;
 
 /** How far (cells) a dropped token slides to its place; farther, it's just there (a jump across the map). */
 const SLIDE_MAX_CELLS = 40;
@@ -161,6 +173,8 @@ export class VistazoView {
   private propAnimations = new Map<string, PropAnimation>();
   /** The frame last drawn in (its time, see drawSoon). */
   private drawnAt = -1;
+  /** The stage's (and its overlay's) top left on the page, as last measured (see measure). */
+  private stageAt = { x: 0, y: 0 };
   /**
    * What's changed in the picture since it was drawn (see draw): everything, only what's in a box
    * (view units: a dragged token's base, the Bandas round it), or nothing (null).
@@ -231,7 +245,37 @@ export class VistazoView {
   /** What each marker's element was last given (see placeOne): written again only when it changes. */
   private readonly written = new WeakMap<TokenView, { transform: string; z: string; visible: string; css: string; turn: string; hiddenFor: string; hidden: boolean }>();
   /** Drawn again frame after frame (see trackMotion): moving, how much of the sharpness it keeps, its frames' gaps. */
-  private motion = { on: false, scale: 1, last: 0, since: 0, settle: 0, gaps: [] as number[], cam: -1 };
+  /** `work`: the CPU's part of the last frames (see applyNow), to tell a slow card from a slow CPU. */
+  private motion = { on: false, scale: 1, last: 0, since: 0, settle: 0, gaps: [] as number[], work: [] as number[], cam: -1 };
+  /**
+   * The page's long frames (Chrome's Long Animation Frames: over 50 ms, its main thread's whole work in
+   * them, scripts, styles, layout), their end and length, the last few seconds; null where the browser
+   * doesn't tell (see cpuBusy).
+   */
+  private longFrames: { end: number; ms: number }[] | null = null;
+
+  /**
+   * Whether frames `mean` ms apart, over the last `span` ms, are slow for the CPU: the page's main thread busy
+   * a good part of the time (all of its work, where the browser tells: see longFrames), or the drawing's own
+   * work (see applyNow) a good part of each frame. Then fewer pixels, or no smoothing, wouldn't help.
+   */
+  private cpuBound(mean: number, span: number): boolean {
+    const work = this.motion.work;
+    const own = work.length ? work.reduce((a, b) => a + b, 0) / work.length : 0;
+    const busy = this.cpuBusy(span);
+    return (busy !== null && busy > MOTION_BUSY_SHARE) || own > mean * MOTION_CPU_SHARE;
+  }
+
+  /** The share of the last `span` ms the page's main thread spent in long frames (null: not known here). */
+  private cpuBusy(span: number): number | null {
+    if (!this.longFrames) {
+      return null;
+    }
+    const from = performance.now() - span;
+    this.longFrames = this.longFrames.filter((frame) => frame.end > from - 5000);
+    const busy = this.longFrames.reduce((sum, frame) => sum + Math.max(0, Math.min(frame.ms, frame.end - from)), 0);
+    return busy / span;
+  }
   /** Whether the renderer smooths edges (see wantsSmooth); a long run of moving frames' gaps, to tell a slow device. */
   private smooth = true;
   private longGaps: number[] = [];
@@ -455,6 +499,15 @@ export class VistazoView {
     this.canvas.className = "gl";
     this.smooth = this.wantsSmooth();
     this.renderer = this.makeRenderer(this.canvas, this.smooth);
+    // The page's long frames, where the browser tells them (see cpuBusy).
+    if (typeof PerformanceObserver !== "undefined" && PerformanceObserver.supportedEntryTypes?.includes("long-animation-frame")) {
+      this.longFrames = [];
+      new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          this.longFrames?.push({ end: entry.startTime + entry.duration, ms: entry.duration });
+        }
+      }).observe({ type: "long-animation-frame", buffered: false });
+    }
     this.glCamera.matrixAutoUpdate = false;
     this.movingGroup.matrixAutoUpdate = false;
     this.world.add(this.terrainGroup, this.underGroup, this.movingGroup, this.pickGroup, this.edgeGroup, this.tokenGroup, this.weatherGroup, this.underBridgeGroup, this.waterGroup, this.templateGroup, this.doorGroup);
@@ -468,8 +521,9 @@ export class VistazoView {
     stage.prepend(this.canvas, this.overlay);
     // The door buttons near the pointer show (see showDoorButtons): no drawing for it.
     stage.addEventListener("pointermove", (event) => {
-      const r = this.overlay.getBoundingClientRect();
-      this.pointerAt = { x: event.clientX - r.left, y: event.clientY - r.top };
+      // Where the overlay is, as last measured (see measure): read here on every move, it made the page
+      // work its layout out again (the tokens' elements moved since), each time.
+      this.pointerAt = { x: event.clientX - this.stageAt.x, y: event.clientY - this.stageAt.y };
       this.showDoorButtons();
     });
     stage.addEventListener("pointerleave", () => {
@@ -481,6 +535,78 @@ export class VistazoView {
 
   /** Drawn lightly (see setLite). */
   private lite = false;
+
+  /** The tops drawn together (see batchTops): a mesh a material; the pieces' meshes in them (not drawn by themselves); x-ray's when made. */
+  private topBatches: THREE.Mesh[] = [];
+  private batched = new Set<THREE.Object3D>();
+  private batchedXray = false;
+
+  /**
+   * The terrain's tops in as few draws as there are materials (they share one: see toned), not one a
+   * piece: each draw costs the CPU (three.js's setup of it), the triangles hardly. Their pieces' meshes
+   * kept (what reads or changes them still does), not drawn themselves. A piece changed on its own (a
+   * brush on it, dragged) let out (see loosen) till the next whole build. Not seen through (x-ray): the
+   * order they're drawn in shows then.
+   */
+  private batchTops() {
+    this.unbatchTops();
+    this.batchedXray = this.options.xray;
+    if (this.options.xray) {
+      return;
+    }
+    const byMaterial = new Map<THREE.Material, THREE.Mesh[]>();
+    for (const child of this.terrainGroup.children) {
+      const mesh = child as THREE.Mesh;
+      if (!child.userData.piece || child.userData.loose || !mesh.geometry.getAttribute("tone")) {
+        continue;
+      }
+      const material = mesh.material as THREE.Material;
+      const list = byMaterial.get(material);
+      if (list) {
+        list.push(mesh);
+      } else {
+        byMaterial.set(material, [mesh]);
+      }
+    }
+    for (const [material, meshes] of byMaterial) {
+      if (meshes.length < 2) {
+        continue;
+      }
+      const batch = new THREE.Mesh(mergeTops(meshes), material);
+      batch.userData.batch = true;
+      batch.matrixAutoUpdate = false;
+      this.terrainGroup.add(batch);
+      this.topBatches.push(batch);
+      for (const mesh of meshes) {
+        mesh.visible = false;
+        this.batched.add(mesh);
+      }
+    }
+  }
+
+  /** The tops drawn by themselves again (see batchTops). */
+  private unbatchTops() {
+    for (const batch of this.topBatches) {
+      batch.parent?.remove(batch);
+      batch.geometry.dispose();
+    }
+    this.topBatches = [];
+    for (const mesh of this.batched) {
+      mesh.visible = true;
+    }
+    this.batched.clear();
+  }
+
+  /** Tops changed by themselves (a brush on them, dragged): out of their batch (see batchTops), drawn alone. */
+  private loosen(meshes: THREE.Object3D[]) {
+    const changed = meshes.filter((mesh) => mesh.userData.piece && !mesh.userData.loose);
+    for (const mesh of changed) {
+      mesh.userData.loose = true;
+    }
+    if (changed.some((mesh) => this.batched.has(mesh))) {
+      this.batchTops();
+    }
+  }
 
   /**
    * Only the terrain's heights changed (the relief's brush), not where
@@ -504,6 +630,8 @@ export class VistazoView {
     const [x0, y0, x1, y1] = [region.x0 * u, region.y0 * u, region.x1 * u, region.y1 * u];
     let refine = false;
     const t0 = stamp();
+    // Those changed here: drawn by themselves from now on (see batchTops).
+    const reshaped: THREE.Mesh[] = [];
     for (const mesh of pieces) {
       const piece = mesh.userData.piece as Piece;
       let geometry = mesh.geometry;
@@ -514,13 +642,9 @@ export class VistazoView {
       // Drawn by its outline alone, and now its heights vary inside it (painted on, a soft edge over it),
       // or drawn lean (few triangles, none where the brush may paint): cut small, there and then.
       if (!mesh.userData.fine && !(near.max.x < x0 || near.min.x > x1 || near.max.y < y0 || near.min.y > y1) && (mesh.userData.lean || piece.fine?.())) {
-        const fine = this.fineGeometry(piece);
-        const position = fine.getAttribute("position") as THREE.BufferAttribute;
-        fine.setAttribute("uv", new THREE.BufferAttribute(this.uvs(position.array, position.count), 2));
-        for (let i = 0; i < position.count; i++) {
-          position.setZ(i, pieceHeight(piece, position.getX(i) / u, position.getY(i) / u) * k);
-        }
-        fine.computeBoundingBox();
+        // Readied beforehand (see prepareBrush), or now.
+        const fine = (mesh.userData.fineReady as THREE.BufferGeometry | undefined) ?? this.fineFor(mesh, piece);
+        mesh.userData.fineReady = undefined;
         mesh.geometry.dispose();
         mesh.geometry = fine;
         mesh.userData.fine = true;
@@ -532,6 +656,7 @@ export class VistazoView {
       if (box.max.x < x0 || box.min.x > x1 || box.max.y < y0 || box.min.y > y1) {
         continue;
       }
+      reshaped.push(mesh);
       const position = geometry.getAttribute("position") as THREE.BufferAttribute;
       for (let i = 0; i < position.count; i++) {
         const [x, y] = [position.getX(i), position.getY(i)];
@@ -541,6 +666,7 @@ export class VistazoView {
       }
       position.needsUpdate = true;
     }
+    this.loosen(reshaped);
     since("3d.reheight.vertices", t0);
     this.scene = scene;
     // The heights grid there too (what the pointer finds on the terrain: the 3D brush paints on it).
@@ -568,19 +694,32 @@ export class VistazoView {
     }
     const built = [...all].filter(([tile]) => !touched || touched.has(tile));
     time("3d.reheight.buildWalls", () => built.forEach(([tile, walls]) => this.buildWalls(walls, null, undefined, tile)));
-    // Each tile's with the walls of the tiles round it (where its walls' neighbours may be: see wallShadowBuffers).
-    time("3d.reheight.wallShadows", () =>
-      built.forEach(([tile, walls]) => {
-        const [i, j] = tile.split(",").map(Number);
-        const around: Wall[] = [];
-        for (let dj = -1; dj <= 1; dj++) {
-          for (let di = -1; di <= 1; di++) {
-            around.push(...(all.get(`${i + di},${j + dj}`) ?? []));
+    // Their shadows (a third of each dab's work: see owedShadows) once the brush stops a moment, where the
+    // walls changed; meanwhile none there (they went with their tiles' walls: none left where the heights
+    // moved under them). The other tiles built here (every one, the first stroke since a whole build): now.
+    const changed = new Set([...before.filter((wall) => done.has(wall.seg)), ...fresh].map((wall) => this.wallTile(wall)));
+    for (const [tile] of built) {
+      if (changed.has(tile)) {
+        this.shadowsOwed.add(tile);
+      }
+    }
+    const now = built.filter(([tile]) => !changed.has(tile));
+    if (now.length) {
+      time("3d.reheight.wallShadows", () =>
+        now.forEach(([tile, walls]) => {
+          const [i, j] = tile.split(",").map(Number);
+          const around: Wall[] = [];
+          for (let dj = -1; dj <= 1; dj++) {
+            for (let di = -1; di <= 1; di++) {
+              around.push(...(all.get(`${i + di},${j + dj}`) ?? []));
+            }
           }
-        }
-        this.buildWallShadows(walls, undefined, tile, around);
-      })
-    );
+          this.buildWallShadows(walls, undefined, tile, around);
+        })
+      );
+    }
+    clearTimeout(this.shadowsTimer);
+    this.shadowsTimer = window.setTimeout(() => this.owedShadows(), SHADOWS_AFTER_MS);
     this.wallsTiled = true;
     if (refine) {
       this.highlight(this.picked.shapes);
@@ -589,8 +728,139 @@ export class VistazoView {
     return true;
   }
 
+  /** A piece's top cut small (see reheight), with its picture, tone and heights as they are now. */
+  private fineFor(mesh: THREE.Mesh, piece: Piece): THREE.BufferGeometry {
+    const u = this.u;
+    const k = this.k;
+    const fine = this.fineGeometry(piece);
+    const position = fine.getAttribute("position") as THREE.BufferAttribute;
+    fine.setAttribute("uv", new THREE.BufferAttribute(this.uvs(position.array, position.count), 2));
+    if (mesh.userData.tone) {
+      fine.setAttribute("tone", toneAttribute(position.count, mesh.userData.tone as THREE.Color));
+    }
+    for (let i = 0; i < position.count; i++) {
+      position.setZ(i, pieceHeight(piece, position.getX(i) / u, position.getY(i) / u) * k);
+    }
+    fine.computeBoundingBox();
+    return fine;
+  }
+
+  /** The relief editor open (see setEditing): what a brush's first dab needs readied after each build. */
+  private editing = false;
+  private prepareTimer = 0;
+
+  /** The relief editor opened or closed: while it's open, a brush's first dab readied beforehand (see prepareBrush). */
+  setEditing(on: boolean) {
+    this.editing = on;
+    this.schedulePrepare();
+  }
+
+  /** prepareBrush a moment after a build, when the page is idle (not if the editor's closed). */
+  private schedulePrepare() {
+    clearTimeout(this.prepareTimer);
+    if (!this.editing) {
+      return;
+    }
+    const at = this.builds;
+    this.prepareTimer = window.setTimeout(() => {
+      const run = () => {
+        if (this.builds === at) {
+          time("3d.prepareBrush", () => this.prepareBrush());
+        }
+      };
+      if (typeof requestIdleCallback === "function") {
+        requestIdleCallback(run, { timeout: 2000 });
+      } else {
+        run();
+      }
+    }, PREPARE_AFTER_MS);
+  }
+
+  /**
+   * What a brush's first dab since a build did itself (most of a second on a slow computer, the page stuck
+   * meanwhile), done beforehand with the editor open: the tops it would cut small, cut and kept aside (still
+   * drawn lean: see reheight), and the walls and their shadows put in their tiles. The same picture.
+   */
+  private prepareBrush() {
+    if (!this.editing || !this.scene || this.lite || this.compiling || this.movingKey) {
+      return;
+    }
+    for (const child of this.terrainGroup.children) {
+      const mesh = child as THREE.Mesh;
+      const piece = mesh.userData.piece as Piece | undefined;
+      if (piece?.surface && !mesh.userData.fine && !mesh.userData.fineReady && (mesh.userData.lean || piece.fine?.())) {
+        mesh.userData.fineReady = this.fineFor(mesh, piece);
+      }
+    }
+    if (!this.wallsTiled && this.walls.length) {
+      const all = new Map<string, Wall[]>();
+      for (const wall of this.walls) {
+        const tile = this.wallTile(wall);
+        const list = all.get(tile);
+        if (list) {
+          list.push(wall);
+        } else {
+          all.set(tile, [wall]);
+        }
+      }
+      this.dropWalls(null);
+      for (const [tile, walls] of all) {
+        this.buildWalls(walls, null, undefined, tile);
+      }
+      for (const [tile, walls] of all) {
+        const [i, j] = tile.split(",").map(Number);
+        const around: Wall[] = [];
+        for (let dj = -1; dj <= 1; dj++) {
+          for (let di = -1; di <= 1; di++) {
+            around.push(...(all.get(`${i + di},${j + dj}`) ?? []));
+          }
+        }
+        this.buildWallShadows(walls, undefined, tile, around);
+      }
+      this.wallsTiled = true;
+      this.requestApply();
+    }
+  }
+
   /** Whether the walls are drawn by tiles (see reheight): till the next whole build of them. */
   private wallsTiled = false;
+
+  /** Tiles whose walls' shadows a brush took away (see reheight), drawn again once it stops a moment. */
+  private shadowsOwed = new Set<string>();
+  private shadowsTimer = 0;
+
+  /** The shadows owed (see shadowsOwed): each tile's, with the walls of the tiles round it (where its walls' neighbours may be: see wallShadowBuffers). */
+  private owedShadows() {
+    if (this.shadowsOwed.size === 0 || !this.scene || !this.wallsTiled) {
+      this.shadowsOwed.clear();
+      return;
+    }
+    const all = new Map<string, Wall[]>();
+    for (const wall of this.walls) {
+      const tile = this.wallTile(wall);
+      const list = all.get(tile);
+      if (list) {
+        list.push(wall);
+      } else {
+        all.set(tile, [wall]);
+      }
+    }
+    time("3d.reheight.wallShadows", () => {
+      for (const tile of this.shadowsOwed) {
+        const [i, j] = tile.split(",").map(Number);
+        const around: Wall[] = [];
+        for (let dj = -1; dj <= 1; dj++) {
+          for (let di = -1; di <= 1; di++) {
+            around.push(...(all.get(`${i + di},${j + dj}`) ?? []));
+          }
+        }
+        // Its walls' shadows only (those of its walls: the tile's own list, maybe none now).
+        this.buildWallShadows(all.get(tile) ?? [], undefined, tile, around);
+      }
+    });
+    this.shadowsOwed.clear();
+    this.requestApply();
+  }
 
   /** A wall's tile of the map (WALL_TILE cells a side), by its first end. */
   private wallTile(wall: Wall): string {
@@ -657,6 +927,7 @@ export class VistazoView {
         this.terrainGroup.remove(child);
         this.movingGroup.add(child);
       }
+      this.loosen(theirs);
       // Their walls with them; the others built again without them, and the shadows at their feet. By the
       // shape each wall says it's of (the scene may be newer than the terrain drawn, its terrain on its way).
       const mine = this.walls.filter((wall) => picked.has(wall.si ?? -1));
@@ -2186,8 +2457,16 @@ export class VistazoView {
    * a caller that doesn't change it after: a new material is worked out by three.js again (its shader
    * rewritten, its program looked up), which over every piece of every build of a drag costs.
    */
-  private pieceMaterial(height: number, textured: boolean, fill?: [number, number, number], top: boolean | "deck" = false, pooled = false): THREE.MeshBasicMaterial {
-    const poolKey = pooled ? `${height}|${textured}|${fill?.join(",") ?? ""}|${top}|${this.options.tint}|${this.options.relief}|${this.minH}|${this.maxH}|${textured ? (this.mapTexture?.uuid ?? "") : ""}` : "";
+  /**
+   * `toned` (pooled ones only): its colour not in it but in each piece's `tone` attribute (see toned,
+   * pieceColor), so one material for every height: the tops' (one draw's material switch, not one a height).
+   */
+  private pieceMaterial(height: number, textured: boolean, fill?: [number, number, number], top: boolean | "deck" = false, pooled = false, tone = false): THREE.MeshBasicMaterial {
+    const poolKey = pooled
+      ? tone
+        ? `toned|${textured}|${fill?.join(",") ?? ""}|${top}|${textured ? (this.mapTexture?.uuid ?? "") : ""}`
+        : `${height}|${textured}|${fill?.join(",") ?? ""}|${top}|${this.options.tint}|${this.options.relief}|${this.minH}|${this.maxH}|${textured ? (this.mapTexture?.uuid ?? "") : ""}`
+      : "";
     if (pooled) {
       const known = this.materialPool.get(poolKey);
       if (known) {
@@ -2200,19 +2479,7 @@ export class VistazoView {
         return known.material;
       }
     }
-    const span = this.maxH - this.minH || 1;
-    // Lower ground a little darker: the highest keeps its own color, the lowest up to relief × 50% darker.
-    // The range is the terrain's (minH/maxH, from the pieces): a slab's top over all of it falls past it,
-    // a little lighter, up to another span over the highest; no further, which would wash a map texture
-    // out to white. That lightening a little stronger from the slider's middle up: +25% at 50%, +65% at 100%.
-    const along = Math.min(2, Math.max(0, (height - this.minH) / span));
-    const relief = this.options.relief;
-    const lit = along <= 1 ? 1 - relief * 0.5 * (1 - along) : 1 + relief * 0.5 * (1 + 0.6 * Math.max(0, relief - 0.5)) * (along - 1);
-    const color = new THREE.Color(...(fill ?? (textured && this.mapTexture ? [255, 255, 255] : STONE)).map((v) => v / 255) as [number, number, number]);
-    if (this.options.tint) {
-      color.lerp(new THREE.Color(tintOf(height)), 0.5);
-    }
-    color.multiplyScalar(lit);
+    const color = tone ? new THREE.Color(1, 1, 1) : this.pieceColor(height, textured, fill);
     const material = new THREE.MeshBasicMaterial({
       color,
       map: textured ? this.mapTexture : null,
@@ -2226,6 +2493,10 @@ export class VistazoView {
     if (textured) {
       gridded(material, this.gridUniforms);
       detailed(material, this.detailUniforms);
+    }
+    // After the grid's (which starts the material's shader over: see gridded).
+    if (tone) {
+      toned(material);
     }
     if (top) {
       based(material, this.baseUniforms, top === "deck" ? "deck" : "top");
@@ -2242,6 +2513,23 @@ export class VistazoView {
       this.materialPool.set(poolKey, { material, used: this.builds });
     }
     return material;
+  }
+
+  /** A piece's colour, by its height in the terrain's range (and the options): a material's, or a toned piece's own (see toned). */
+  private pieceColor(height: number, textured: boolean, fill?: [number, number, number]): THREE.Color {
+    const span = this.maxH - this.minH || 1;
+    // Lower ground a little darker: the highest keeps its own color, the lowest up to relief × 50% darker.
+    // The range is the terrain's (minH/maxH, from the pieces): a slab's top over all of it falls past it,
+    // a little lighter, up to another span over the highest; no further, which would wash a map texture
+    // out to white. That lightening a little stronger from the slider's middle up: +25% at 50%, +65% at 100%.
+    const along = Math.min(2, Math.max(0, (height - this.minH) / span));
+    const relief = this.options.relief;
+    const lit = along <= 1 ? 1 - relief * 0.5 * (1 - along) : 1 + relief * 0.5 * (1 + 0.6 * Math.max(0, relief - 0.5)) * (along - 1);
+    const color = new THREE.Color(...(fill ?? (textured && this.mapTexture ? [255, 255, 255] : STONE)).map((v) => v / 255) as [number, number, number]);
+    if (this.options.tint) {
+      color.lerp(new THREE.Color(tintOf(height)), 0.5);
+    }
+    return color.multiplyScalar(lit);
   }
 
   /** The pooled materials no build has used for a while (see pieceMaterial), let go. */
@@ -2405,6 +2693,9 @@ export class VistazoView {
         this.fillCache.delete(key);
       }
     }
+    this.unbatchTops();
+    this.shadowsOwed.clear();
+    clearTimeout(this.shadowsTimer);
     this.clear(this.terrainGroup);
     this.clear(this.movingGroup);
     this.clear(this.underGroup);
@@ -2441,6 +2732,7 @@ export class VistazoView {
         mark(from, bridge.si);
       }
     });
+    time("3d.build.batch", () => this.batchTops());
     time("3d.build.slabs", () => this.computeSlabs());
     // Opening: the water, the walls' shadows and what's under bridges a moment later (see firstDraw).
     const first = (!this.drawnOnce || this.deferExtras) && !this.lite;
@@ -2481,6 +2773,7 @@ export class VistazoView {
       this.firstDraw();
     } else if (!this.lite) {
       time("3d.measure", () => this.measure());
+      this.schedulePrepare();
     }
   }
 
@@ -2520,6 +2813,7 @@ export class VistazoView {
         void compile().then(() => {
           done();
           this.requestApply();
+          this.schedulePrepare();
         });
       });
     });
@@ -2941,7 +3235,11 @@ export class VistazoView {
     const geometry = geometryOf(built.surface);
     if (built.kind === "top") {
       geometry.setAttribute("uv", new THREE.BufferAttribute(built.uv, 2));
-      const mesh = new THREE.Mesh(geometry, this.pieceMaterial(piece.height, true, undefined, true, true));
+      // Every top's one material (see toned): its colour by its height, its own.
+      const tone = this.pieceColor(piece.height, true);
+      geometry.setAttribute("tone", toneAttribute(geometry.getAttribute("position").count, tone));
+      const mesh = new THREE.Mesh(geometry, this.pieceMaterial(piece.height, true, undefined, true, true, true));
+      mesh.userData.tone = tone;
       mesh.position.z = built.z;
       // Its corners can be moved up or down where they are (see reheight); drawn with fewer triangles
       // (lean), not till it's cut small again there.
@@ -4110,6 +4408,7 @@ export class VistazoView {
     m.settle = window.setTimeout(() => {
       m.on = false;
       m.gaps = [];
+      m.work = [];
       this.setRatio();
       this.requestApply();
     }, MOTION_SETTLE_MS);
@@ -4132,7 +4431,9 @@ export class VistazoView {
       if (this.longGaps.length >= SLOW_FRAMES) {
         const mean = this.longGaps.reduce((a, b) => a + b, 0) / this.longGaps.length;
         this.longGaps = [];
-        if (mean > SLOW_FRAME_MS) {
+        // Slow for the CPU (see cpuBound), not the card: smoothing's the card's cost, left on (turning it
+        // off makes the card a new one, a hitch of a second or more, and it's kept from then on).
+        if (mean > SLOW_FRAME_MS && !this.cpuBound(mean, mean * SLOW_FRAMES)) {
           try {
             localStorage.setItem(SLOW_DEVICE, "1");
           } catch {
@@ -4145,11 +4446,16 @@ export class VistazoView {
     // Judged on a few frames, not too often (each change sizes the canvas again).
     if (m.gaps.length >= 6 && now - m.since > 300) {
       const mean = m.gaps.reduce((a, b) => a + b, 0) / m.gaps.length;
-      const next = mean > MOTION_SLOW_MS ? Math.max(this.look.least, m.scale * 0.75) : mean < MOTION_FAST_MS ? Math.min(1, m.scale * 1.2) : m.scale;
+      // Slow, and most of each frame the CPU's (drawing it, working out the tokens' places): fewer pixels
+      // wouldn't make it any faster, and each change sizes the canvas again (a hitch): left as it is. Only
+      // a card that keeps the CPU waiting (its work a small part of each frame) loses sharpness.
+      const cpuBound = this.cpuBound(mean, mean * m.gaps.length);
+      const next = mean > MOTION_SLOW_MS ? (cpuBound ? m.scale : Math.max(this.look.least, m.scale * 0.75)) : mean < MOTION_FAST_MS ? Math.min(1, m.scale * 1.2) : m.scale;
       if (next !== m.scale) {
         m.scale = next;
         m.since = now;
         m.gaps = [];
+        m.work = [];
         this.setRatio();
       }
     }
@@ -4407,6 +4713,7 @@ export class VistazoView {
     const rect = this.stage.getBoundingClientRect();
     this.width = rect.width;
     this.height = rect.height;
+    this.stageAt = { x: rect.left, y: rect.top };
     const scene = this.scene;
     if (scene) {
       const { x0, y0, x1, y1 } = scene.bounds;
@@ -4434,9 +4741,20 @@ export class VistazoView {
     if (!this.applyFrame) {
       this.applyFrame = requestAnimationFrame(() => {
         this.applyFrame = 0;
+        // Drawn in this frame already (apply(): from the pointer's event, a camera's glide): the next frame's,
+        // not a second drawing now (what it asked for is drawn then, or by what draws that frame anyway).
+        if (this.drawnThisFrame()) {
+          this.requestApply(true);
+          return;
+        }
         this.applyNow();
       });
     }
+  }
+
+  /** Whether the picture was drawn in this frame already (see render). */
+  private drawnThisFrame(): boolean {
+    return this.drawnAt === Number(document.timeline.currentTime ?? -2);
   }
 
   /** A box (view units) of the picture changed: drawn again there, at least, next time. */
@@ -4658,15 +4976,23 @@ export class VistazoView {
   private drawSoon() {
     // Drawn whole (in the frame's drawing, or now): what moves by itself is anywhere.
     this.dirty = "all";
-    if (this.applyFrame || this.drawnAt === Number(document.timeline.currentTime ?? -2)) {
+    if (this.applyFrame || this.drawnThisFrame()) {
       return;
     }
     this.render();
   }
 
-  /** Drawn now, all of it (from outside: whatever changed, the picture's drawn whole). */
+  /**
+   * Drawn now, all of it (from outside: whatever changed, the picture's drawn whole); drawn in this frame
+   * already (a second pointer event in it, a glide's step after one), the next frame instead: once a frame
+   * at most (each drawing the CPU's, and only the last one of a frame shows).
+   */
   apply() {
     this.dirty = "all";
+    if (this.drawnThisFrame()) {
+      this.requestApply();
+      return;
+    }
     this.applyNow();
   }
 
@@ -4677,12 +5003,16 @@ export class VistazoView {
       this.onCamera();
       return;
     }
+    const workFrom = performance.now();
     this.trackMotion();
     const camM = this.camMatrix();
     this.setGlCamera(camM);
 
     // Seen from below, the ground is dimmed; see-through terrain fades the pieces and walls.
     const dim = c.tilt > 90 ? 0.55 : 1;
+    if (this.options.xray !== this.batchedXray) {
+      this.batchTops();
+    }
     for (const material of this.pieceMaterials) {
       material.color.copy(material.userData.color as THREE.Color).multiplyScalar(dim);
       material.transparent = this.options.xray;
@@ -4728,6 +5058,13 @@ export class VistazoView {
     this.placeDoorButtons(camM, eye);
     this.drawLines();
     this.onCamera();
+    // Its CPU time, while moving (see trackMotion).
+    if (this.motion.on) {
+      this.motion.work.push(performance.now() - workFrom);
+      if (this.motion.work.length > 12) {
+        this.motion.work.shift();
+      }
+    }
   }
 
   /**
@@ -5107,6 +5444,83 @@ function stopMedia(media: CanvasImageSource) {
   } else {
     stopAnimation(media);
   }
+}
+
+/**
+ * Tops' meshes as one geometry (see batchTops): each one's positions where its mesh puts them (its
+ * matrix), its uv and tone (see toned) as they are, its triangles (indexed or not) as they are.
+ */
+function mergeTops(meshes: THREE.Mesh[]): THREE.BufferGeometry {
+  let vertices = 0;
+  let indices = 0;
+  for (const mesh of meshes) {
+    const count = mesh.geometry.getAttribute("position").count;
+    vertices += count;
+    indices += mesh.geometry.index ? mesh.geometry.index.count : count;
+  }
+  const position = new Float32Array(vertices * 3);
+  const uv = new Float32Array(vertices * 2);
+  const tone = new Float32Array(vertices * 3);
+  const index = vertices > 65535 ? new Uint32Array(indices) : new Uint16Array(indices);
+  let v = 0;
+  let at = 0;
+  for (const mesh of meshes) {
+    const geometry = mesh.geometry;
+    mesh.updateMatrix();
+    const m = mesh.matrix.elements;
+    const p = geometry.getAttribute("position") as THREE.BufferAttribute;
+    const t = geometry.getAttribute("uv") as THREE.BufferAttribute;
+    const c = geometry.getAttribute("tone") as THREE.BufferAttribute;
+    const count = p.count;
+    // Their arrays copied whole (a piece's mesh only moved, not turned nor scaled: its z, as built); one
+    // by one only otherwise.
+    const plain = (attribute: THREE.BufferAttribute, size: number) => !(attribute as unknown as THREE.InterleavedBufferAttribute).isInterleavedBufferAttribute && attribute.array.length === count * size;
+    const moved = m[0] === 1 && m[1] === 0 && m[2] === 0 && m[4] === 0 && m[5] === 1 && m[6] === 0 && m[8] === 0 && m[9] === 0 && m[10] === 1;
+    if (moved && plain(p, 3) && plain(t, 2) && plain(c, 3)) {
+      position.set(p.array as Float32Array, v * 3);
+      if (m[12] !== 0 || m[13] !== 0 || m[14] !== 0) {
+        for (let i = v * 3; i < (v + count) * 3; i += 3) {
+          position[i] += m[12];
+          position[i + 1] += m[13];
+          position[i + 2] += m[14];
+        }
+      }
+      uv.set(t.array as Float32Array, v * 2);
+      tone.set(c.array as Float32Array, v * 3);
+    } else {
+      for (let i = 0; i < count; i++) {
+        const [x, y, z] = [p.getX(i), p.getY(i), p.getZ(i)];
+        position[(v + i) * 3] = m[0] * x + m[4] * y + m[8] * z + m[12];
+        position[(v + i) * 3 + 1] = m[1] * x + m[5] * y + m[9] * z + m[13];
+        position[(v + i) * 3 + 2] = m[2] * x + m[6] * y + m[10] * z + m[14];
+        uv[(v + i) * 2] = t.getX(i);
+        uv[(v + i) * 2 + 1] = t.getY(i);
+        tone[(v + i) * 3] = c.getX(i);
+        tone[(v + i) * 3 + 1] = c.getY(i);
+        tone[(v + i) * 3 + 2] = c.getZ(i);
+      }
+    }
+    if (geometry.index) {
+      const from = geometry.index.array;
+      for (let i = 0; i < from.length; i++) {
+        index[at + i] = from[i] + v;
+      }
+      at += from.length;
+    } else {
+      for (let i = 0; i < count; i++) {
+        index[at + i] = v + i;
+      }
+      at += count;
+    }
+    v += count;
+  }
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute("position", new THREE.BufferAttribute(position, 3));
+  merged.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+  merged.setAttribute("tone", new THREE.BufferAttribute(tone, 3));
+  merged.setIndex(new THREE.BufferAttribute(index, 1));
+  merged.computeBoundingSphere();
+  return merged;
 }
 
 /** A surface's arrays as a three.js geometry (see surfaces.ts). */

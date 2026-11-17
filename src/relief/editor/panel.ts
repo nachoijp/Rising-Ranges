@@ -1789,6 +1789,9 @@ function rowsOf(data: ReliefData, open: Set<string>): Row[] {
  * names it; a right click its menu; dragging moves it up or down, into a
  * group or out of one. A group's eye and lock: all its shapes'.
  */
+/** What the shapes' list was last drawn with (see renderShapes): its markup and relief. */
+const listDrawn = new WeakMap<HTMLElement, { html: string; data: ReliefData }>();
+
 export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, ui: ShapesList) {
   const data = ed.data;
   const shapes = data.shapes;
@@ -1819,14 +1822,21 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, ui: Shapes
         ${icon(TYPE_ICONS[typeOf(s)])}<span class="n">${esc(nameOf(t, s, i))}</span><span class="h">${esc(describe(t, s))}</span>${toggles("", String(i), !!s.hidden, !!s.locked)}</div>`;
     })
     .join("");
+  // The same as drawn last (a brush's dab: it changes nothing here), of the same relief: left as it is, not
+  // drawn again (its 50-odd rows were rebuilt on every dab, most of what painting cost the page).
+  const html = `<div class="lheadrow"><button type="button" class="lhead" aria-expanded="${!ui.folded.value}"><span class="chev">${icon("expand")}</span><span class="lt">${esc(t("relief.shapes"))}</span><span class="count">${shapes.length}</span></button><span class="lhelp" tabindex="0" role="note" ${tip(t("relief.shapes"), `${t("relief.layerRow")} — ${t("relief.groupRowShort")}`)}>${icon("info")}</span></div>
+    <div class="lrows" ${ui.folded.value ? "hidden" : ""}>${rows}<div class="item ground" data-ground tabindex="0" role="button" ${tip(t("relief.ground"), t("relief.groundHint"))}>${icon("terrain")}<span class="n">${esc(t("relief.ground"))}</span><span class="h">${esc(t("relief.groundBrush"))}</span></div></div>`;
+  if (listDrawn.get(el)?.html === html && listDrawn.get(el)?.data === data && el.classList.contains("closed") === ui.folded.value) {
+    return;
+  }
+  listDrawn.set(el, { html, data });
   el.classList.toggle("closed", ui.folded.value);
   // Drawn again, it stays scrolled where it was; a shape newly picked (on the map) brought into sight.
   const scrolled = el.querySelector(".lrows")?.scrollTop ?? 0;
   const newlyPicked = String(picked) !== el.dataset.picked;
   el.dataset.picked = String(picked);
   // What its rows do: told once, by a "?" beside its title (not on every row, in the way of picking them).
-  el.innerHTML = `<div class="lheadrow"><button type="button" class="lhead" aria-expanded="${!ui.folded.value}"><span class="chev">${icon("expand")}</span><span class="lt">${esc(t("relief.shapes"))}</span><span class="count">${shapes.length}</span></button><span class="lhelp" tabindex="0" role="note" ${tip(t("relief.shapes"), `${t("relief.layerRow")} — ${t("relief.groupRowShort")}`)}>${icon("info")}</span></div>
-    <div class="lrows" ${ui.folded.value ? "hidden" : ""}>${rows}<div class="item ground" data-ground tabindex="0" role="button" ${tip(t("relief.ground"), t("relief.groundHint"))}>${icon("terrain")}<span class="n">${esc(t("relief.ground"))}</span><span class="h">${esc(t("relief.groundBrush"))}</span></div></div>`;
+  el.innerHTML = html;
   const scroller = el.querySelector<HTMLElement>(".lrows")!;
   scroller.scrollTop = scrolled;
   const pickedRow = newlyPicked && picked >= 0 ? scroller.querySelector<HTMLElement>(`.item[data-i="${picked}"]`) : null;

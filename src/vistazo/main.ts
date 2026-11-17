@@ -3175,6 +3175,8 @@ async function start() {
     $("reMap").hidden = false;
     // Every piece with its surface while it's edited: a brush's heights move them where they are.
     reliefs.surfaced = true;
+    // A brush's first dab readied after each build meanwhile (see prepareBrush).
+    view.setEditing(true);
     // Opened from a map image's menu: that one (see createReliefMenu); otherwise the largest.
     const asked = new URLSearchParams(location.search).get("image");
     session = editor.startEditing({
@@ -3271,6 +3273,7 @@ async function start() {
     refreshOwed = false;
     session?.stop();
     session = null;
+    view.setEditing(false);
     $("app").classList.remove("editing");
     $("reMap").hidden = true;
     reliefs.surfaced = false;

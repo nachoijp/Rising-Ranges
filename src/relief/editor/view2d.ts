@@ -19,6 +19,21 @@ const MAX_ZOOM = 600;
 /** A height's tint: blue low, through green, to red high. */
 export const tint = (h: number, alpha: number) => `hsla(${200 - h * 34}, 75%, 50%, ${alpha})`;
 
+/** The ground's tint's opacity (see drawRelief), as a byte: 35%. */
+const TINT_ALPHA = Math.round(0.35 * 255);
+
+/** A height's tint (see tint) as red, green and blue bytes, written at `at` in `px`: CSS's hsl(), at 75% and 50%. */
+function tintRgb(h: number, px: Uint8ClampedArray, at: number) {
+  const hue = ((((200 - h * 34) % 360) + 360) % 360) / 60;
+  // Saturation 0.75 at lightness 0.5: chroma 0.75, the lowest 0.125.
+  const c = 0.75;
+  const x = c * (1 - Math.abs((hue % 2) - 1));
+  const [r, g, b] = hue < 1 ? [c, x, 0] : hue < 2 ? [x, c, 0] : hue < 3 ? [0, c, x] : hue < 4 ? [0, x, c] : hue < 5 ? [x, 0, c] : [c, 0, x];
+  px[at] = Math.round((r + 0.125) * 255);
+  px[at + 1] = Math.round((g + 0.125) * 255);
+  px[at + 2] = Math.round((b + 0.125) * 255);
+}
+
 const fmt = (h: number) => (Math.round(h * 100) / 100).toString();
 
 /** The view's texts, in the page's language. */
@@ -77,6 +92,8 @@ export class MapView {
   canvas: HTMLCanvasElement;
   editor: ReliefEditor;
   picture: CanvasImageSource | null = null;
+  /** The ground cells' tints as a picture (see drawRelief), kept from frame to frame. */
+  private groundTints: { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; image: ImageData } | null = null;
   /** Each height's tint over the map. */
   showHeights = true;
   /** The water's cells (x, y pairs, `waterStep` across), from the last mesh. */
@@ -499,18 +516,36 @@ export class MapView {
     const ctx = this.ctx;
     const r = this.editor.relief;
     if (this.showHeights) {
+      // Each ground cell's tint (its corners' mean height) as a pixel of a picture of them all, drawn over the
+      // map at its size (not a rectangle each: tens of thousands of them, each its colour's text, every frame).
       const g = r.data.ground;
-      for (let j = 0; j < r.gh - 1; j++) {
-        for (let i = 0; i < r.gw - 1; i++) {
-          const k = j * r.gw + i;
-          const h = (g[k] + g[k + 1] + g[k + r.gw] + g[k + r.gw + 1]) / 4;
-          if (Math.abs(h) < 0.05) {
-            continue;
-          }
-          ctx.fillStyle = tint(h, 0.35);
-          const [x, y] = this.toScreen(i * G, j * G);
-          ctx.fillRect(x, y, G * this.scale + 0.5, G * this.scale + 0.5);
+      const [w, h] = [r.gw - 1, r.gh - 1];
+      if (w > 0 && h > 0) {
+        let layer = this.groundTints;
+        if (!layer || layer.canvas.width !== w || layer.canvas.height !== h) {
+          const canvas = document.createElement("canvas");
+          [canvas.width, canvas.height] = [w, h];
+          layer = this.groundTints = { canvas, ctx: canvas.getContext("2d")!, image: new ImageData(w, h) };
         }
+        const px = layer.image.data;
+        for (let j = 0; j < h; j++) {
+          for (let i = 0; i < w; i++) {
+            const k = j * r.gw + i;
+            const height = (g[k] + g[k + 1] + g[k + r.gw] + g[k + r.gw + 1]) / 4;
+            const at = (j * w + i) * 4;
+            if (Math.abs(height) < 0.05) {
+              px[at + 3] = 0;
+              continue;
+            }
+            tintRgb(height, px, at);
+            px[at + 3] = TINT_ALPHA;
+          }
+        }
+        layer.ctx.putImageData(layer.image, 0, 0);
+        const [x, y] = this.toScreen(0, 0);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(layer.canvas, x, y, w * G * this.scale, h * G * this.scale);
+        ctx.imageSmoothingEnabled = true;
       }
     }
     // A soft edge: a halo as wide as it fades.

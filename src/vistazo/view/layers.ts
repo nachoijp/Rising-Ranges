@@ -28,6 +28,40 @@ export function grained<M extends THREE.MeshBasicMaterial>(material: M): M {
 }
 
 /**
+ * A material whose colour is each piece's own (its `tone` attribute, the same at every vertex of it),
+ * taken where the material's colour is (its colour white, that is, times 1: the same numbers, in the
+ * same order, as a material of that colour). So every piece of a kind can share one material (one
+ * program, one material switch: see VistazoView's pieceMaterial). Flat: not interpolated across a
+ * triangle (the very value). Over what the material's shader had already.
+ */
+export function toned<M extends THREE.MeshBasicMaterial>(material: M): M {
+  const before = material.onBeforeCompile.bind(material);
+  const key = material.customProgramCacheKey.bind(material);
+  material.onBeforeCompile = (shader, renderer) => {
+    before(shader, renderer);
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nattribute vec3 tone;\nflat varying vec3 vTone;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvTone = tone;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", "#include <common>\nflat varying vec3 vTone;")
+      .replace("vec4 diffuseColor = vec4( diffuse, opacity );", "vec4 diffuseColor = vec4( diffuse * vTone, opacity );");
+  };
+  material.customProgramCacheKey = () => `${key()}+rising-ranges/toned`;
+  return material;
+}
+
+/** A piece's `tone` attribute (see toned): its colour at each of its `count` vertices. */
+export function toneAttribute(count: number, color: THREE.Color): THREE.BufferAttribute {
+  const array = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    array[i * 3] = color.r;
+    array[i * 3 + 1] = color.g;
+    array[i * 3 + 2] = color.b;
+  }
+  return new THREE.BufferAttribute(array, 3);
+}
+
+/**
  * A material showing the map's picture read where it's sharpest (see DETAIL_GLSL): the ground's
  * texture as its map, its uv the texture's box's. Over what its shader had already (the grid: put on
  * before this, which keeps the map's include for this to stand in for).
