@@ -193,9 +193,9 @@ export function installTips(root: HTMLElement): () => void {
     box.style.left = `${x - area.left}px`;
     box.style.top = `${y - area.top}px`;
   };
-  // A mouse's hover, or the keyboard's focus (Tab); not a finger's (the button it pressed keeps the focus, its tip would stay).
+  // A mouse's (or a pen's) hover, or the keyboard's focus (Tab); not a finger's (the button it pressed keeps the focus, its tip would stay).
   const over = (event: PointerEvent) => {
-    if (event.pointerType === "mouse") {
+    if (event.pointerType !== "touch") {
       show((event.target as HTMLElement).closest<HTMLElement>("[data-tip]"));
     }
   };
@@ -255,9 +255,8 @@ function dropMenus() {
   openMenus = [];
 }
 
-/** The button whose menu is open (see menuToggle), and the one whose menu is being opened. */
+/** The button whose menu is open (see menuToggle): set once it's open, cleared by any other opened. */
 let menuOpener: HTMLElement | null = null;
-let pendingOpener: HTMLElement | null = null;
 
 /** A press anywhere (taken first, at the capture): the menus closed, unless it's on one, or on the button of the open one (its click closes it). */
 export function pressedAt(target: HTMLElement) {
@@ -274,8 +273,18 @@ export function menuToggle(button: HTMLElement, open: () => void | Promise<void>
       closeMenus();
       return;
     }
-    pendingOpener = button;
-    void open();
+    // Its opener once it's open (after what it waits for, the ⋯'s): another menu opened meanwhile isn't its.
+    const opened = () => {
+      if (openMenus.length) {
+        menuOpener = button;
+      }
+    };
+    const done = open();
+    if (done instanceof Promise) {
+      void done.then(opened);
+    } else {
+      opened();
+    }
   };
 }
 
@@ -283,8 +292,7 @@ export function menuToggle(button: HTMLElement, open: () => void | Promise<void>
 export function openMenu(root: HTMLElement, x: number, y: number, items: MenuItem[], level = 0): HTMLElement {
   if (level === 0) {
     dropMenus();
-    menuOpener = pendingOpener;
-    pendingOpener = null;
+    menuOpener = null;
   } else {
     openMenus.splice(level).forEach((menu) => menu.remove());
   }
@@ -683,8 +691,9 @@ export function renderTools(el: HTMLElement, ed: ReliefEditor, t: T, onTool: (id
 /** How long (ms) a finger held on a row of the list opens what its right click does. */
 const ROW_HOLD_MS = 550;
 
-/** A finger on a row (see holdRow): kept for the list, not the row (it's drawn again by what the hold does). */
+/** A finger on a row (see holdRow): kept for the list, not the row (it's drawn again by what the hold does); off on any lift. */
 let rowTouched = false;
+let rowLiftInstalled = false;
 
 /**
  * The click that ends a finger's hold (a row's, the map's), dropped wherever it lands: what the hold did
@@ -718,6 +727,12 @@ export function swallowNextClick() {
  * Android one does, then taken as this). The click that ends the press does nothing more.
  */
 function holdRow(row: HTMLElement, held: () => void) {
+  if (!rowLiftInstalled) {
+    rowLiftInstalled = true;
+    for (const type of ["pointerup", "pointercancel"]) {
+      document.addEventListener(type, () => (rowTouched = false), true);
+    }
+  }
   let timer = 0;
   let start: [number, number] | null = null;
   row.addEventListener("pointerdown", (event) => {
@@ -1176,12 +1191,13 @@ export function renderOptions(el: HTMLElement, ed: ReliefEditor, t: T) {
     ["cut", "minus", t("relief.roller.cut"), t("relief.roller.cutHint")],
   ];
   // A finger's stand-ins for the keys (see the CSS: only in the touch layout): a pen's outline closed (Enter),
-  // its last point taken back (Backspace), dropped (Esc); a rectangle square, an ellipse round (Shift).
+  // its last point taken back (Backspace), dropped (Esc). A rectangle square, an ellipse round (Shift's, kept:
+  // on every layout, to be turned off where it was turned on).
   const drawing = ed.tool === "polygon" && ed.drawing
     ? `<button type="button" class="field re-touchonly" data-k="penFinish" ${(ed.drawing.length < 3 ? "disabled " : "") + tip(t("relief.pen.finish"), "", "Enter")}>${icon("done")}<span>${esc(t("relief.pen.finish"))}</span></button><button type="button" class="ib sm re-touchonly" data-k="penBack" aria-label="${esc(t("relief.pen.back"))}" ${tip(t("relief.pen.back"), "", "⌫")}>${icon("undo")}</button><button type="button" class="ib sm re-touchonly" data-k="penCancel" aria-label="${esc(t("relief.pen.cancel"))}" ${tip(t("relief.pen.cancel"), "", "Esc")}>${icon("close")}</button>`
     : "";
   const square = ed.tool === "rect" || ed.tool === "ellipse"
-    ? `<button type="button" class="field toggle re-touchonly${s.square ? " on" : ""}" data-k="square" aria-pressed="${s.square}">${icon(ed.tool === "rect" ? "rect" : "ellipse")}<span class="ct">${esc(t(ed.tool === "rect" ? "relief.squareOn" : "relief.circleOn"))}</span></button>`
+    ? `<button type="button" class="field toggle${s.square ? " on" : ""}" data-k="square" aria-pressed="${s.square}" ${tip(t(ed.tool === "rect" ? "relief.squareOn" : "relief.circleOn"), "", "Shift")}>${icon(ed.tool === "rect" ? "rect" : "ellipse")}<span class="ct">${esc(t(ed.tool === "rect" ? "relief.squareOn" : "relief.circleOn"))}</span></button>`
     : "";
   el.innerHTML =
     drawing +

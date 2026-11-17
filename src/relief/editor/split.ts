@@ -42,7 +42,8 @@ function keep(state: State) {
 }
 
 export type Split = {
-  stop(): void;
+  /** `keepStage`: the 3D left as it is (another image's editor follows: its own split says). */
+  stop(keepStage?: boolean): void;
   /** Its names again (the language changed). */
   retext(): void;
   /** One view at a time now (a small screen, or touch mode). */
@@ -207,14 +208,14 @@ export function installSplit(box: HTMLElement, t: T, onStage: (shown: boolean) =
     keep(state);
   };
   return {
-    stop() {
+    stop(keepStage = false) {
       sizer.disconnect();
       line.remove();
       views.remove();
       box.style.removeProperty("--re-cols");
       box.classList.remove("re-map-hidden", "re-stage-hidden", "re-splitting", "re-single");
       // Out of the editor: the 3D shown again, whatever it was here.
-      if (stageShown === false) {
+      if (stageShown === false && !keepStage) {
         onStage(true);
       }
     },

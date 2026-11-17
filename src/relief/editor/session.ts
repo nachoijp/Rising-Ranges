@@ -75,8 +75,8 @@ export type EditSession = {
   pending(): boolean;
   /** The language changed: texts again. */
   retext(): void;
-  /** Saved now, and the editor's pieces taken away. */
-  stop(): void;
+  /** Saved now, and the editor's pieces taken away; `switching`: another image's editor follows. */
+  stop(switching?: boolean): void;
   /**
    * The terrain brush from the Vistazo's 3D view, at a cell of the map: whether it's in hand (and its
    * size), a press, a move (held or not), a let go, the pointer gone. As the 2D map's own.
@@ -298,8 +298,11 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     <div class="re-chip" data-k="chip" aria-live="polite" hidden></div>
     <div class="re-toast" data-k="toast" role="status" hidden></div>`;
   root.append(pieces);
-  /** The hand in hand (touch layout only: see setHand). */
+  /** The touch layout (one view at a time: see split.ts), as onSingle last said. */
+  let touchUi = false;
+  /** The hand in hand (touch layout only: see setHand), and the editor's tool when it was taken. */
   let hand = false;
+  let handFrom: ToolId = "edit";
   let barsMin = false;
   try {
     barsMin = localStorage.getItem(BARS_KEY) === "min";
@@ -350,7 +353,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     // picked and the shapes stacked at the bottom.
     // Touch layout (one view at a time, see split.ts): the tools and their options in bars at the
     // bottom, by the thumb, what's picked and the shapes stacked over them.
-    const touch = root.classList.contains("re-touch");
+    const touch = touchUi;
     const area = pieces.getBoundingClientRect();
     const narrow = area.width > 0 && (area.width < NARROW_W || area.height < NARROW_H);
     pieces.classList.toggle("re-narrow", narrow);
@@ -422,7 +425,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   /** The bar of their own's ends: a button each side while there's more of it that way. */
   const arrows = () => {
     const el = $("options");
-    const more = (pieces.classList.contains("re-wrapped") || root.classList.contains("re-touch")) && el.scrollWidth > el.clientWidth + 1;
+    const more = (pieces.classList.contains("re-wrapped") || touchUi) && el.scrollWidth > el.clientWidth + 1;
     $("prev").hidden = $("next").hidden = !more;
     $<HTMLButtonElement>("prev").disabled = el.scrollLeft <= 0;
     $<HTMLButtonElement>("next").disabled = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
@@ -448,6 +451,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   // On a small screen (or in touch mode), one view at a time instead (see split.ts).
   const split: Split = root.parentElement
     ? installSplit(root.parentElement, t, (shown) => o.onStage?.(shown), (single) => {
+        touchUi = single;
         root.classList.toggle("re-touch", single);
         // The hand's only the touch layout's.
         if (!single && hand) {
@@ -496,7 +500,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   const shapeMoreButton = () => {
     const sel = editor.sel;
     const head = $("props").querySelector<HTMLElement>(".head");
-    if (!head || (sel?.kind !== "shape" && sel?.kind !== "door") || !root.classList.contains("re-touch")) {
+    if (!head || (sel?.kind !== "shape" && sel?.kind !== "door") || !touchUi) {
       return;
     }
     const before = head.querySelector('[data-k="del"]') ?? head.querySelector('[data-k="deselect"]');
@@ -534,7 +538,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
    * has no minus. It turns the sign of the field last in use there (a ramp's two: the one last touched).
    */
   const signButtons = () => {
-    if (!root.classList.contains("re-touch")) {
+    if (!touchUi) {
       return;
     }
     for (const row of pieces.querySelectorAll<HTMLElement>(".re-props .height, .re-options .numbox")) {
@@ -564,7 +568,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   // over the keyboard coming up from below (wherever the browser leaves the page).
   pieces.addEventListener("focusin", (event) => {
     const field = event.target as HTMLElement;
-    if (!root.classList.contains("re-touch") || !field.matches('input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]), textarea')) {
+    if (!touchUi || !field.matches('input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]), textarea')) {
       return;
     }
     const where = field.closest(".re-drawer") ? "re-typing-drawer" : field.closest(".re-optbar") ? "re-typing-bar" : "";
@@ -642,7 +646,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     const key = shapes.join(",");
     if (key !== toldPicked) {
       toldPicked = key;
-      if (shapes.length && root.classList.contains("re-touch")) {
+      if (shapes.length && touchUi) {
         setShapesOpen(false);
       }
       o.onPick?.(shapes);
@@ -664,6 +668,12 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
         const [x, y] = rootPoint(r.right + 6, r.top);
         openMenu(root, x, y, items);
       }));
+      // The tool changed by something else than the menu (the Ground row, a pick in the list): the hand let go.
+      if (hand && editor.tool !== handFrom) {
+        hand = false;
+        map.hand = false;
+        o.map.style.cursor = "";
+      }
       time("editor.panel.options", () => renderOptions($("options"), editor, t));
       // The hand has no options.
       if (hand) {
@@ -675,7 +685,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       $("shapesBtn").innerHTML = `${icon("layers")}<span class="count">${editor.data.shapes.length}</span>`;
       time("editor.panel.fit", fitOptions);
       // Picking several ends with nothing picked, or out of the touch layout.
-      if (editor.multi && (editor.sel?.kind !== "shape" || !root.classList.contains("re-touch"))) {
+      if (editor.multi && (editor.sel?.kind !== "shape" || !touchUi)) {
         editor.multi = false;
       }
       // Taking a texture (or a door's picture) from the map: the map clear for it (the touch layout's panel and list hidden: see the CSS).
@@ -687,7 +697,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       history();
       tellPicked();
       if (!$("pop").hidden) {
-        $("pop").innerHTML = root.classList.contains("re-touch") ? gesturesHtml(t) : shortcutsHtml(editor, t);
+        $("pop").innerHTML = touchUi ? gesturesHtml(t) : shortcutsHtml(editor, t);
       }
     });
   };
@@ -741,7 +751,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       redraw: () => map.redraw(),
       setCursor: (cursor) => (o.map.style.cursor = cursor),
       // Some pixels on screen; more for a finger (the touch layout).
-      snapReach: () => (root.classList.contains("re-touch") ? 20 : 10) / map.scale,
+      snapReach: () => (touchUi ? 20 : 10) / map.scale,
       toScreen: (x, y) => map.toScreen(x, y),
       saveSettings: () => keepJson(SETTINGS_KEY, editor.settings),
       doorsChanged: (terrain) => {
@@ -772,7 +782,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   map.redraw = () => {
     drawMap();
     // Picking several (a finger's): how it goes; and, a finger's, no keys.
-    const touch = root.classList.contains("re-touch");
+    const touch = touchUi;
     const text = editor.multi ? t("relief.multiHint") : liveHint(editor, t, o.unit, !touch);
     if (chip.textContent !== text) {
       chip.textContent = text;
@@ -795,7 +805,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       o.onRelief(image.id, editor.relief, false, null, null, was === "heights");
     }
     // A finger's: the bar again (a pen's outline's buttons, as its points come).
-    if (root.classList.contains("re-touch")) {
+    if (touchUi) {
       panel();
     }
   };
@@ -813,6 +823,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   /** The hand (touch layout): one finger moves the map, nothing edited; the tool in hand before, back with another pick. */
   const setHand = (on: boolean) => {
     hand = on;
+    handFrom = editor.tool;
     map.hand = on;
     o.map.style.cursor = on ? "grab" : "";
     closeMenus();
@@ -844,7 +855,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       folded: shapesFold,
       groupsOpen,
       // A row held (a finger's, the touch layout): picking several, as on the map.
-      onMenu: (i: number, x: number, y: number) => (root.classList.contains("re-touch") ? pickSeveral(i) : shapeMenu(i, x, y)),
+      onMenu: (i: number, x: number, y: number) => (touchUi ? pickSeveral(i) : shapeMenu(i, x, y)),
       onGroupMenu: groupMenu,
       focusName,
     };
@@ -1003,7 +1014,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     const i = editor.shapeAt(at.x, at.y);
     // A finger held on a shape (the touch layout): picking several, as photos in a phone's gallery (its menu's
     // the ⋯ in the panel).
-    if (touch && root.classList.contains("re-touch")) {
+    if (touch && touchUi) {
       if (i >= 0) {
         swallowNextClick();
         pickSeveral(i);
@@ -1083,7 +1094,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   };
   menuToggle($("toolBtn"), () => {
     const r = $("toolBtn").getBoundingClientRect();
-    if (root.classList.contains("re-touch")) {
+    if (touchUi) {
       const [x, y] = rootPoint(r.left, r.top);
       const menu = openMenu(root, x, y, toolsMenu(editor, t, setTool, { on: hand, take: () => setHand(true) }));
       menu.style.top = `${Math.max(4, y - menu.offsetHeight - 6)}px`;
@@ -1144,7 +1155,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
             },
             { icon: "heights", label: t("relief.heights"), on: map.showHeights, run: () => $("heights").click() },
             { icon: "magnet", label: t("relief.grid"), on: editor.settings.grid, run: () => $("grid").click() },
-            ...(pieces.classList.contains("re-tighter") ? [{ label: t(root.classList.contains("re-touch") ? "relief.gestures" : "relief.shortcuts"), key: "?", run: toggleHelp }] : []),
+            ...(pieces.classList.contains("re-tighter") ? [{ label: t(touchUi ? "relief.gestures" : "relief.shortcuts"), key: "?", run: toggleHelp }] : []),
             ...(pieces.classList.contains("re-tightest") ? [{ icon: "redo" as const, label: t("relief.redo"), key: "Ctrl+Y", run: () => editor.redo() }] : []),
             "-",
           ]
@@ -1263,7 +1274,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     if (changedHere() && !before.has(image.id)) {
       before.set(image.id, original);
     }
-    session.stop();
+    session.stop(true);
     startEditing(o, next, before, session);
     // The choice's list went with the editor it was in: the keys to the new one's map (else they'd go
     // nowhere it hears, to the browser).
@@ -1298,7 +1309,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   function toggleHelp() {
     const pop = $("pop");
     pop.hidden = !pop.hidden;
-    pop.innerHTML = pop.hidden ? "" : root.classList.contains("re-touch") ? gesturesHtml(t) : shortcutsHtml(editor, t);
+    pop.innerHTML = pop.hidden ? "" : touchUi ? gesturesHtml(t) : shortcutsHtml(editor, t);
     $("help").classList.toggle("on", !pop.hidden);
   }
 
@@ -1404,14 +1415,14 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       panel();
       map.redraw();
     },
-    stop() {
+    stop(switching = false) {
       if (saveTimer) {
         saveNow();
       }
       stopWatching();
       closeMenus();
       untip();
-      split.stop();
+      split.stop(switching);
       fitter.disconnect();
       toolsEnd.disconnect();
       o.onPick?.([]);

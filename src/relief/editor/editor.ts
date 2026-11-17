@@ -397,6 +397,16 @@ export class ReliefEditor {
     this.undoCount = Math.min(this.undoCount, mark);
   }
 
+  /** What was picked before a gesture called off, back (a step undone drops it; a tap picking several changes it): if its shapes are all there still. */
+  restorePick(sel: Selection | null) {
+    if (sel?.kind === "shape" && ![sel.i, ...(sel.more ?? [])].every((i) => i < this.data.shapes.length)) {
+      return;
+    }
+    this.sel = sel;
+    this.host.showProps();
+    this.host.redraw();
+  }
+
   get canUndo(): boolean {
     return this.undoStack.length > 0;
   }

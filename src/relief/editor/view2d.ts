@@ -178,8 +178,8 @@ export class MapView {
     let spent = false;
     /** The hand's finger: where it started, and the map then. */
     let grab: { sx: number; sy: number; ox: number; oy: number } | null = null;
-    /** The finger's press, when and the steps then (a second finger soon after takes it back). */
-    let pressed = { at: 0, mark: 0 };
+    /** The finger's press, when, the steps and a pen's points then (a second finger soon after takes it back). */
+    let pressed: { at: number; mark: number; points: number; sel: ReliefEditor["sel"] } = { at: 0, mark: 0, points: -1, sel: null };
     const midOf = (): [number, number] => {
       const [a, b] = [...touches.values()];
       return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
@@ -194,7 +194,7 @@ export class MapView {
       clearTimeout(w.menu);
       waiting = null;
       held = true;
-      pressed = { at: performance.now(), mark: this.editor.undoMark() };
+      pressed = { at: performance.now(), mark: this.editor.undoMark(), points: this.editor.drawing?.length ?? -1, sel: this.editor.sel };
       this.onDown();
       this.editor.down(this.toWorld(w.sx, w.sy), w.mods);
     };
@@ -206,6 +206,10 @@ export class MapView {
         held = false;
         this.editor.up();
         this.editor.dropSince(pressed.mark);
+        if (pressed.points >= 0 && (this.editor.drawing?.length ?? 0) > pressed.points) {
+          this.editor.key({ key: "Backspace" });
+        }
+        this.editor.restorePick(pressed.sel);
         this.onUp();
       }
       if (touches.size === 2 && !held) {
