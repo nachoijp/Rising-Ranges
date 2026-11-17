@@ -2938,8 +2938,17 @@ async function start() {
   void watchLocal(options.playerView);
 
   // ---------- Drawing the scene again (refresh): what changed, how much is built again ----------
-  /** Only the relief's heights changed since it was drawn (a brush), within this box (scene px): moved where they are (see VistazoView.reheight). */
-  let heightsOnly: Region | null = null;
+  /**
+   * Only the relief's heights changed since it was drawn (a brush), within these boxes (scene px, the dabs
+   * since: those that overlap taken as one): moved where they are (see VistazoView.reheight).
+   */
+  let heightsOnly: Region[] | null = null;
+  /**
+   * How long (ms) after a brush's dab the 3D follows it (see refreshNow): 50, or twice what it took the last
+   * time if more (a slow computer). The page is the 2D map's twice as long as the 3D's then: the brush keeps
+   * up, the 3D a little behind it (the dabs meanwhile taken together); let go, the same.
+   */
+  let reheightAfter = 50;
   /** Where a brush went since the terrain was last built whole (scene px): let go, see settles. */
   let brushed: Region | null = null;
   /** A brush let go that settles: the next build, with the scene kept (see VistazoView.settleNext). */
@@ -2965,9 +2974,12 @@ async function start() {
     try {
       // A brush's dab: the heights moved where they are, nothing built again (or all of it, if that can't be).
       if (heightsOnly && scene && builtWith === `${reliefs.key}${reliefs.surfaced}`) {
-        const region = heightsOnly;
+        const regions = heightsOnly;
         heightsOnly = null;
-        if (time("vistazo.reheight", () => view.reheight(scene!, region))) {
+        const reheightFrom = performance.now();
+        const reheighted = time("vistazo.reheight", () => view.reheight(scene!, regions));
+        reheightAfter = Math.min(1500, Math.max(50, 2 * (performance.now() - reheightFrom)));
+        if (reheighted) {
           syncTemplates();
           if (!settling) {
             return;
@@ -3235,9 +3247,20 @@ async function start() {
             x1: Math.max(before?.x1 ?? -Infinity, ...corners.map((p) => p.x)),
             y1: Math.max(before?.y1 ?? -Infinity, ...corners.map((p) => p.y)),
           });
-          heightsOnly = grow(heightsOnly);
+          // This dab's box, with those it overlaps (they, and it, then one box round them), the others as they are.
+          let box = grow(null);
+          const apart: Region[] = [];
+          for (const other of heightsOnly ?? []) {
+            if (other.x0 <= box.x1 && other.x1 >= box.x0 && other.y0 <= box.y1 && other.y1 >= box.y0) {
+              box = { x0: Math.min(box.x0, other.x0), y0: Math.min(box.y0, other.y0), x1: Math.max(box.x1, other.x1), y1: Math.max(box.y1, other.y1) };
+            } else {
+              apart.push(other);
+            }
+          }
+          heightsOnly = [...apart, box];
           brushed = grow(brushed);
-          soon(50);
+          view.brushDab();
+          soon(reheightAfter);
           return;
         }
         heightsOnly = null;

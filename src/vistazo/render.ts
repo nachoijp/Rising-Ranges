@@ -614,9 +614,22 @@ export class VistazoView {
    * the walls and their shadows built again; the rest (water, the tokens on
    * it, the fog) as it was till the next whole build. False if it can't be
    * done so (a piece drawn flat: no corners of its own to move). Only
-   * within `region` (scene px), where the heights changed.
+   * within `regions` (scene px), where the heights changed (the dabs since
+   * the last time: not the box round them all, most of the map on a slow
+   * computer's long stroke).
    */
-  reheight(scene: VistazoScene, region: Region): boolean {
+  reheight(scene: VistazoScene, regions: Region[]): boolean {
+    if (regions.length === 0) {
+      return true;
+    }
+    // The box round them all (a piece out of it is out of them all).
+    const region: Region = {
+      x0: Math.min(...regions.map((r) => r.x0)),
+      y0: Math.min(...regions.map((r) => r.y0)),
+      x1: Math.max(...regions.map((r) => r.x1)),
+      y1: Math.max(...regions.map((r) => r.y1)),
+    };
+    const boxes = regions.map((r) => [r.x0 * this.u, r.y0 * this.u, r.x1 * this.u, r.y1 * this.u]);
     if (!this.scene || scene.terrainKey !== this.terrainKey) {
       return false;
     }
@@ -660,7 +673,7 @@ export class VistazoView {
       const position = geometry.getAttribute("position") as THREE.BufferAttribute;
       for (let i = 0; i < position.count; i++) {
         const [x, y] = [position.getX(i), position.getY(i)];
-        if (x >= x0 && x <= x1 && y >= y0 && y <= y1) {
+        if (x >= x0 && x <= x1 && y >= y0 && y <= y1 && boxes.some(([bx0, by0, bx1, by1]) => x >= bx0 && x <= bx1 && y >= by0 && y <= by1)) {
           position.setZ(i, pieceHeight(piece, x / u, y / u) * k);
         }
       }
@@ -670,10 +683,10 @@ export class VistazoView {
     since("3d.reheight.vertices", t0);
     this.scene = scene;
     // The heights grid there too (what the pointer finds on the terrain: the 3D brush paints on it).
-    time("3d.reheight.grid", () => this.regridIn(region));
+    time("3d.reheight.grid", () => regions.forEach((r) => this.regridIn(r)));
     // The walls of the edges through the region worked out again; the others as they were.
     const done = new Set<string>();
-    const fresh = time("3d.reheight.computeWalls", () => computeWalls(scene, this.base, region, done));
+    const fresh = time("3d.reheight.computeWalls", () => computeWalls(scene, this.base, regions, done));
     const before = this.walls;
     this.walls = [...before.filter((wall) => !done.has(wall.seg)), ...fresh];
     // Drawn by tiles of the map (see wallTile): the first stroke since the scene was built puts every wall
@@ -828,6 +841,14 @@ export class VistazoView {
   /** Tiles whose walls' shadows a brush took away (see reheight), drawn again once it stops a moment. */
   private shadowsOwed = new Set<string>();
   private shadowsTimer = 0;
+
+  /**
+   * A brush's dab, its 3D still to follow (see reheight): the shadows owed wait for that (on a slow
+   * computer the 3D follows the brush less often: a moment between two, the brush still going).
+   */
+  brushDab() {
+    clearTimeout(this.shadowsTimer);
+  }
 
   /** The shadows owed (see shadowsOwed): each tile's, with the walls of the tiles round it (where its walls' neighbours may be: see wallShadowBuffers). */
   private owedShadows() {

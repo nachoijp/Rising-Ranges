@@ -13,7 +13,8 @@ export type Region = { x0: number; y0: number; x1: number; y1: number };
  * there: a brush); `done` gets each such edge (see Wall.seg), walls or not. `coarse`: a sloped edge
  * cut in half cells, not quarters (a drag's).
  */
-export function computeWalls(scene: VistazoScene, base: number, region?: Region, done?: Set<string>, coarse = false): Wall[] {
+export function computeWalls(scene: VistazoScene, base: number, region?: Region | Region[], done?: Set<string>, coarse = false): Wall[] {
+  const regions = region === undefined ? null : Array.isArray(region) ? region : [region];
   const probe = scene.dpi * 0.03;
   const l = Math.hypot(...LIGHT);
   // A surface that isn't flat about: its heights change along an edge.
@@ -38,8 +39,8 @@ export function computeWalls(scene: VistazoScene, base: number, region?: Region,
           const start = run;
           run += Math.hypot(bx - ax, by - ay);
           if (
-            region &&
-            (Math.max(ax, bx) < region.x0 - reach || Math.min(ax, bx) > region.x1 + reach || Math.max(ay, by) < region.y0 - reach || Math.min(ay, by) > region.y1 + reach)
+            regions &&
+            regions.every((r) => Math.max(ax, bx) < r.x0 - reach || Math.min(ax, bx) > r.x1 + reach || Math.max(ay, by) < r.y0 - reach || Math.min(ay, by) > r.y1 + reach)
           ) {
             continue;
           }
