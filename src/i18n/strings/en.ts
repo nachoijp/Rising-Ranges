@@ -433,6 +433,7 @@ const en: Record<TranslationKey, string> = {
   "vistazo.help6": "Drag a token: move it (Z/X change its height)",
   "vistazo.help7": "Click the compass: reset the view · Click empty ground: measure from there (Z/X raise and lower it) · Esc: remove the point or close",
   "vistazo.help8": "By finger: one orbits (with the relief brush, paints) · two zoom and pan · three turn the camera",
+  "vistazo.removePoint": "Remove point",
   "vistazo.compass": "Reset the view",
   "vistazo.hidden": "hidden",
   "relief.image": "Image",

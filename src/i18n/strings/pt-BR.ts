@@ -434,6 +434,7 @@ const ptBR: Record<TranslationKey, string> = {
   "vistazo.help6": "Arrastar um token: movê-lo (Z/X mudam sua altura)",
   "vistazo.help7": "Clicar na bússola: restaurar a vista · Clicar no chão vazio: medir a partir dali (Z/X sobem e descem) · Esc: remover o ponto ou fechar",
   "vistazo.help8": "Com o dedo: um orbita (com o pincel do relevo, pinta) · dois aproximam, afastam e deslocam · três giram a câmera",
+  "vistazo.removePoint": "Remover ponto",
   "vistazo.compass": "Restaurar a vista",
   "vistazo.hidden": "oculto",
   "relief.image": "Imagem",

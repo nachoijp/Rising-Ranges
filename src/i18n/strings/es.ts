@@ -428,6 +428,7 @@ const es = {
   "vistazo.help6": "Arrastrar un token: moverlo (Z/X cambian su altura)",
   "vistazo.help7": "Clic en la brújula: restablecer la vista · Clic en el suelo vacío: medir desde ahí (Z/X lo suben y bajan) · Esc: quitar el punto o cerrar",
   "vistazo.help8": "Con el dedo: uno orbita (con el pincel del relieve, pinta) · dos acercan, alejan y desplazan · tres giran la cámara",
+  "vistazo.removePoint": "Quitar punto",
   "vistazo.compass": "Restablecer la vista",
   "vistazo.hidden": "oculto",
   "relief.image": "Imagen",

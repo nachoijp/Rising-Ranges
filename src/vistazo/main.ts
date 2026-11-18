@@ -2125,7 +2125,15 @@ async function start() {
   const heightBox = document.createElement("div");
   heightBox.className = "hbox";
   heightBox.hidden = true;
-  heightBox.append(heightPad, heightValue);
+  // The free point's, under them: taken away (a phone has no Esc).
+  const heightClose = document.createElement("button");
+  heightClose.type = "button";
+  heightClose.className = "hclose";
+  heightClose.onclick = () => {
+    clearPoint();
+    syncPad();
+  };
+  heightBox.append(heightPad, heightValue, heightClose);
   const padButtons: [1 | -1 | 0, string, TranslationKey][] = [
     [1, icon("arrow"), "settings.global.hotkeyRaise"],
     [0, icon("to-ground"), "settings.global.hotkeyGround"],
@@ -2150,6 +2158,7 @@ async function start() {
   /** The touch layout's height buttons shown (or not), and the height of what they'd move. */
   function syncHeightPad() {
     let text: string | null = null;
+    let point = false;
     if (coarse.matches && scene) {
       const settings = globalSettingsFromMetadata(sceneMetadata);
       const bandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
@@ -2161,17 +2170,22 @@ async function start() {
         text = heightLabelText(tip ? active.rise : active.lift, bandSet, scene.scale, language);
       } else if (!moving && freePoint) {
         text = named(freePoint, freePoint.own);
+        point = true;
       } else if (moving && (settings.enableAltitude ?? true)) {
         text = named(moving.position, moving.own);
       }
     }
-    const shown = text === null ? "" : `${language}|${text}`;
+    const shown = text === null ? "" : `${language}|${text}|${point}`;
     if (shown === padShown) {
       return;
     }
     padShown = shown;
     heightBox.hidden = text === null;
     heightValue.textContent = text ?? "";
+    heightClose.hidden = !point;
+    heightClose.innerHTML = icon("close");
+    heightClose.setAttribute("aria-label", t("vistazo.removePoint"));
+    heightClose.title = t("vistazo.removePoint");
     heightPad.setAttribute("aria-label", t("relief.height"));
     for (const button of heightPad.querySelectorAll<HTMLButtonElement>("button")) {
       button.setAttribute("aria-label", t(button.dataset.label as TranslationKey));
