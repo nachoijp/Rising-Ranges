@@ -1494,11 +1494,63 @@ export class VistazoView {
     if (next.bands === this.layersOn.bands && next.clouds === this.layersOn.clouds && next.fog === this.layersOn.fog) {
       return;
     }
+    if (next.bands !== this.layersOn.bands) {
+      // Their programs readied beforehand (see warmBands): kept till the next frame has taken them.
+      this.retired.push(...this.warmed.splice(0));
+    }
     this.layersOn = next;
     this.dirty = "all";
     for (const material of this.pieceMaterials) {
       this.layers(material);
       material.needsUpdate = true;
+    }
+  }
+
+  /** Copies of the terrain's materials with the Bandas on, their programs compiled (see warmBands). */
+  private warmed: THREE.Material[] = [];
+
+  /**
+   * The terrain's shaders with the Bandas on, compiled in the background once it's drawn (the Bandas off):
+   * the first Medición doesn't wait for them (half a second, the page stuck, on a slow computer; they're
+   * put in every top's and wall's shader, see setLayers). Copies of its materials, on its own meshes'
+   * shapes (a program for each way they're drawn), kept (their programs with them) till the Bandas come
+   * on or it's built again.
+   */
+  private warmBands() {
+    this.retired.push(...this.warmed.splice(0));
+    const renderer = this.renderer;
+    if (!renderer || this.layersOn.bands) {
+      return;
+    }
+    const materials = new Set<THREE.Material>(this.pieceMaterials);
+    const group = new THREE.Group();
+    const copies = new Map<THREE.Material, THREE.MeshBasicMaterial>();
+    const seen = new Set<string>();
+    this.world.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh || Array.isArray(mesh.material) || !materials.has(mesh.material)) {
+        return;
+      }
+      const material = mesh.material as THREE.MeshBasicMaterial;
+      const way = `${material.uuid}|${Object.keys(mesh.geometry.attributes).sort().join(",")}|${(mesh as THREE.InstancedMesh).isInstancedMesh ? "i" : ""}`;
+      if (seen.has(way)) {
+        return;
+      }
+      seen.add(way);
+      let copy = copies.get(material);
+      if (!copy) {
+        copy = material.clone();
+        // (Not copied by clone: the layers put on its shader.)
+        copy.onBeforeCompile = material.onBeforeCompile;
+        copy.customProgramCacheKey = material.customProgramCacheKey;
+        copy.defines = { ...material.defines, RR_BANDS: "" };
+        copies.set(material, copy);
+        this.warmed.push(copy);
+      }
+      group.add((mesh as THREE.InstancedMesh).isInstancedMesh ? new THREE.InstancedMesh(mesh.geometry, copy, 1) : new THREE.Mesh(mesh.geometry, copy));
+    });
+    if (group.children.length) {
+      void time("3d.warmBands", () => renderer.compileAsync(group, this.glCamera, this.world)).catch(() => {});
     }
   }
 
@@ -3063,6 +3115,7 @@ export class VistazoView {
           done();
           this.requestApply();
           this.schedulePrepare();
+          this.warmBands();
         });
       });
     });

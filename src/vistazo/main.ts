@@ -990,14 +990,23 @@ async function start() {
     showCameraTexts();
   };
   /** The camera's readings and the view's button, in the language now (also after a change of it). */
+  /** What showCameraTexts last wrote, each (each write, even of the same, has the page lay itself out again: every frame of an orbit). */
+  const cameraTexts = new Map<string, string>();
+  const writeOnce = (key: string, value: string, write: (value: string) => void) => {
+    if (cameraTexts.get(key) !== value) {
+      cameraTexts.set(key, value);
+      write(value);
+    }
+  };
   const showCameraTexts = () => {
-    tilt.value = String(camera.tilt);
-    yaw.value = String(camera.yaw);
-    $("tiltOut").textContent = `${Math.round(camera.tilt)}°`;
-    $("yawOut").textContent = `${Math.round(camera.yaw)}°`;
-    $("status").textContent = t("vistazo.status", { turn: Math.round(camera.yaw), tilt: Math.round(camera.tilt) });
-    $("needle").setAttribute("transform", `rotate(${camera.yaw})`);
-    $("toggle").textContent = t(camera.tilt < 1 ? "vistazo.to3d" : "vistazo.toTop");
+    const [turn, lean] = [Math.round(camera.yaw), Math.round(camera.tilt)];
+    writeOnce("tilt", String(camera.tilt), (v) => (tilt.value = v));
+    writeOnce("yaw", String(camera.yaw), (v) => (yaw.value = v));
+    writeOnce("tiltOut", `${lean}°`, (v) => ($("tiltOut").textContent = v));
+    writeOnce("yawOut", `${turn}°`, (v) => ($("yawOut").textContent = v));
+    writeOnce("status", t("vistazo.status", { turn, tilt: lean }), (v) => ($("status").textContent = v));
+    writeOnce("needle", `rotate(${camera.yaw})`, (v) => $("needle").setAttribute("transform", v));
+    writeOnce("toggle", t(camera.tilt < 1 ? "vistazo.to3d" : "vistazo.toTop"), (v) => ($("toggle").textContent = v));
   };
 
 
