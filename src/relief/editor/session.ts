@@ -88,6 +88,8 @@ export type EditSession = {
     move(p: { x: number; y: number }, mods: Mods, held: boolean): void;
     up(): void;
     leave(): void;
+    /** The stroke since the last press taken back (not kept to redo): a second finger soon after (a pinch instead). */
+    cancel(): void;
   };
 };
 
@@ -1346,18 +1348,26 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   panel();
   o.onRelief(image.id, editor.relief, false);
 
+  /** Where the 3D brush's stroke started in the steps to undo (see brush.cancel). */
+  let brushMark = 0;
   session = Object.assign(into ?? ({} as EditSession), {
     imageId: image.id,
     brush: {
       active: () => editor.isBrush(),
       radius: () => editor.settings.radius,
       down(p, mods) {
+        brushMark = editor.undoMark();
         map.onDown();
         editor.down(p, mods);
       },
       move: (p, mods, held) => editor.move(p, mods, held),
       up() {
         editor.up();
+        map.onUp();
+      },
+      cancel() {
+        editor.up();
+        editor.dropSince(brushMark);
         map.onUp();
       },
       leave() {

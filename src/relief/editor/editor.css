@@ -124,6 +124,36 @@
 .re-stage-hidden .stage {
   visibility: hidden;
 }
+/* One view at a time, the 3D shown: the editor's bars over it all the same (the brush paints on the 3D
+   too: its tool and its options at hand, the Hand to orbit). The map's column laid over the 3D, clear,
+   its map hidden and no pointer of its own: only the bars take one. The shapes' list and panel stay the map's. */
+.re-single.re-map-hidden .re-map {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  visibility: visible;
+  background: transparent;
+  border-right: 0;
+  pointer-events: none;
+}
+.re-single.re-map-hidden .re-map canvas {
+  visibility: hidden;
+}
+/* (Out of the grid then, the map's column: the 3D would take its place, 0 wide.) */
+.re-single.re-map-hidden .stage {
+  grid-column: 1 / -1;
+}
+.re-single.re-map-hidden .re-ui :is(.re-shapesbtn, .re-shapes, .re-props, .re-drawer, .re-chip) {
+  display: none;
+}
+/* What opens on the map's column itself, not in its bars (the menus, the dialogs): taken by a finger too. */
+.re-single.re-map-hidden .re-map > :not(canvas, .re-ui, .re-tip) {
+  pointer-events: auto;
+}
+/* The 3D's own corner pieces (the camera's reading and compass, its "?"): over the editor's bottom bar. */
+.re-single.re-map-hidden .stage :is(.hud, .help) {
+  bottom: 72px;
+}
 .app.editing aside {
   display: none;
 }

@@ -791,7 +791,7 @@ export function toolButton(ed: ReliefEditor, t: T): string {
 /** Every key of the tool in hand, and those for everything. */
 /** What a finger does (the touch layout's help, in place of the keys'). */
 export function gesturesHtml(t: T): string {
-  const list = (["hold", "two", "hand", "second", "double", "more"] as const).map((g) => `<dt>${esc(t(`relief.gesture.${g}`))}</dt><dd>${esc(t(`relief.gesture.${g}Do`))}</dd>`).join("");
+  const list = (["hold", "two", "three", "hand", "second", "double", "more"] as const).map((g) => `<dt>${esc(t(`relief.gesture.${g}`))}</dt><dd>${esc(t(`relief.gesture.${g}Do`))}</dd>`).join("");
   // Its own ✕ (a finger has no Esc).
   return `<div class="re-pophead"><p class="ptitle">${esc(t("relief.gestures"))}</p><button type="button" class="ib sm" data-k="popClose" aria-label="${esc(t("relief.close"))}">${icon("close")}</button></div><dl>${list}</dl>`;
 }

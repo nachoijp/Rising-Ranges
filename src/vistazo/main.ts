@@ -101,7 +101,9 @@ const TAB = IN_TAB;
 const FULL = new URLSearchParams(location.search).has("full") || TAB;
 
 /** The controls' help, one line each (the ? at the stage's corner). */
-const HELP_KEYS = ["vistazo.help1", "vistazo.help2", "vistazo.help3", "vistazo.help4", "vistazo.help5", "vistazo.help6", "vistazo.help7"] as const;
+/** A second finger this soon (ms) after the first one's brush stroke began: the stroke taken back, a pinch instead (as the 2D map's). */
+const SECOND_FINGER_MS = 200;
+const HELP_KEYS = ["vistazo.help1", "vistazo.help2", "vistazo.help3", "vistazo.help4", "vistazo.help5", "vistazo.help6", "vistazo.help7", "vistazo.help8"] as const;
 const FULL_MODAL_ID = getPluginId("vistazo/full");
 const CAMERA_KEY = "rising-ranges/vistazo-camera";
 
@@ -1324,7 +1326,19 @@ async function start() {
   // ---------- What a press on the stage is doing (shared by the pointer handlers below) ----------
   // Pointer: drag orbits; the wheel held down (or Shift) pans, as in Owlbear; two fingers zoom and pan.
   const pointers = new Map<number, [number, number]>();
-  let mode: "orbit" | "pan" | "pinch" | "token" | "point" | "handle" | null = null;
+  let mode: "orbit" | "pan" | "pinch" | "turn" | "token" | "point" | "handle" | null = null;
+  /** Three fingers (or more) turn the camera, by where their middle goes (a phone's brush paints with one, zooms with two). */
+  let turnAt: [number, number] | null = null;
+  const middleOf = (): [number, number] => {
+    const all = [...pointers.values()];
+    return [all.reduce((a, p) => a + p[0], 0) / all.length, all.reduce((a, p) => a + p[1], 0) / all.length];
+  };
+  /** Two fingers down: a pinch from where they are now. */
+  const pinchNow = () => {
+    const [a, b] = [...pointers.values()];
+    pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), zoom: camera.zoom, mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] };
+    mode = "pinch";
+  };
   /** A template's handle being dragged: which template, and which handle. */
   let handleDrag: { id: string; part: "origin" | "tip" } | null = null;
   /** The free point being dragged: the level it moves over (grid units) and where it was grabbed from. */
@@ -1468,9 +1482,59 @@ async function start() {
     view.setBrushRing(ring);
     stage.classList.add("re-brushing");
   };
+  /**
+   * A finger's brush (a phone's): the fingers down on the stage, when the stroke began; and a pinch taken
+   * over by the camera, till every finger's lifted (no painting meanwhile). As the 2D map's: a second finger
+   * soon after the first takes its stroke back and zooms and pans instead; a later one's ignored.
+   */
+  const brushTouches = new Map<number, [number, number]>();
+  let brushPressedAt = 0;
+  let brushPinching = false;
+  /** The camera given the fingers down (the event of the last one goes on to its handler). */
+  const pinchFrom = (except: number) => {
+    brushPinching = true;
+    showBrush(null);
+    for (const [id, at] of brushTouches) {
+      if (id !== except && !pointers.has(id)) {
+        pointers.set(id, at);
+        stage.setPointerCapture(id);
+      }
+    }
+  };
+  const fingerUp = (event: PointerEvent) => {
+    brushTouches.delete(event.pointerId);
+    if (brushTouches.size === 0) {
+      brushPinching = false;
+    }
+  };
+  stage.addEventListener("pointerup", fingerUp);
+  stage.addEventListener("pointercancel", fingerUp);
   stage.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || !session?.brush.active() || (event.target as Element).closest("button")) {
       return;
+    }
+    if (event.pointerType === "touch") {
+      brushTouches.set(event.pointerId, [event.clientX, event.clientY]);
+      // Pinching already: the camera's (this finger too).
+      if (brushPinching) {
+        return;
+      }
+      if (brushTouches.size > 1) {
+        if (brushPointer === null || performance.now() - brushPressedAt < SECOND_FINGER_MS) {
+          // The first one's stroke (if it began one) taken back; both fingers the camera's.
+          if (brushPointer !== null) {
+            brushPointer = null;
+            session.brush.cancel();
+          }
+          pinchFrom(event.pointerId);
+          return;
+        }
+        // Later: the stroke goes on, this finger nothing.
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        return;
+      }
+      brushPressedAt = performance.now();
     }
     // Caught here, before the camera's own (see below).
     event.stopImmediatePropagation();
@@ -1485,7 +1549,10 @@ async function start() {
     showBrush(cell);
   });
   stage.addEventListener("pointermove", (event) => {
-    if (!session?.brush.active()) {
+    if (brushTouches.has(event.pointerId)) {
+      brushTouches.set(event.pointerId, [event.clientX, event.clientY]);
+    }
+    if (!session?.brush.active() || brushPinching) {
       if (stage.classList.contains("re-brushing")) {
         showBrush(null);
       }
@@ -1761,10 +1828,11 @@ async function start() {
     stage.setPointerCapture(event.pointerId);
     pointers.set(event.pointerId, [event.clientX, event.clientY]);
     stage.classList.add("dragging");
-    if (pointers.size === 2) {
-      const [a, b] = [...pointers.values()];
-      pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), zoom: camera.zoom, mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] };
-      mode = "pinch";
+    if (pointers.size >= 3) {
+      mode = "turn";
+      turnAt = middleOf();
+    } else if (pointers.size === 2) {
+      pinchNow();
     } else {
       mode = moving ? "token" : handleDrag ? "handle" : pointDrag ? "point" : event.button === 1 || event.shiftKey ? "pan" : "orbit";
       last = [event.clientX, event.clientY];
@@ -1775,7 +1843,12 @@ async function start() {
       return;
     }
     pointers.set(event.pointerId, [event.clientX, event.clientY]);
-    if (mode === "pinch" && pinch && pointers.size === 2) {
+    if (mode === "turn" && turnAt && pointers.size >= 3) {
+      const now = middleOf();
+      camera.yaw = wrapYaw(camera.yaw - (now[0] - turnAt[0]) * 0.3);
+      camera.tilt = clampTilt(camera.tilt - (now[1] - turnAt[1]) * 0.25);
+      turnAt = now;
+    } else if (mode === "pinch" && pinch && pointers.size === 2) {
       const [a, b] = [...pointers.values()];
       camera.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, (pinch.zoom * Math.hypot(a[0] - b[0], a[1] - b[1])) / pinch.d));
       const mid: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
@@ -1944,6 +2017,11 @@ async function start() {
     } else if (pointers.size === 1) {
       mode = "orbit";
       last = [...pointers.values()][0];
+    } else if (pointers.size === 2) {
+      // From three to two: zooming again, from where the two are.
+      pinchNow();
+    } else {
+      turnAt = middleOf();
     }
   };
   stage.addEventListener("pointerup", up);
