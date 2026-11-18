@@ -310,7 +310,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   /** The brush in hand when last told (null: not yet), see onBrushTool. */
   let brushInHand: boolean | null = null;
   const tellBrush = () => {
-    const brush = editor.isBrush();
+    const brush = editor.isBrush() && !hand;
     if (brush !== brushInHand) {
       brushInHand = brush;
       o.onBrushTool?.(brush);
@@ -866,6 +866,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     o.map.style.cursor = on ? "grab" : "";
     closeMenus();
     panel();
+    tellBrush();
   };
 
   // ---------- Menus ----------
@@ -1374,7 +1375,8 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   session = Object.assign(into ?? ({} as EditSession), {
     imageId: image.id,
     brush: {
-      active: () => editor.isBrush(),
+      // Not with the hand taken (the touch layout's: the brush only kept aside, to come back to).
+      active: () => editor.isBrush() && !hand,
       radius: () => editor.settings.radius,
       down(p, mods) {
         brushMark = editor.undoMark();

@@ -139,9 +139,11 @@
 .re-single.re-map-hidden .re-map canvas {
   visibility: hidden;
 }
-/* (Out of the grid then, the map's column: the 3D would take its place, 0 wide.) */
+/* (Out of the grid then, the map's column: the 3D would take its place, 0 wide.) Its own stack of layers:
+   its tokens' high z-indexes (their order among them) under the editor's bars, not over them. */
 .re-single.re-map-hidden .stage {
   grid-column: 1 / -1;
+  isolation: isolate;
 }
 .re-single.re-map-hidden .re-ui :is(.re-shapesbtn, .re-shapes, .re-props, .re-drawer, .re-chip) {
   display: none;
