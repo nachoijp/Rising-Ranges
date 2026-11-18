@@ -438,14 +438,24 @@ aside textarea {
 .dline.nosight line:not(.casing) {
   stroke-dasharray: 1 7;
 }
-.dline text {
-  font: 600 calc(12px * var(--label-scale, 1)) Roboto, "Segoe UI", system-ui, sans-serif;
-  fill: #fff;
-  paint-order: stroke;
-  stroke: rgba(0, 0, 0, 0.8);
-  stroke-width: 3px;
-  text-anchor: middle;
-  dominant-baseline: middle;
+/* Their readings, halfway along (see VistazoView.lineLabels): moved by transform alone. */
+.linelabels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.dlabel {
+  position: absolute;
+  left: 0;
+  top: 0;
+  font: 600 calc(12px * var(--label-scale, 1)) / 1 Roboto, "Segoe UI", system-ui, sans-serif;
+  color: #fff;
+  paint-order: stroke fill;
+  -webkit-text-stroke: 3px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+}
+.dlabel.nosight {
+  opacity: 0.55;
 }
 .tok img,
 .tok video {

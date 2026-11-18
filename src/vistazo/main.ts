@@ -1365,9 +1365,18 @@ async function start() {
   } | null = null;
   /** Kept further from a wall than Owlbear asks (see wallReach): where it's put back is a few px further. */
   const WALL_MARGIN = 0.02;
-  const stagePoint = (event: { clientX: number; clientY: number }) => {
-    const rect = stage.getBoundingClientRect();
-    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  /**
+   * Where the stage is on the page, read again on any event but a move (a move reads it as the last
+   * did: read after a frame's writes, it'd have the page lay itself out again first, each move of a drag:
+   * the distance lines', see VistazoView.drawLines), or when the stage's size changed.
+   */
+  let stageRect: DOMRect | null = null;
+  new ResizeObserver(() => (stageRect = null)).observe(stage);
+  const stagePoint = (event: { clientX: number; clientY: number; type?: string }) => {
+    if (!stageRect || event.type !== "pointermove") {
+      stageRect = stage.getBoundingClientRect();
+    }
+    return { x: event.clientX - stageRect.left, y: event.clientY - stageRect.top };
   };
   /**
    * Tokens let go, shown where they landed (see live) till the scene has them there: the token's saved

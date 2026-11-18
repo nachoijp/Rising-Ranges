@@ -241,7 +241,8 @@ export class VistazoView {
   /** Lines of sight between tokens worked out (see inSight), by where both are and the terrain. */
   private readonly sights = new Map<string, boolean>();
   /** Each distance line's elements, by its token, and what they were last given (see drawLines). */
-  private readonly lineEls = new Map<string, { group: SVGGElement; back: SVGLineElement; front: SVGLineElement; text: SVGTextElement; written: string }>();
+  /** Each distance line's elements, and what's written in them (each part only when it changed: see drawLines). */
+  private readonly lineEls = new Map<string, { group: SVGGElement; back: SVGLineElement; front: SVGLineElement; text: HTMLSpanElement; ends: string; look: string; label: string | null }>();
   /** What each marker's element was last given (see placeOne): written again only when it changes. */
   private readonly written = new WeakMap<TokenView, { transform: string; z: string; visible: string; css: string; turn: string; hiddenFor: string; hidden: boolean }>();
   /** Drawn again frame after frame (see trackMotion): moving, how much of the sharpness it keeps, its frames' gaps. */
@@ -348,6 +349,11 @@ export class VistazoView {
   private readonly glCamera = new THREE.Camera();
   private readonly overlay: HTMLElement;
   private readonly lines: SVGSVGElement;
+  /**
+   * The distance lines' readings, over the lines (under the tokens): elements of the page, not the lines'
+   * SVG, where any line moved had the page lay every reading out again (most of a drag's layout).
+   */
+  private readonly lineLabels: HTMLDivElement;
   private readonly tokenOverlay: HTMLElement;
   private scene: VistazoScene | null = null;
   private terrainKey = "";
@@ -515,9 +521,11 @@ export class VistazoView {
     this.overlay.className = "ov";
     this.lines = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     this.lines.classList.add("lines");
+    this.lineLabels = document.createElement("div");
+    this.lineLabels.className = "linelabels";
     this.tokenOverlay = document.createElement("div");
     this.doorOverlay = document.createElement("div");
-    this.overlay.append(this.lines, this.tokenOverlay, this.doorOverlay);
+    this.overlay.append(this.lines, this.lineLabels, this.tokenOverlay, this.doorOverlay);
     stage.prepend(this.canvas, this.overlay);
     // The door buttons near the pointer show (see showDoorButtons): no drawing for it.
     stage.addEventListener("pointermove", (event) => {
@@ -4855,9 +4863,19 @@ export class VistazoView {
   }
 
   /** A token's label, as the options have it, from its height now. */
+  /** What writeLabel last wrote in each token's label (written again only when it changed: a drag moves one every frame). */
+  private readonly labelsWritten = new WeakMap<TokenView, string>();
+
   private writeLabel(view: TokenView) {
     // A prop's label is on or off by itself; with the tokens' set to none, it says the name.
     const shown = view.prop && this.options.tokenLabels === "none" ? "name" : this.options.tokenLabels;
+    const text = view.title ? this.tokenText(view.token) : null;
+    // Its texts written again, even the same, have the page shape them again (each frame of a drag).
+    const written = JSON.stringify([shown, view.token.item.text?.plainText, view.token.item.text?.style, text?.height, text?.detail]);
+    if (this.labelsWritten.get(view) === written) {
+      return;
+    }
+    this.labelsWritten.set(view, written);
     // Its name as Owlbear's map has it: its label's text and style, or nothing without one.
     if (view.name) {
       const label = view.token.item.text?.plainText?.trim() ?? "";
@@ -4879,10 +4897,9 @@ export class VistazoView {
       css.setProperty("--stroke", `color-mix(in srgb, ${style.strokeColor} ${style.strokeOpacity * 100}%, transparent)`);
     }
     // Under it, its height and where it stands (none with the names alone).
-    if (!view.title) {
+    if (!view.title || !text) {
       return;
     }
-    const text = this.tokenText(view.token);
     view.title.parentElement!.hidden = shown === "name" || !text.height;
     view.title.textContent = text.height;
     if (view.detail) {
@@ -5465,42 +5482,53 @@ export class VistazoView {
           const group = document.createElementNS(ns, "g");
           const back = document.createElementNS(ns, "line");
           const front = document.createElementNS(ns, "line");
-          const text = document.createElementNS(ns, "text");
+          const text = document.createElement("span");
           back.setAttribute("class", "casing");
-          group.append(back, front, text);
-          el = { group, back, front, text, written: "" };
+          group.append(back, front);
+          el = { group, back, front, text, ends: "", look: "", label: null };
           this.lineEls.set(line.id, el);
         }
         if (el.group.parentNode !== svg) {
           svg.appendChild(el.group);
+          this.lineLabels.appendChild(el.text);
         }
         const { x: x1, y: y1 } = origin.screen;
         const { x: x2, y: y2 } = target.screen;
         // Hidden from the camera: dashed. Out of the origin's sight (the terrain between them): faint, dotted.
         const sight = this.inSight(origin, target) ? "" : " nosight";
         const label = this.options.distanceLabels === "none" ? "" : this.options.distanceLabels === "full" ? `${line.band} · ${line.distance}` : line.distance;
-        const written = `${x1},${y1},${x2},${y2}|${target.hidden}|${sight}|${line.color}|${label}`;
-        if (el.written === written) {
-          continue;
+        // Where it is, how it looks, what it reads: each written only when it changed (its text written
+        // again, even the same, has the page shape it again: every line's, every frame of a drag).
+        const ends = `${x1},${y1},${x2},${y2}`;
+        if (el.ends !== ends) {
+          el.ends = ends;
+          for (const end of [el.back, el.front]) {
+            end.setAttribute("x1", String(x1));
+            end.setAttribute("y1", String(y1));
+            end.setAttribute("x2", String(x2));
+            end.setAttribute("y2", String(y2));
+          }
+          // Its reading moved, not laid out again (see .dlabel).
+          el.text.style.transform = `translate(${(x1 + x2) / 2}px,${(y1 + y2) / 2}px) translate(-50%,-50%)`;
         }
-        el.written = written;
-        el.group.setAttribute("class", (target.hidden ? "dline hidden" : "dline") + sight);
-        for (const end of [el.back, el.front]) {
-          end.setAttribute("x1", String(x1));
-          end.setAttribute("y1", String(y1));
-          end.setAttribute("x2", String(x2));
-          end.setAttribute("y2", String(y2));
+        const look = `${target.hidden}|${sight}|${line.color}`;
+        if (el.look !== look) {
+          el.look = look;
+          el.group.setAttribute("class", (target.hidden ? "dline hidden" : "dline") + sight);
+          el.front.setAttribute("stroke", line.color);
+          el.text.className = `dlabel${sight}`;
         }
-        el.front.setAttribute("stroke", line.color);
-        el.text.setAttribute("x", String((x1 + x2) / 2));
-        el.text.setAttribute("y", String((y1 + y2) / 2));
-        el.text.textContent = label;
-        el.text.style.display = label ? "" : "none";
+        if (el.label !== label) {
+          el.label = label;
+          el.text.textContent = label;
+          el.text.style.display = label ? "" : "none";
+        }
       }
     }
     for (const [id, el] of this.lineEls) {
       if (!shown.has(id)) {
         el.group.remove();
+        el.text.remove();
         this.lineEls.delete(id);
       }
     }
