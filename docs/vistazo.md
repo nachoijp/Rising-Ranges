@@ -140,7 +140,7 @@ Shapes are stacked: each one sits on what's under it. Picking one shows its pane
 
 Right-click a shape for duplicate, rename, layer up or down, convert, combine (union, subtract, intersect, exclude), group, take a texture, or delete.
 
-With several shapes picked (Ctrl + click), the panel raises or lowers them all together, each from its own height (a ramp both its ends, an inclined one its corners), and combines them.
+With several shapes picked (Ctrl + click; or in the shapes list, Shift + click picks every shape from the one picked first to the one clicked), they move, resize and turn together, and the panel raises or lowers them all together, each from its own height (a ramp both its ends, an inclined one its corners), and combines them. It also sets what they have in common for all of them at once: a height (if they're all flat), Measured, a slab's thickness, Base and Under it, how a standing shape stands, the sides' look, Not covered by slabs, and the soft edge. Where their values differ it shows a dash. Their type, surface, picture and water stay each one's own.
 
 ## Vertices and height points
 
@@ -165,6 +165,8 @@ The map usually shows the slab from above, so under it the 3D would repeat its d
 - **Cover the drawing** (the default) — the map's colors round it, blended, with a grain.
 - **Mirror the sides** — the map by its long sides, mirrored: for a bridge over a river or a road.
 - **Keep the map** — nothing: for a slab that isn't drawn on the map.
+
+**Base** is the look of the slab's own underside: **As the sides** (the default: the same look as its sides), **Blend** (the colours of the map it covers, averaged), **Top** (the map as on its top, in shadow), or **Brick**, **Stone**, **Earth** or **Wood**, tinted with the map's colours.
 
 A shape under a slab that should keep its own look — a pillar under a statue — gets **Not covered by slabs** in its 3D look.
 

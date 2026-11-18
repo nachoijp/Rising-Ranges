@@ -1,5 +1,5 @@
 import type { TranslationKey } from "../../i18n/translate";
-import type { DoorLook, DoorOpens, Group, Pt, ReliefData, Shape, StandEdge, UnderLook, WallLook } from "../types";
+import type { DoorLook, DoorOpens, Group, Pt, ReliefData, Shape, StandEdge, UnderLook, UndersideLook, WallLook } from "../types";
 import { DOOR_H } from "../trace/doors";
 import { linkDoor } from "./doorsEdit";
 import { corners } from "../stand";
@@ -1511,20 +1511,120 @@ function doorProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =>
   q<HTMLButtonElement>("del")!.onclick = () => ed.remove();
 }
 
-/** Several shapes picked: raised or lowered together (each its own way), and what they can make together. */
+/** Several shapes picked: raised or lowered together (each its own way), what they have in common, and what they can make together. */
 function comboProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) => string) {
   const { i, more } = ed.sel as { kind: "shape"; i: number; more: number[] };
+  const ids = [i, ...more];
+  const all = ids.map((si) => ed.data.shapes[si]);
   const first = nameOf(t, ed.data.shapes[i], i);
   // Their height, if they're all flat at one; a dash otherwise (each keeps its own, raised by as much).
-  const heights = new Set([i, ...more].map((si) => ed.data.shapes[si]).map((s) => (s.kind === "flat" ? `${s.h}|${!!s.rel}` : "other")));
+  // All flat: one typed is all of theirs.
+  const flat = all.every((x) => x.kind === "flat");
+  const heights = new Set(all.map((x) => (x.kind === "flat" ? `${x.h}|${!!x.rel}` : "other")));
   const shared = heights.size === 1 && !heights.has("other") ? ed.data.shapes[i].h : null;
+  // What they have in common (see commonRows): each shown only where it means something for every one of them.
+  const common = commonRows(all, t);
   el.innerHTML = `
     <div class="head"><span class="ptitle grow" ${tip(t("relief.combo.title", { n: more.length + 1 }), t("relief.combo.result", { first }))}>${esc(t("relief.combo.title", { n: more.length + 1 }))}</span></div>
-    <div class="rows"><span class="l" ${tip(t("relief.height"), t("relief.combo.heightHint"))}>${esc(t("relief.height"))}</span>${heightRow(t, shared === null ? "—" : "", shared === null ? "" : unit(shared))}</div>
+    <div class="rows"><span class="l" ${tip(t("relief.height"), t("relief.combo.heightHint"))}>${esc(t("relief.height"))}</span>${heightRow(t, flat ? heightField("hAll", t("relief.height")) : "—", shared === null ? "" : unit(shared))}${common.body}</div>
+    ${common.look ? `<div class="section"><div class="shead static">${esc(t("relief.look"))}</div><div class="rows">${common.look}</div></div>` : ""}
     <div class="ops">${COMBINES.map(([id, label, hint]) => `<button type="button" class="opb" data-op="${id}" ${tip(t(label), t(hint, { first }))}>${OP_ICONS[id]}<span>${esc(t(label))}</span></button>`).join("")}</div>
     ${ed.notice ? `<p class="warn" role="status">${esc(t(ed.notice === "nothingShared" ? "relief.combo.nothingShared" : "relief.combo.nothingLeft"))}</p>` : ""}
     <button type="button" class="field wide" data-k="single" ${tip(t("relief.combo.single", { first }), t("relief.combo.ctrl"))}>${esc(t("relief.combo.single", { first }))}</button>`;
   bindSteps(el, ed);
+  const redo = () => {
+    ed.changed();
+    ed.host.showProps();
+  };
+  /** Set on every one picked, a step to undo. */
+  const each = (f: (x: Shape, si: number) => void) => {
+    ed.pushUndo();
+    ids.forEach((si, k) => f(all[k], si));
+    redo();
+  };
+  // A height typed: every one of them at it (a dash: each its own).
+  const hAll = el.querySelector<HTMLInputElement>('[data-k="hAll"]');
+  if (hAll) {
+    hAll.value = shared === null ? "" : String(shared);
+    hAll.placeholder = shared === null ? "—" : "";
+    const step = undoOnce(ed);
+    hAll.onfocus = () => {
+      step.arm();
+      requestAnimationFrame(() => document.activeElement === hAll && hAll.select());
+    };
+    hAll.oninput = () => {
+      const v = readNumber(hAll);
+      if (v !== null) {
+        step.take();
+        all.forEach((x) => (x.h = v));
+        ed.changed();
+      }
+    };
+    hAll.onchange = () => ed.host.showProps();
+  }
+  onSeg(el, "relAll", (v) => each((_, si) => setRel(ed, si, v === "rel")));
+  // Thickness: typed, every one at it; −/+, each from its own.
+  const slab = el.querySelector<HTMLInputElement>('[data-k="slabAll"]');
+  if (slab) {
+    const thick = new Set(all.map((x) => x.slab ?? 0.5));
+    slab.value = thick.size === 1 ? String([...thick][0]) : "";
+    slab.placeholder = thick.size === 1 ? "" : "—";
+    const step = undoOnce(ed);
+    slab.onfocus = step.arm;
+    slab.oninput = () => {
+      const v = readNumber(slab);
+      if (v !== null) {
+        step.take();
+        all.forEach((x) => (x.slab = Math.max(MIN_SLAB, Math.round(v * 100) / 100)));
+        ed.changed();
+      }
+    };
+    slab.onchange = () => ed.host.showProps();
+    for (const button of el.querySelectorAll<HTMLButtonElement>('[data-for="slabAll"]')) {
+      button.onclick = () => each((x) => (x.slab = Math.max(MIN_SLAB, Math.round(((x.slab ?? 0.5) + Number(button.dataset.by)) * 100) / 100)));
+    }
+  }
+  /** A select of theirs: chosen, every one gets it (the dash, "they differ", isn't one to choose). */
+  const onSelect = (key: string, f: (x: Shape, v: string) => void) => {
+    const select = el.querySelector<HTMLSelectElement>(`[data-k="${key}"]`);
+    if (select) {
+      select.onchange = () => each((x) => f(x, select.value));
+    }
+  };
+  onSelect("standAll", (x, v) => (x.stand = v as StandEdge));
+  onSelect("wallAll", (x, v) => (x.wall = v === "blend" ? undefined : (v as WallLook)));
+  onSelect("undersideAll", (x, v) => (x.underside = (v || undefined) as UndersideLook | undefined));
+  onSelect("underAll", (x, v) => (x.under = (v || undefined) as UnderLook | undefined));
+  onSelect("softOnAll", (x, v) => (x.softOn = (v || undefined) as Shape["softOn"]));
+  /** A checkbox of theirs: half-checked while they differ; checked or not, every one so. */
+  const onCheck = (key: string, get: (x: Shape) => boolean, set: (x: Shape, on: boolean) => void) => {
+    const box = el.querySelector<HTMLInputElement>(`[data-k="${key}"]`);
+    if (box) {
+      const on = all.map(get);
+      box.checked = on.every(Boolean);
+      box.indeterminate = !box.checked && on.some(Boolean);
+      box.onchange = () => each((x) => set(x, box.checked));
+    }
+  };
+  onCheck("wrapAll", (x) => !!x.wrap, (x, on) => (x.wrap = on || undefined));
+  onCheck("keepLookAll", (x) => !!x.keepLook, (x, on) => (x.keepLook = on || undefined));
+  // The soft edge: the first one's shown (a slider has no dash), moved, every one at it.
+  const soft = el.querySelector<HTMLInputElement>('[data-k="softAll"]');
+  if (soft) {
+    soft.value = toSlider(soft, all[0].soft ?? 0);
+    const sliding = undoOnce(ed);
+    soft.onpointerdown = sliding.arm;
+    soft.onkeydown = sliding.arm;
+    soft.oninput = () => {
+      sliding.take();
+      const v = fromSlider(soft);
+      all.forEach((x) => (x.soft = v > 0 ? v : undefined));
+      ed.settings.lastSoft = v;
+      ed.host.saveSettings();
+      ed.changed();
+    };
+    soft.onchange = () => ed.host.showProps();
+  }
   for (const button of el.querySelectorAll<HTMLButtonElement>("[data-op]")) {
     button.onclick = () => runCombine(ed, button.dataset.op as Combine);
   }
@@ -1533,6 +1633,60 @@ function comboProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
     ed.host.showProps();
     ed.host.redraw();
   };
+}
+
+/** Where several shapes' values differ (see sharedBy). */
+const MIXED = "\u0000mixed";
+/** A value they all share, or MIXED where they differ. */
+const sharedBy = (all: Shape[], get: (x: Shape) => string): string => {
+  const values = new Set(all.map(get));
+  return values.size === 1 ? [...values][0] : MIXED;
+};
+
+/** A select row for several shapes: a dash first while they differ (not to be chosen). */
+const multiSelect = (key: string, label: string, hint: string, options: [string, string][], value: string) =>
+  `<span class="l" ${tip(label, hint)}>${esc(label)}</span><select class="field" data-k="${key}" aria-label="${esc(label)}">${value === MIXED ? `<option value="" selected disabled>—</option>` : ""}${options
+    .map(([v, text]) => `<option value="${v}" ${v === value ? "selected" : ""}>${esc(text)}</option>`)
+    .join("")}</select>`;
+
+/**
+ * The rows for what several picked shapes have in common: each only where it means something for every one of
+ * them (a slab's thickness, if they're all slabs...); not their type, surface (nor a ramp's), picture or water,
+ * nor what's each one's own (a name, its corners' heights).
+ */
+function commonRows(all: Shape[], t: T): { body: string; look: string } {
+  const slabs = all.every((x) => !!x.slab);
+  const standing = all.every((x) => !!x.stand);
+  const noneStanding = all.every((x) => !x.stand);
+  const noneSlab = all.every((x) => !x.slab);
+  let body = "";
+  if (all.every((x) => x.kind !== "slope")) {
+    const rel = sharedBy(all, (x) => (x.rel ? "rel" : "abs"));
+    body += `<span class="l" ${tip(t("relief.shape.measured"), t("relief.shape.measuredHint"))}>${esc(t("relief.shape.measured"))}</span>${seg("relAll", [["rel", "relative", t("relief.shape.rel"), t("relief.shape.relHint")], ["abs", "fixed", t("relief.shape.abs"), t("relief.shape.absHint")]], rel)}`;
+  }
+  if (slabs) {
+    body += `<span class="l">${esc(t("relief.shape.thickness"))}</span><span class="line">${stepper(numField("slabAll", t("relief.shape.thickness"), MIN_SLAB, 20), "slabAll", 0.25, t)}</span>`;
+  }
+  if (standing) {
+    body += multiSelect("standAll", t("relief.shape.standsOn"), t("relief.shape.standsOnHint"), STAND_EDGES.map((v) => [v, t(`relief.stand.${v}` as TranslationKey)]), sharedBy(all, (x) => x.stand ?? ""));
+    body += `<span class="l"></span><label class="check" ${tip(t("relief.shape.wrap"), t("relief.shape.wrapHint"))}><input type="checkbox" data-k="wrapAll" /> ${esc(t("relief.shape.wrap"))}</label>`;
+  }
+  let look = "";
+  if (noneStanding) {
+    look += multiSelect("wallAll", t("relief.shape.walls"), t("relief.shape.wallsHint"), WALL_LOOKS.map((v) => [v, t(`relief.wall.${v}` as TranslationKey)]), sharedBy(all, (x) => x.wall ?? "blend"));
+  }
+  if (slabs) {
+    look += multiSelect("undersideAll", t("relief.shape.underside"), t("relief.shape.undersideHint"), UNDERSIDE_LOOKS.map((v) => [v, undersideLabel(t, v)]), sharedBy(all, (x) => x.underside ?? ""));
+    look += multiSelect("underAll", t("relief.shape.under"), t("relief.shape.underHint"), UNDER_LOOKS.map((v) => [v, t(`relief.under.${v || "cover"}` as TranslationKey)]), sharedBy(all, (x) => x.under ?? ""));
+  }
+  look += `<span class="l"></span><label class="check" ${tip(t("relief.shape.keepLook"), t("relief.shape.keepLookHint"))}><input type="checkbox" data-k="keepLookAll" /> ${esc(t("relief.shape.keepLook"))}</label>`;
+  if (noneSlab && noneStanding) {
+    look += `<span class="l" ${tip(t("relief.shape.edge"), t("relief.shape.edgeHint"))}>${esc(t("relief.shape.edge"))}</span>${edgeSlider(t, "softAll")}`;
+    if (all.every((x) => !!x.holes?.length)) {
+      look += multiSelect("softOnAll", t("relief.shape.softOn"), t("relief.shape.softOnHint"), (["", "outline", "holes"] as const).map((v) => [v, t(`relief.softOn.${v || "all"}` as TranslationKey)]), sharedBy(all, (x) => x.softOn ?? ""));
+    }
+  }
+  return { body, look };
 }
 
 export const COMBINES: [Combine, TranslationKey, TranslationKey][] = [
@@ -1556,6 +1710,9 @@ export function runCombine(ed: ReliefEditor, id: Combine) {
 const STAND_EDGES: StandEdge[] = ["auto", "bottom", "top", "left", "right"];
 const WALL_LOOKS: WallLook[] = ["blend", "flat", "stretch", "fold", "stone", "rubble", "earth", "wood"];
 const UNDER_LOOKS: ("" | UnderLook)[] = ["", "mirror", "keep"];
+/** A slab's Base (its underside: see UndersideLook): as its sides, or its own. */
+const UNDERSIDE_LOOKS: ("" | UndersideLook)[] = ["", "blend", "top", "stone", "rubble", "earth", "wood"];
+const undersideLabel = (t: T, v: "" | UndersideLook) => t(v === "" ? "relief.underside.sides" : v === "top" ? "relief.underside.top" : (`relief.wall.${v}` as TranslationKey));
 
 /** A shape's type: terrain, slab or standing. */
 export const typeOf = (s: Shape): ShapeType => (s.slab && s.slab > 0 ? "slab" : s.stand ? "stand" : "terrain");
@@ -1591,6 +1748,7 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
   const look = [
     s.stand ? "" : `<span class="l" ${tip(t("relief.shape.walls"), t("relief.shape.wallsHint"))}>${esc(t("relief.shape.walls"))}</span><select class="field" data-k="wall" ${s.skin ? "disabled" : ""} aria-label="${esc(t("relief.shape.walls"))}">${WALL_LOOKS.map((v) => `<option value="${v}" ${(s.wall ?? "blend") === v ? "selected" : ""}>${esc(t(`relief.wall.${v}` as TranslationKey))}</option>`).join("")}</select>`,
     s.stand ? "" : `<span class="l" ${tip(t("relief.shape.picture"), t("relief.shape.pictureHint"))}>${esc(t("relief.shape.picture"))}</span><span class="line">${picture}</span>`,
+    s.slab ? `<span class="l" ${tip(t("relief.shape.underside"), t("relief.shape.undersideHint"))}>${esc(t("relief.shape.underside"))}</span><select class="field" data-k="underside" aria-label="${esc(t("relief.shape.underside"))}">${UNDERSIDE_LOOKS.map((v) => `<option value="${v}" ${(s.underside ?? "") === v ? "selected" : ""}>${esc(undersideLabel(t, v))}</option>`).join("")}</select>` : "",
     s.slab ? `<span class="l" ${tip(t("relief.shape.under"), t("relief.shape.underHint"))}>${esc(t("relief.shape.under"))}</span><select class="field" data-k="under" aria-label="${esc(t("relief.shape.under"))}">${UNDER_LOOKS.map((v) => `<option value="${v}" ${(s.under ?? "") === v ? "selected" : ""}>${esc(t(`relief.under.${v || "cover"}` as TranslationKey))}</option>`).join("")}</select>` : "",
     `<span class="l"></span><label class="check" ${tip(t("relief.shape.keepLook"), t("relief.shape.keepLookHint"))}><input type="checkbox" data-k="keepLook" ${s.keepLook ? "checked" : ""} /> ${esc(t("relief.shape.keepLook"))}</label>`,
     s.slab || s.stand ? "" : `<span class="l" ${tip(t("relief.shape.water"), t("relief.shape.waterHint"))}>${esc(t("relief.shape.water"))}</span><span class="line">${stepper(numField("water", t("relief.shape.water"), 0, 20), "water", 0.25, t)}</span>`,
@@ -1701,6 +1859,14 @@ function shapeProps(el: HTMLElement, ed: ReliefEditor, t: T, unit: (h: number) =
       ed.pushUndo();
       // Blend: none of its own (the walls' look by default).
       s.wall = wallLook.value === "blend" ? undefined : (wallLook.value as WallLook);
+      redo();
+    };
+  }
+  const underside = el.querySelector<HTMLSelectElement>('[data-k="underside"]');
+  if (underside) {
+    underside.onchange = () => {
+      ed.pushUndo();
+      s.underside = (underside.value || undefined) as UndersideLook | undefined;
       redo();
     };
   }
@@ -1931,6 +2097,32 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, ui: Shapes
     ed.host.showProps();
     ed.host.redraw();
   };
+  /**
+   * Shift+click: every shape from the one picked first (the anchor, kept: another Shift+click measures from
+   * it again) to this row, in the list's order; a group's row between, all its shapes (folded too). Hidden or
+   * locked ones left out, as a group's pick leaves them. No anchor (nothing picked, or it's not in sight): a
+   * plain pick.
+   */
+  const pickRange = (to: HTMLElement): boolean => {
+    const anchor = ed.sel?.kind === "shape" ? ed.sel.i : -1;
+    const rows = [...el.querySelectorAll<HTMLElement>(".item[data-i], .item[data-g]")];
+    const from = rows.findIndex((r) => r.dataset.i !== undefined && Number(r.dataset.i) === anchor);
+    const end = rows.indexOf(to);
+    if (from < 0 || end < 0) {
+      return false;
+    }
+    const between = rows.slice(Math.min(from, end), Math.max(from, end) + 1);
+    const all = between.flatMap((r) => (r.dataset.g ? membersOf(data, r.dataset.g) : [Number(r.dataset.i)]));
+    const more = [...new Set(all)].filter((i) => i !== anchor && shapes[i] && !shapes[i].hidden && !shapes[i].locked);
+    ed.sel = { kind: "shape", i: anchor, ...(more.length ? { more } : {}) };
+    ed.notice = null;
+    if (ed.isBrush() || ed.tool === "cut") {
+      ed.setTool("edit");
+    }
+    ed.host.showProps();
+    ed.host.redraw();
+    return true;
+  };
   const pickAll = (id: string, add: boolean) => {
     pickGroup(ed, id, add);
     ed.notice = null;
@@ -1994,7 +2186,7 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, ui: Shapes
     const same = (other: ListItem | null) => !!other && ("group" in item ? "group" in other && other.group === item.group : "shape" in other && other.shape === item.shape);
     if ("group" in item) {
       const id = item.group;
-      row.onclick = (event) => pickAll(id, event.ctrlKey || event.metaKey || ed.multi);
+      row.onclick = (event) => (event.shiftKey && pickRange(row)) || pickAll(id, event.ctrlKey || event.metaKey || ed.multi);
       row.onkeydown = (event) => {
         if ((event.key === "Enter" || event.key === " ") && event.target === row) {
           event.preventDefault();
@@ -2012,7 +2204,7 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, ui: Shapes
       };
     } else {
       const i = item.shape;
-      row.onclick = (event) => pick(i, event.ctrlKey || event.metaKey || ed.multi);
+      row.onclick = (event) => (event.shiftKey && pickRange(row)) || pick(i, event.ctrlKey || event.metaKey || ed.multi);
       row.onkeydown = (event) => {
         if ((event.key === "Enter" || event.key === " ") && event.target === row) {
           event.preventDefault();

@@ -19,6 +19,11 @@ export type StandEdge = "auto" | "bottom" | "top" | "left" | "right";
 
 /** What a slab has under it in 3D (see Shape.under). */
 export type UnderLook = "mirror" | "keep";
+/**
+ * A slab's underside in 3D (its "Base"): the map's colours round it blended ("blend"), the map as on its top
+ * ("top"), or a pattern (the walls' own: "stone" is brick, "rubble" stone). None: as its sides.
+ */
+export type UndersideLook = "blend" | "top" | "stone" | "rubble" | "earth" | "wood";
 
 /** How a shape's walls look in 3D (the Vistazo's own looks). */
 export type WallLook = "blend" | "flat" | "stretch" | "fold" | "stone" | "rubble" | "earth" | "wood";
@@ -63,6 +68,8 @@ export type Shape = {
    * isn't drawn on the map).
    */
   under?: UnderLook;
+  /** A slab's underside's look (see UndersideLook); none: as its sides. */
+  underside?: UndersideLook;
   /** Its look kept under slabs over it: their fill (see `under`) isn't painted on its top or walls. */
   keepLook?: boolean;
   stand?: StandEdge;

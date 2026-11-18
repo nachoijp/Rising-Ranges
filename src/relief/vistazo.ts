@@ -270,6 +270,7 @@ export function reliefTerrain(
       frame: frameOf(layer.ring.map(toScene).map(([x, y]) => ({ x, y }))),
       si: layer.si,
       under: shape.under,
+      underside: shape.underside,
     }];
   });
   const unfilled = relief.data.shapes.flatMap((s) => {

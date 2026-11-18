@@ -1283,7 +1283,9 @@ export class VistazoView {
     }
     const picked = new Set(shapes);
     for (const child of this.terrainGroup.children) {
-      if (!child.userData.piece || !picked.has(child.userData.si)) {
+      // A piece's top; a slab's top and underside (see buildBridge).
+      const si = child.userData.piece ? child.userData.si : child.userData.slabOf;
+      if (si === undefined || !picked.has(si)) {
         continue;
       }
       const mesh = child as THREE.Mesh;
@@ -3363,6 +3365,8 @@ export class VistazoView {
     // The bases of those on it painted on it, not those under it (see based).
     const deck = new THREE.Mesh(top, this.pieceMaterial(bridge.top, true, undefined, "deck", true));
     deck.position.z = sloped ? 0 : bridge.top * k;
+    // Its shape's, for the editor's pick (see highlight): its top and underside veiled as a piece's top is.
+    deck.userData.slabOf = bridge.si;
     this.terrainGroup.add(deck);
     this.keepSurface(top, deck.position.z);
 
@@ -3376,17 +3380,27 @@ export class VistazoView {
     // (or those, with no map): one colour. Their underside its tint, no pattern.
     const mapped = !skin && (style === "stretch" || style === "fold") && this.texture !== null;
     const plain = !skin && (style === "flat" || style === "stretch" || style === "fold");
-    let cx = 0;
-    let cy = 0;
-    let n = 0;
-    for (const polygon of bridge.shape) {
-      for (const [x, y] of polygon[0]) {
-        cx += x;
-        cy += y;
-        n++;
+    // Its colour: the map's under it, on average (a grid of points inside it: not its middle's one pixel,
+    // which may be a gem drawn there); its middle's if none falls inside.
+    let rgb: [number, number, number] = STONE;
+    if (this.colors) {
+      const colors = this.colors;
+      const xs = bridge.shape.flatMap((polygon) => polygon[0].map((p) => p[0]));
+      const ys = bridge.shape.flatMap((polygon) => polygon[0].map((p) => p[1]));
+      const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+      const sum = [0, 0, 0];
+      let n = 0;
+      for (let j = 0; j < SLAB_SAMPLES; j++) {
+        for (let i = 0; i < SLAB_SAMPLES; i++) {
+          const [x, y] = [x0 + ((i + 0.5) / SLAB_SAMPLES) * (x1 - x0), y0 + ((j + 0.5) / SLAB_SAMPLES) * (y1 - y0)];
+          if (inShape(x, y, bridge.shape)) {
+            colors(...this.read(x, y)).forEach((v, c) => (sum[c] += v));
+            n++;
+          }
+        }
       }
+      rgb = n > 0 ? (sum.map((v) => v / n) as [number, number, number]) : colors(...this.read((x0 + x1) / 2, (y0 + y1) / 2));
     }
-    const rgb = this.colors ? this.colors(...this.read(cx / n, cy / n)) : STONE;
     const tint = (shade: number) => new THREE.Color(...(rgb.map((v) => (v / 255) * shade) as [number, number, number]));
     const tile = VIEW_CELL * 2;
 
@@ -3398,7 +3412,8 @@ export class VistazoView {
       underUv[i * 2] = underPosition.getX(i) / tile;
       underUv[i * 2 + 1] = underPosition.getY(i) / tile;
     }
-    if (skin) {
+    // (Only as its sides: a look of its own under it has its own.)
+    if (skin && !bridge.underside) {
       // The rectangle laid over the slab's box: across it along one side, up it along the other.
       const xs = bridge.shape.flatMap((polygon) => polygon[0].map((p) => p[0]));
       const ys = bridge.shape.flatMap((polygon) => polygon[0].map((p) => p[1]));
@@ -3410,19 +3425,29 @@ export class VistazoView {
         underUv[i * 2 + 1] = sv;
       }
     }
+    // Its own look under it (see UndersideLook), or as its sides: the map as on its top, in its shadow; the
+    // colours round it, blended; a pattern, tinted.
+    const look = bridge.underside;
+    const asTop = look === "top" && !!this.mapTexture;
+    if (asTop) {
+      underUv.set(this.uvs(underPosition.array, underPosition.count));
+    }
     under.setAttribute("uv", new THREE.BufferAttribute(underUv, 2));
+    const picture = look ? asTop : !!skin;
+    const pattern = look ? (look === "blend" || look === "top" ? null : look) : blend || plain || skin ? null : kind;
     const belly = new THREE.Mesh(
       under,
-      foggedToo(new THREE.MeshBasicMaterial({ map: skin ? this.mapTexture : blend || plain ? null : patternTexture(kind), color: skin ? new THREE.Color(0.6, 0.6, 0.6) : tint(0.6), side: THREE.DoubleSide }), this.fogUniforms)
+      foggedToo(new THREE.MeshBasicMaterial({ map: picture ? this.mapTexture : pattern ? patternTexture(pattern) : null, color: picture ? new THREE.Color(0.6, 0.6, 0.6) : tint(0.6), side: THREE.DoubleSide }), this.fogUniforms)
     );
     // The map's picture on it: read as the ground reads it (sharper where the camera is, straight: see detailed).
-    if (skin) {
+    if (picture) {
       detailed(belly.material as THREE.MeshBasicMaterial, this.detailUniforms);
     }
-    if (blend) {
+    if (look ? look === "blend" : blend) {
       grained(belly.material as THREE.MeshBasicMaterial);
     }
     belly.position.z = sloped ? -thick : bridge.bottom * k;
+    belly.userData.slabOf = bridge.si;
     this.terrainGroup.add(belly);
 
     // Its sides, round it and round its holes, from its underside up to its top, the pattern running along them.
@@ -5785,6 +5810,9 @@ type PropAnimation = {
 
 /** A wall tile's side (cells): the walls a brush stroke changes are built again by these (see reheight). */
 const WALL_TILE = 8;
+
+/** A slab's colour (see buildBridge): the map read at this many points a side of its box, those inside it averaged. */
+const SLAB_SAMPLES = 8;
 
 /** A cell's key (see VistazoView.vertexCells). */
 const cellKey = (i: number, j: number) => (i + 32768) * 65536 + (j + 32768);

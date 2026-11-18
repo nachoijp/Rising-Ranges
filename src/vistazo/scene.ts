@@ -15,7 +15,7 @@ import { onFloor } from "../tokenHeight/lift";
 import { getTokenRadius } from "../render/iconAnchor";
 import { anchorOf, cellToScene, sceneToCell } from "../relief/anchor";
 import type { Relief } from "../relief/relief";
-import type { Door, UnderLook } from "../relief/types";
+import type { Door, UnderLook, UndersideLook } from "../relief/types";
 import { doorwayTop, doorwaysOf, readAt, stackCut } from "../relief/doorCut";
 import { fogDoorOpen } from "../relief/trace/fogPlan";
 import { reliefTerrain } from "../relief/vistazo";
@@ -198,7 +198,7 @@ const SHAPES_APART = 100000;
  * and underside (grid units) as its middle has them; one that isn't flat (a ramp, inclined, stairs, painted) its top
  * at each scene point too (`surface`), its underside as far under it.
  */
-export type Bridge = { id: string; shape: MultiPolygon; top: number; bottom: number; surface?: (point: { x: number; y: number }) => number; walls?: TerrainWallStyle; skin?: TerrainSkin; frame: BridgeFrame; si?: number; under?: UnderLook };
+export type Bridge = { id: string; shape: MultiPolygon; top: number; bottom: number; surface?: (point: { x: number; y: number }) => number; walls?: TerrainWallStyle; skin?: TerrainSkin; frame: BridgeFrame; si?: number; under?: UnderLook; underside?: UndersideLook };
 
 /** A bridge's top at a scene point (its own height there, if it isn't flat). */
 export const bridgeTop = (bridge: Bridge, x: number, y: number) => (bridge.surface ? bridge.surface({ x, y }) : bridge.top);

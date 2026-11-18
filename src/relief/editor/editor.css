@@ -765,6 +765,10 @@
 .re-props .section .rows {
   margin-top: 4px;
 }
+/* Several shapes picked: their 3D look's title, not a fold (see comboProps). */
+.re-props .shead.static {
+  cursor: default;
+}
 .re-props .ops {
   display: grid;
   grid-template-columns: 1fr 1fr;
