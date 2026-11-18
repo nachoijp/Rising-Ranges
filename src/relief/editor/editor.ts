@@ -308,14 +308,16 @@ export class ReliefEditor {
     if (grab && grab.kind !== "move") {
       return null;
     }
-    // On a vertex or a height point (as a press would pick it): that, not a side.
-    const near = this.nearestAt(p, this.pickReach());
-    if (near.vi >= 0 || near.pi >= 0) {
-      return null;
-    }
     const used = this.takeable();
     const at = snap(this, p, false, used);
-    return at && "edge" in at ? at : null;
+    if (!at || !("edge" in at)) {
+      return null;
+    }
+    // On a vertex or a height point (as a press would pick it): that, not a side. Near a vertex, a finger's
+    // wide reach: a third of the side at most (a short side keeps its middle to add one on).
+    const [a, b] = [this.data.verts[at.edge[0]], this.data.verts[at.edge[1]]];
+    const near = this.nearestAt(p, Math.min(this.pickReach(), Math.hypot(a.x - b.x, a.y - b.y) / 3));
+    return near.vi >= 0 || near.pi >= 0 ? null : at;
   }
 
   /** The vertices that can be taken: the shapes' in focus (see focusShapes), or every shape's that isn't hidden or locked. */
@@ -1000,7 +1002,6 @@ export class ReliefEditor {
         this.host.showProps();
         this.host.redraw();
         this.drag = null;
-    this.dragArmed = null;
         this.dragArmed = null;
         return;
       }

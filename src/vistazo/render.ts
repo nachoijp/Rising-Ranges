@@ -769,7 +769,14 @@ export class VistazoView {
     return best < 0 ? null : this.reheightQueue.splice(best, 1)[0];
   }
 
+  /** Tops a slice changed (see reheightSteps): out of their batch together once it's over (see loosen: each rebuilds it). */
+  private looseSoon = new Set<THREE.Mesh>();
+
   private afterSlice() {
+    if (this.looseSoon.size) {
+      this.loosen([...this.looseSoon]);
+      this.looseSoon.clear();
+    }
     if (this.refined) {
       this.refined = false;
       this.highlight(this.picked.shapes);
@@ -787,6 +794,7 @@ export class VistazoView {
     const some = this.reheightRun !== null || this.reheightQueue.length > 0;
     this.reheightRun = null;
     this.reheightQueue = [];
+    this.looseSoon.clear();
     return some;
   }
 
@@ -853,7 +861,7 @@ export class VistazoView {
           }
           if (moved && over()) {
             position.needsUpdate = true;
-            this.loosen([mesh]);
+            this.looseSoon.add(mesh);
             moved = false;
             yield;
             // Built whole again meanwhile: nothing more of it (see endReheight).
@@ -865,7 +873,7 @@ export class VistazoView {
       }
       if (moved) {
         position.needsUpdate = true;
-        this.loosen([mesh]);
+        this.looseSoon.add(mesh);
       }
     }
     // The heights grid there too (what the pointer finds on the terrain: the 3D brush paints on it), a row at a time.
@@ -1037,11 +1045,11 @@ export class VistazoView {
     return fine;
   }
 
-  /** The relief editor open (see setEditing): what a brush's first dab needs readied after each build. */
+  /** The relief editor's brush in hand (see setEditing): what its first dab needs readied after each build. */
   private editing = false;
   private prepareTimer = 0;
 
-  /** The relief editor opened or closed: while it's open, a brush's first dab readied beforehand (see prepareBrush). */
+  /** The relief editor's brush taken in hand or put down (another tool, the editor closed): while it's in hand, its first dab readied beforehand (see prepareBrush). */
   setEditing(on: boolean) {
     this.editing = on;
     this.schedulePrepare();

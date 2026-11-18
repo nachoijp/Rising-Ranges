@@ -112,6 +112,8 @@ export type SessionOptions = {
    * `settle`: what was in hand only changed heights (a brush), see vistazo/settle.ts.
    */
   onRelief: (imageId: string, relief: Relief, lite: boolean, heights?: Box | null, moving?: Moving | null, settle?: boolean, dab?: Box | null) => void;
+  /** The brush taken in hand, or put down (another tool): what the 3D readies for its first dab (see VistazoView.setEditing). */
+  onBrushTool?: (inHand: boolean) => void;
   /** The scene's items and its dpi now (for its old terrain zones). */
   scene: () => { items: Item[]; dpi: number };
   /** Only the relief's doors changed: shown again, nothing else built. */
@@ -305,6 +307,15 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   // eslint-disable-next-line prefer-const
   let map!: MapView;
   let touchUi = false;
+  /** The brush in hand when last told (null: not yet), see onBrushTool. */
+  let brushInHand: boolean | null = null;
+  const tellBrush = () => {
+    const brush = editor.isBrush();
+    if (brush !== brushInHand) {
+      brushInHand = brush;
+      o.onBrushTool?.(brush);
+    }
+  };
   /** The hand in hand (touch layout only: see setHand), and the editor's tool when it was taken. */
   let hand = false;
   let handFrom: ToolId = "edit";
@@ -765,6 +776,8 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
         o.onRelief(image.id, editor.relief, busy() || editor.heightsOnly, editor.heightsOnly ? editor.takeDirty() : null, moving, false, editor.heightsOnly ? editor.takeDab() : null);
       },
       showProps: () => {
+        // (Shown again on every change of tool: the brush in hand told, when that changes.)
+        tellBrush();
         panel();
         map.redraw();
       },
@@ -1353,6 +1366,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   }
 
   panel();
+  tellBrush();
   o.onRelief(image.id, editor.relief, false);
 
   /** Where the 3D brush's stroke started in the steps to undo (see brush.cancel). */

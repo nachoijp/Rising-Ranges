@@ -2231,13 +2231,32 @@ async function start() {
     heightBox.addEventListener(type, (event) => event.stopPropagation());
   }
   stage.append(heightBox);
-  /** What showed last (written again only when it changed). */
+  /** What showed last (written again only when it changed), and what it was worked out from. */
   let padShown = "";
+  let padFrom: { key: string; scene: unknown; metadata: unknown } = { key: "", scene: null, metadata: null };
   /** The touch layout's height buttons shown (or not), and the height of what they'd move. */
   function syncHeightPad() {
     let text: string | null = null;
     let point = false;
-    if (coarse.matches && scene) {
+    // Every frame drawn: nothing worked out (the scene's settings read) while there's nothing to raise.
+    const something = coarse.matches && scene && ((activeTemplate && !moving) || freePoint || moving);
+    if (!something && padShown === "") {
+      return;
+    }
+    // Nor while what it's worked out from is as it was (an orbit with the free point down).
+    const active = activeTemplate && !moving ? templates.find((t) => t.id === activeTemplate) : undefined;
+    const key = JSON.stringify([
+      coarse.matches,
+      language,
+      active && [active.id, active.lift, active.rise, active.x, active.y, activePart],
+      freePoint && [freePoint.x, freePoint.y, freePoint.own],
+      moving && [moving.own, moving.position.x, moving.position.y],
+    ]);
+    if (key === padFrom.key && scene === padFrom.scene && sceneMetadata === padFrom.metadata) {
+      return;
+    }
+    padFrom = { key, scene, metadata: sceneMetadata };
+    if (something && scene) {
       const settings = globalSettingsFromMetadata(sceneMetadata);
       const bandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
       // As the Medición: above its own ground, or above the fixed one (see GlobalSettings.groundLevel).
@@ -3445,12 +3464,12 @@ async function start() {
     $("reMap").hidden = false;
     // Every piece with its surface while it's edited: a brush's heights move them where they are.
     reliefs.surfaced = true;
-    // A brush's first dab readied after each build meanwhile (see prepareBrush).
-    view.setEditing(true);
     // Opened from a map image's menu: that one (see createReliefMenu); otherwise the largest.
     const asked = new URLSearchParams(location.search).get("image");
     session = editor.startEditing({
       t,
+      // While the brush is in hand, its first dab readied after each build (see prepareBrush).
+      onBrushTool: (inHand) => view.setEditing(inHand),
       images,
       reliefs: reliefs.byImage,
       root: $("reMap"),

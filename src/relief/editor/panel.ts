@@ -213,6 +213,16 @@ export function installTips(root: HTMLElement): () => void {
   // shown a moment after it lifts. Not on the shapes' rows (held, they're dragged).
   let held: { timer: ReturnType<typeof setTimeout>; x: number; y: number } | null = null;
   let fade: ReturnType<typeof setTimeout> | undefined;
+  /** The button whose tip a held finger showed: the click its lift makes there isn't the button's (none elsewhere is touched). */
+  let tipped: HTMLElement | null = null;
+  const swallow = (event: MouseEvent) => {
+    if (tipped && tipped.contains(event.target as Node)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+    tipped = null;
+  };
+  window.addEventListener("click", swallow, true);
   const letGo = () => {
     if (held) {
       clearTimeout(held.timer);
@@ -222,6 +232,7 @@ export function installTips(root: HTMLElement): () => void {
   const touchDown = (event: PointerEvent) => {
     letGo();
     clearTimeout(fade);
+    tipped = null;
     const el = (event.target as HTMLElement).closest<HTMLElement>("[data-tip]");
     if (event.pointerType !== "touch" || !el || el.closest(".re-shapes .item")) {
       return;
@@ -232,13 +243,7 @@ export function installTips(root: HTMLElement): () => void {
       timer: setTimeout(() => {
         held = null;
         show(el);
-        // The click its lift makes: not the button's.
-        const swallow = (e: Event) => {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-        };
-        window.addEventListener("click", swallow, { capture: true, once: true });
-        setTimeout(() => window.removeEventListener("click", swallow, true), 800);
+        tipped = el;
       }, TIP_HOLD_MS),
     };
   };
@@ -267,6 +272,7 @@ export function installTips(root: HTMLElement): () => void {
   return () => {
     letGo();
     clearTimeout(fade);
+    window.removeEventListener("click", swallow, true);
     root.removeEventListener("pointerdown", touchDown);
     root.removeEventListener("pointermove", touchMove);
     root.removeEventListener("pointerup", touchUp);
@@ -1850,7 +1856,7 @@ function rowsOf(data: ReliefData, open: Set<string>): Row[] {
  * group or out of one. A group's eye and lock: all its shapes'.
  */
 /** What the shapes' list was last drawn with (see renderShapes): its markup and relief. */
-const listDrawn = new WeakMap<HTMLElement, { html: string; data: ReliefData }>();
+const listDrawn = new WeakMap<HTMLElement, { html: string; data: ReliefData; touch: boolean }>();
 
 export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, ui: ShapesList) {
   const data = ed.data;
@@ -1886,10 +1892,13 @@ export function renderShapes(el: HTMLElement, ed: ReliefEditor, t: T, ui: Shapes
   // drawn again (its 50-odd rows were rebuilt on every dab, most of what painting cost the page).
   const html = `<div class="lheadrow"><button type="button" class="lhead" aria-expanded="${!ui.folded.value}"><span class="chev">${icon("expand")}</span><span class="lt">${esc(t("relief.shapes"))}</span><span class="count">${shapes.length}</span></button><span class="lhelp" tabindex="0" role="note" ${tip(t("relief.shapes"), `${t("relief.layerRow")} — ${t("relief.groupRowShort")}`)}>${icon("info")}</span></div>
     <div class="lrows" ${ui.folded.value ? "hidden" : ""}>${rows}<div class="item ground" data-ground tabindex="0" role="button" ${tip(t("relief.ground"), t("relief.groundHint"))}>${icon("terrain")}<span class="n">${esc(t("relief.ground"))}</span><span class="h">${esc(t("relief.groundBrush"))}</span></div></div>`;
-  if (listDrawn.get(el)?.html === html && listDrawn.get(el)?.data === data && el.classList.contains("closed") === ui.folded.value) {
+  // (The touch layout too: its rows aren't draggable, see below.)
+  const touch = !!el.closest(".re-touch");
+  const drawn = listDrawn.get(el);
+  if (drawn?.html === html && drawn.data === data && drawn.touch === touch && el.classList.contains("closed") === ui.folded.value) {
     return;
   }
-  listDrawn.set(el, { html, data });
+  listDrawn.set(el, { html, data, touch });
   el.classList.toggle("closed", ui.folded.value);
   // Drawn again, it stays scrolled where it was; a shape newly picked (on the map) brought into sight.
   const scrolled = el.querySelector(".lrows")?.scrollTop ?? 0;
@@ -2110,6 +2119,11 @@ export function renameGroup(row: HTMLElement, ed: ReliefEditor, id: string) {
       ed.pushUndo();
       g.name = name;
       ed.changed();
+    }
+    // Its row drawn again, the field gone, whatever the name (unchanged, the list would be left as it is: see renderShapes).
+    const list = row.closest<HTMLElement>(".re-shapes");
+    if (list) {
+      listDrawn.delete(list);
     }
     ed.host.showProps();
   };
