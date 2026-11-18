@@ -1335,6 +1335,17 @@
 .re-map.re-touch .re-shapes .item {
   height: 44px;
 }
+/* Hidden, locked: always there for a finger (no pointer to show them over the row), faint till they're
+   set, then in the accent; a finger's width each. */
+.re-map.re-touch .re-shapes .tg {
+  width: 36px;
+  height: 40px;
+  opacity: 0.55;
+}
+.re-map.re-touch .re-shapes .tg.set {
+  opacity: 1;
+  color: var(--accent);
+}
 /* One row at the bottom: the tool in hand (its menu over it), its options, minimize. */
 .re-map.re-touch .re-tools {
   display: none;
@@ -1372,9 +1383,13 @@
   gap: 4px;
   padding: 0 6px;
 }
+/* As close together as on a desktop: its buttons are a finger's size already (more of them fit). */
 .re-map.re-touch .re-optbar .re-options {
   height: 54px;
-  gap: 8px;
+  gap: 4px;
+}
+.re-map.re-touch .re-optbar .seg {
+  gap: 2px;
 }
 /* The tool's button: its icon and a chevron for the menu it opens (up, from here). */
 .re-map .re-ui .ib.sm.re-toolbtn {

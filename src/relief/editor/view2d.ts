@@ -107,6 +107,8 @@ export class MapView {
   onDown: () => void = () => {};
   /** The hand (the touch layout's tool): one finger, or the left button, moves the map; nothing's edited. */
   hand = false;
+  /** The touch layout's: vertices and height points drawn bigger (seen round a finger). */
+  big = false;
   onUp: () => void = () => {};
   /** A right click (pressed and let go without moving): its menu, at (sx, sy) on the canvas. */
   onMenu: (sx: number, sy: number, at: { x: number; y: number }, touch: boolean) => void = () => {};
@@ -680,16 +682,17 @@ export class MapView {
       }
       const [x, y] = this.toScreen(v.x, v.y);
       ctx.fillStyle = pickedVerts.has(i) ? C.pick : onSlope.has(i) ? C.slope : C.vertex;
+      const r = this.big ? 7 : 4.5;
       ctx.beginPath();
-      ctx.moveTo(x, y - 4.5);
-      ctx.lineTo(x + 4.5, y);
-      ctx.lineTo(x, y + 4.5);
-      ctx.lineTo(x - 4.5, y);
+      ctx.moveTo(x, y - r);
+      ctx.lineTo(x + r, y);
+      ctx.lineTo(x, y + r);
+      ctx.lineTo(x - r, y);
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
       if (onSlope.has(i) || (pickedVerts.has(i) && pickedVerts.size === 1)) {
-        label(ctx, x + 12, y - 10, fmt(v.h), pickedVerts.has(i));
+        label(ctx, x + (this.big ? 14 : 12), y - (this.big ? 12 : 10), fmt(v.h), pickedVerts.has(i));
       }
     });
     // Height points: those of a shape shown (see pointOwners: not another's over or under it).
@@ -705,10 +708,10 @@ export class MapView {
       ctx.strokeStyle = C.white;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.arc(x, y, this.big ? 7 : 5, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-      label(ctx, x + 12, y - 10, fmt(q.h), selected);
+      label(ctx, x + (this.big ? 14 : 12), y - (this.big ? 12 : 10), fmt(q.h), selected);
     });
     // Where a click on a side adds a vertex: a hollow diamond, a plus in it.
     if (ed.ghost && ed.tool === "edit" && ed.settings.pickMode !== "shapes") {

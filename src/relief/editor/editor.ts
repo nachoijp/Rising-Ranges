@@ -66,6 +66,10 @@ export interface EditorHost {
   setCursor(cursor: string): void;
   /** How near (cells) the pointer snaps to a vertex or a side: some pixels on screen. */
   snapReach(): number;
+  /** How near (cells) a vertex or a height point is picked (snapReach without it): a finger's wider. */
+  pickReach?(): number;
+  /** How far (cells) a finger goes before what it pressed on (a vertex, a height point) moves: a tap only picks it. 0 with a mouse. */
+  dragSlop?(): number;
   /** A cell point on the screen (px), for the handles. */
   toScreen(x: number, y: number): [number, number];
   /** The editor's own settings changed (the brush's, the last soft edge): kept. */
@@ -144,6 +148,8 @@ export class ReliefEditor {
   shape: { start: { x: number; y: number }; end: { x: number; y: number }; path: Pt[]; origin?: { x: number; y: number } } | null = null;
   box: { start: { x: number; y: number }; end: { x: number; y: number }; add: boolean } | null = null;
   drag: { kind: "vertex" | "point"; i: number } | { group: number[]; points: number[]; from: { x: number; y: number }; start: Pt[]; pstart: Pt[] } | null = null;
+  /** Where the finger went down on what it drags, till it's gone further than dragSlop (then it moves). */
+  private dragArmed: { x: number; y: number } | null = null;
   /** Where what's dragged (a vertex, a height point, the first of a group) started, for how far it's gone (see dragMoved). */
   private dragStart: Pt | null = null;
   xf: Transform | null = null;
@@ -302,11 +308,12 @@ export class ReliefEditor {
     if (grab && grab.kind !== "move") {
       return null;
     }
-    const reach = this.host.snapReach();
-    const used = this.takeable();
-    if (this.data.verts.some((v, i) => used.has(i) && Math.hypot(v.x - p.x, v.y - p.y) < reach) || this.pointNear(p, reach) >= 0) {
+    // On a vertex or a height point (as a press would pick it): that, not a side.
+    const near = this.nearestAt(p, this.pickReach());
+    if (near.vi >= 0 || near.pi >= 0) {
       return null;
     }
+    const used = this.takeable();
     const at = snap(this, p, false, used);
     return at && "edge" in at ? at : null;
   }
@@ -317,11 +324,32 @@ export class ReliefEditor {
     return new Set(this.data.shapes.filter((s, si) => (focus ? focus.has(si) : free(s))).flatMap(vertsOf));
   }
 
-  /** The height point near a point that can be taken (inside an inclined shape in focus, if any is); -1: none. */
-  private pointNear(p: { x: number; y: number }, reach: number): number {
-    const focus = this.focusShapes();
-    const slopes = focus ? [...focus].map((si) => this.data.shapes[si]).filter((s) => s.kind === "slope").map((s) => this.relief.coordsOf(s)) : null;
-    return this.data.points.findIndex((q) => Math.hypot(q.x - p.x, q.y - p.y) < reach && (!slopes || slopes.some(([ring, holes]) => inShape(q.x, q.y, ring, holes))));
+  /**
+   * The vertex or height point nearest a point, within `reach`, among those that can be taken (one of
+   * them, -1 the other; both -1: none). The nearest, not the first found: a small inclined shape's
+   * corners are close together, more so for a finger's reach.
+   */
+  private pickReach(): number {
+    return this.host.pickReach?.() ?? this.host.snapReach();
+  }
+
+  private nearestAt(p: { x: number; y: number }, reach: number): { vi: number; pi: number } {
+    const used = this.takeable();
+    let [vi, pi, best] = [-1, -1, reach];
+    this.data.verts.forEach((v, i) => {
+      const d = Math.hypot(v.x - p.x, v.y - p.y);
+      if (used.has(i) && d < best) {
+        [vi, pi, best] = [i, -1, d];
+      }
+    });
+    const points = new Set(this.takeablePoints());
+    this.data.points.forEach((q, i) => {
+      const d = Math.hypot(q.x - p.x, q.y - p.y);
+      if (points.has(i) && d < best) {
+        [vi, pi, best] = [-1, i, d];
+      }
+    });
+    return { vi, pi };
   }
 
   /** The height points that can be taken: inside an inclined shape in focus (see focusShapes), or all with none. */
@@ -351,10 +379,7 @@ export class ReliefEditor {
     if (this.tool !== "edit" || this.settings.pickMode === "shapes" || !mods.shift || this.drawing) {
       return false;
     }
-    const reach = this.host.snapReach();
-    const used = this.takeable();
-    const vi = this.data.verts.findIndex((v, i) => used.has(i) && Math.hypot(v.x - p.x, v.y - p.y) < reach);
-    const pi = vi >= 0 ? -1 : this.pointNear(p, reach);
+    const { vi, pi } = this.nearestAt(p, this.pickReach());
     if (vi < 0 && pi < 0) {
       return false;
     }
@@ -620,10 +645,7 @@ export class ReliefEditor {
     // Edit: a vertex, a point, the shape under it; or, on nothing, a box to pick vertices with.
     // Picking shapes only: no vertex nor point, and on nothing, nothing picked.
     const shapesOnly = this.settings.pickMode === "shapes";
-    const reach = this.host.snapReach();
-    const used = this.takeable();
-    const vi = shapesOnly ? -1 : this.data.verts.findIndex((v, i) => used.has(i) && Math.hypot(v.x - p.x, v.y - p.y) < reach);
-    const pi = shapesOnly ? -1 : this.pointNear(p, reach);
+    const { vi, pi } = shapesOnly ? { vi: -1, pi: -1 } : this.nearestAt(p, this.pickReach());
     const sel = this.sel;
     if ((vi >= 0 || pi >= 0) && this.togglePointAt(p, mods)) {
       // Shift: added to what's picked, or taken out (nothing dragged).
@@ -640,12 +662,14 @@ export class ReliefEditor {
           pstart: points.map((i): Pt => [this.data.points[i].x, this.data.points[i].y]),
         };
         this.dragStart = this.drag.start[0] ?? this.drag.pstart[0];
+        this.dragArmed = p;
       } else {
         const picked = vi >= 0 ? ({ kind: "vertex", i: vi } as const) : ({ kind: "point", i: pi } as const);
         this.sel = picked;
         this.drag = picked;
         const at = vi >= 0 ? this.data.verts[vi] : this.data.points[pi];
         this.dragStart = [at.x, at.y];
+        this.dragArmed = p;
       }
     } else if (shapesOnly && this.shapeAt(p.x, p.y) < 0) {
       // On nothing: a box to pick the shapes wholly inside it with (Shift: more of them).
@@ -668,11 +692,8 @@ export class ReliefEditor {
     if (this.settings.pickMode === "shapes") {
       return false;
     }
-    const reach = this.host.snapReach();
     const data = this.data;
-    const used = this.takeable();
-    const vi = data.verts.findIndex((v, i) => used.has(i) && Math.hypot(v.x - p.x, v.y - p.y) < reach);
-    const pi = this.pointNear(p, reach);
+    const { vi, pi } = this.nearestAt(p, this.pickReach());
     if (mods.alt && vi < 0 && pi >= 0) {
       this.pushUndo();
       data.points.splice(pi, 1);
@@ -696,6 +717,7 @@ export class ReliefEditor {
       this.sel = picked;
       this.drag = picked;
       this.dragStart = [side.x, side.y];
+      this.dragArmed = p;
       this.ghost = null;
       this.changed();
       this.host.showProps();
@@ -853,7 +875,10 @@ export class ReliefEditor {
       }
     } else if (held && this.box) {
       this.box.end = p;
+    } else if (held && this.drag && this.dragArmed && Math.hypot(p.x - this.dragArmed.x, p.y - this.dragArmed.y) < (this.host.dragSlop?.() ?? 0)) {
+      // A finger on a vertex (or a height point) that hasn't gone far yet: picked, not moved.
     } else if (held && this.drag) {
+      this.dragArmed = null;
       const verts = this.data.verts;
       if ("group" in this.drag) {
         const drag = this.drag;
@@ -975,6 +1000,8 @@ export class ReliefEditor {
         this.host.showProps();
         this.host.redraw();
         this.drag = null;
+    this.dragArmed = null;
+        this.dragArmed = null;
         return;
       }
       const verts = this.data.verts;
@@ -988,6 +1015,7 @@ export class ReliefEditor {
       this.host.redraw();
     }
     this.drag = null;
+    this.dragArmed = null;
   }
 
   /** The picked door dragged: an end where the pointer is (Shift: by 15 degrees from the other), or all of it as far as it's gone. */
@@ -1397,7 +1425,7 @@ export class ReliefEditor {
     const onVertex =
       this.tool === "edit" &&
       this.settings.pickMode !== "shapes" &&
-      [...this.takeable()].some((i) => Math.hypot(this.data.verts[i].x - p.x, this.data.verts[i].y - p.y) < this.host.snapReach());
+      [...this.takeable()].some((i) => Math.hypot(this.data.verts[i].x - p.x, this.data.verts[i].y - p.y) < this.pickReach());
     if (handle && !onVertex) {
       return { kind: "scale", h, handle };
     }

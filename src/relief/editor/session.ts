@@ -299,6 +299,9 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     <div class="re-toast" data-k="toast" role="status" hidden></div>`;
   root.append(pieces);
   /** The touch layout (one view at a time: see split.ts), as onSingle last said. */
+  /** The 2D map (made below; the touch layout's switch may come first: see installSplit, so it's checked there). */
+  // eslint-disable-next-line prefer-const
+  let map!: MapView;
   let touchUi = false;
   /** The hand in hand (touch layout only: see setHand), and the editor's tool when it was taken. */
   let hand = false;
@@ -453,6 +456,10 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     ? installSplit(root.parentElement, t, (shown) => o.onStage?.(shown), (single) => {
         touchUi = single;
         root.classList.toggle("re-touch", single);
+        if (map as MapView | undefined) {
+          map.big = single;
+          map.redraw();
+        }
         // The hand's only the touch layout's.
         if (!single && hand) {
           setHand(false);
@@ -496,6 +503,15 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   };
   $("shapesBtn").onclick = () => setShapesOpen(!pieces.classList.contains("re-shapes-open"));
 
+  /** Vertices or height points picked, in the touch layout: their bin at the row's other end from its ✕ (they've no ⋯). */
+  const binApart = () => {
+    const head = $("props").querySelector<HTMLElement>(".head");
+    const bin = head?.querySelector('[data-k="del"]');
+    if (head && bin && touchUi) {
+      head.prepend(bin);
+    }
+  };
+
   /** The shape's menu (what a right click opens) from a ⋯ in its panel's title: the touch layout's (a finger held picks several). */
   const shapeMoreButton = () => {
     const sel = editor.sel;
@@ -503,8 +519,9 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     if (!head || (sel?.kind !== "shape" && sel?.kind !== "door") || !touchUi) {
       return;
     }
-    const before = head.querySelector('[data-k="del"]') ?? head.querySelector('[data-k="deselect"]');
-    before?.insertAdjacentHTML("beforebegin", `<button type="button" class="ib sm" data-k="shapeMore" aria-haspopup="menu" aria-label="${esc(t("relief.shapeMore"))}">${icon("more")}</button>`);
+    // Its bin out of the row, beside the ✕ it was (a slip of the finger, the shape gone): Borrar's in the ⋯.
+    head.querySelector('[data-k="del"]')?.remove();
+    head.querySelector('[data-k="deselect"]')?.insertAdjacentHTML("beforebegin", `<button type="button" class="ib sm" data-k="shapeMore" aria-haspopup="menu" aria-label="${esc(t("relief.shapeMore"))}">${icon("more")}</button>`);
     const button = head.querySelector<HTMLElement>('[data-k="shapeMore"]');
     if (!button) {
       return;
@@ -526,6 +543,8 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
                   editor.host.redraw();
                 },
               },
+              "-",
+              { icon: "delete", label: t("relief.delete"), key: "Supr", run: () => editor.remove() },
             ]);
       // Over the panel (it's at the bottom), its right end at the button's.
       menu.style.left = `${Math.max(4, Math.min(area.width - menu.offsetWidth - 4, r.right - area.left - menu.offsetWidth))}px`;
@@ -692,6 +711,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       pieces.classList.toggle("re-picking", editor.skinPick !== null || editor.doorPick !== null);
       time("editor.panel.props", () => renderProps($("props"), editor, t, o.unit, panelFolds));
       shapeMoreButton();
+      binApart();
       signButtons();
       time("editor.panel.shapes", () => renderShapes($("shapes"), editor, t, listUi()));
       history();
@@ -728,8 +748,6 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   };
   /** What the pointer pressed has changed, till it's let go: nothing, only heights (a brush), more. */
   let gesture: "none" | "heights" | "more" = "none";
-  // eslint-disable-next-line prefer-const
-  let map: MapView;
   const editor: ReliefEditor = new ReliefEditor(
     data,
     {
@@ -752,6 +770,10 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       setCursor: (cursor) => (o.map.style.cursor = cursor),
       // Some pixels on screen; more for a finger (the touch layout).
       snapReach: () => (touchUi ? 20 : 10) / map.scale,
+      // A vertex or a height point picked from further for a finger (a 64 px target), and a tap on one
+      // only picks it: it moves once the finger has gone 8 px.
+      pickReach: () => (touchUi ? 32 : 10) / map.scale,
+      dragSlop: () => (touchUi ? 8 : 0) / map.scale,
       toScreen: (x, y) => map.toScreen(x, y),
       saveSettings: () => keepJson(SETTINGS_KEY, editor.settings),
       doorsChanged: (terrain) => {
@@ -776,6 +798,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   prunePoints(editor);
   const texts = () => ({ rampNoArrow: t("relief.label.rampNoArrow"), inclined: t("relief.label.inclined"), relative: t("relief.label.relative") });
   map = new MapView(o.map, editor, texts());
+  map.big = touchUi;
   // What the keys do in what's being done, on the map while it's being done.
   const chip = $("chip");
   const drawMap = map.redraw.bind(map);
