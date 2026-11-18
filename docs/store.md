@@ -35,7 +35,8 @@ and optional persistent elevation markers.
   slopes, bridges) and tokens standing on it are measured from up there.
 - **3D Glance** — the scene as a small diorama: relief, tokens at their
   elevation, range rings, distance lines and spell templates in 3D, with the
-  relief editor for the GM.
+  relief editor for the GM. By mouse or by finger, on a phone or tablet too;
+  a token's elevation is set from its menu right there.
 - **Three built-in presets** — Dagger, Steel (Draw Steel's distances,
   measured square by square), and Dragons — or build your own set of ranges
   from scratch.
