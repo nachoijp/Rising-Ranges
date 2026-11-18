@@ -15,6 +15,7 @@ The 3D Glance shows the scene as a small diorama: the map's terrain raised to it
 - [Doors](#doors)
 - [Turning fog into relief](#turning-fog-into-relief)
 - [Keyboard shortcuts](#keyboard-shortcuts)
+- [On a phone or tablet](#on-a-phone-or-tablet)
 
 ## Opening it
 
@@ -45,9 +46,12 @@ The **camera** button beside it opens a list of camera moves — a full orbit ro
 | Drag a token | move it (Z / X change its height while dragging) |
 | Click empty ground | measure from there (Z / X raise and lower the point) |
 | Click a door's button | open or shut it (see [Doors](#doors)) |
+| Right-click a token or prop | its menu: attach, lock, hide, duplicate, **Elevation**, delete |
 | Esc | remove the point, or close |
 
 The **?** in the corner lists these too.
+
+**Elevation** in a token's menu is the map's own Elevation menu — its elevation, footprint, height when sunk and base in the Glance — opened beside it as a submenu (rest the pointer on it, or click). The token gets selected, as the menu works on what's selected. The rest of Owlbear's menu (and what other extensions add to it) can't be opened from the Glance: use it on the map.
 
 A token you drag, or a point you measure from, shows its Measurement on everyone's map too (its rings, the Readings and its height), as a Measurement on the map does; a hidden token's doesn't. Owlbear keeps it there for 15 seconds at most; a point moved or raised after that shows again.
 
@@ -195,7 +199,7 @@ Its panel:
 
 ![A door open in the Glance, with its button](screenshots/glance/door-button.png)
 
-In the Glance, a button over each linked door opens or shuts it, shown as you get near it (and with the keyboard, Tab). The GM can always use them; players only where the fog extension lets them (Owlbear's fog permission, or Smoke & Spectre's player doors). In **View as a player**, a door hidden by the fog on both sides isn't shown, and a shut one with fog on one side shows only from the clear side.
+In the Glance, a button over each linked door opens or shuts it, shown as you get near it (on a phone, tap near it; and with the keyboard, Tab). The GM can always use them; players only where the fog extension lets them (Owlbear's fog permission, or Smoke & Spectre's player doors). In **View as a player**, a door hidden by the fog on both sides isn't shown, and a shut one with fog on one side shows only from the clear side.
 
 ## Turning fog into relief
 
@@ -227,3 +231,37 @@ What's closed in and dark on the picture (rock, void) is made solid. It can also
 | Esc | let go |
 
 Each tool's own keys are in its tooltip and in the **?** at the top.
+
+## On a phone or tablet
+
+The Glance and the relief editor work by finger too. On a phone, a thinner frame leaves more room for the view.
+
+**In the Glance:**
+
+| Finger | To |
+| --- | --- |
+| One finger | orbit (with the relief brush in hand: paint) |
+| Two fingers | zoom and pan |
+| Three fingers | turn the camera, with the brush too |
+| Tap a token | select it |
+| Hold a token | its menu (as a right click) |
+| Tap near a door | show its button, till you tap elsewhere |
+| Tap the **?** or an **i** | open it; tap again to close |
+
+Raising and lowering has no keys on a phone, so buttons stand in for them: while there's something to raise — the template you last placed or grabbed, the point you measure from, or a token you're dragging — up, back to the ground and down buttons show on the left, its height under them (named as the Measurement names it). Drag a token with one finger and tap them with another. With the point, an **X** under them removes it.
+
+**In the relief editor**, on a small screen (or with **Touch mode** under **⋮**) one view shows at a time, picked with **2D / 3D** at the top left, and the tool and its options sit in one bar at the bottom (the tool's button opens its menu; the chevron folds the bar away). On the 3D, the bars stay: paint on it with the brush, or pick the **Hand** to turn it.
+
+| Finger | To |
+| --- | --- |
+| Two fingers | zoom and move the map |
+| Three fingers (in 3D) | turn the camera |
+| **Hand** (tools menu) | one finger moves the map |
+| A second finger right away | takes back the stroke just started, and moves the map instead |
+| Hold a shape | pick several (tap others to add or take them out) |
+| Hold a corner or height point | add it to those picked, or take it out |
+| Double tap inside an inclined shape | add a height point |
+| Hold a button | its name |
+
+What keys and right clicks do on a computer has a button: the pen's **Close**, back and cancel; **Square** and **Circle** for the rectangle and ellipse; a shape's menu (duplicate, group, delete…) is the **⋯** at the bottom of its panel; − / + beside a height (and ± to make it negative). The **?** at the top lists the gestures.
+
