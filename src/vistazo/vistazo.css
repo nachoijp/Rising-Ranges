@@ -1248,6 +1248,25 @@ input[type="checkbox"]:focus-visible {
 .dd-item.danger {
   color: #e8665a;
 }
+/* An entry with a submenu beside it (the token's Elevation): its chevron at the end; open, the accent's tint. */
+.dd-item.dd-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.dd-chev {
+  display: grid;
+  place-items: center;
+  opacity: 0.7;
+}
+.dd-chev svg.ri {
+  width: 18px;
+  height: 18px;
+}
+.dd-item.dd-sub.open {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
 /* Attaching an item from its menu: what to click, over the stage. */
 .pick-hint {
   position: absolute;

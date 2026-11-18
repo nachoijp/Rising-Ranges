@@ -33,7 +33,7 @@ import { templateReaches, type Template, type TemplateLook, type TemplateShape }
 import { isTemplateItem, setTemplateItem, templateItem, templateOf } from "./templateItems";
 import { LIVE_DRAG_CHANNEL, type LiveDrag } from "./live";
 import { SYNC_CHANNEL, SYNC_HEARTBEAT_MS, SYNC_INTERVAL_MS, SYNC_TIMEOUT_MS, type SyncMessage } from "./sync";
-import { stepHeight } from "../engine/heights";
+import { heightStepOf, stepHeight } from "../engine/heights";
 import { globalSettingsFromMetadata, groundHotkey, letterToCode } from "../settings/globalSettings";
 import { setTokenHeightMarker } from "../tokenHeight/markers";
 import { bodyCenterHeight, DEFAULT_TOLERANCE, excessRadius } from "../engine/distance";
@@ -67,7 +67,8 @@ import { dragSender, othersWatching } from "./remoteObr";
 import { MirrorOut, type Measure } from "./mirrorOut";
 import { heightLabelText } from "../render/computeLectura";
 import { resolveDisplay, showsDistance } from "../settings/display";
-import { fixedGround } from "../settings/globalSettings";
+import { fixedGround, liftsTokens } from "../settings/globalSettings";
+import { elevationPage, footprintPage } from "../background/createTokenHeightMenu";
 import { DragPath } from "../util/dragPath";
 import { saveDraggedToken } from "../util/saveDrag";
 import "./vistazo.css";
@@ -103,6 +104,10 @@ const FULL = new URLSearchParams(location.search).has("full") || TAB;
 /** The controls' help, one line each (the ? at the stage's corner). */
 /** A second finger this soon (ms) after the first one's brush stroke began: the stroke taken back, a pinch instead (as the 2D map's). */
 const SECOND_FINGER_MS = 200;
+/** The Elevation window's width (px), about Owlbear's menus' (its page fills it). */
+const ELEVATION_WIDTH = 300;
+/** A mouse resting this long (ms) on a menu entry with a submenu opens it. */
+const SUBMENU_HOVER_MS = 200;
 /** A finger held this long (ms) on a token, within HOLD_SLOP px: its menu (as a right click). As the relief editor's hold. */
 const HOLD_MS = 550;
 const HOLD_SLOP = 8;
@@ -1665,7 +1670,70 @@ async function start() {
   const closeItemMenu = () => {
     itemMenu?.remove();
     itemMenu = null;
+    // Its submenu with it (see openElevation).
+    closeElevation();
   };
+  /**
+   * A token's Elevation entry from the 2D map's menu (its height, footprint and base), its very page in a
+   * window of Owlbear's beside the click: it works on what's picked, so the token's picked first.
+   */
+  const ELEVATION_POPOVER_ID = getPluginId("popover/vistazoElevation");
+  let elevationOpen = false;
+  const openElevation = async (id: string, from: HTMLElement, altitude: boolean) => {
+    const settings = globalSettingsFromMetadata(sceneMetadata);
+    const tall = liftsTokens(settings, gridType) && (settings.isoSunkHead ?? true);
+    // The base too: whoever's here can open the Vistazo. In the extension's glass (see tokenHeight.css).
+    const page = altitude ? elevationPage(heightStepOf(bandSetFromMetadata(sceneMetadata)), tall, true) : footprintPage(tall, true);
+    elevationFor = id;
+    await OBR.player.select([id]);
+    // As a submenu: beside its entry (its right edge, or its menu's left one if there's no room), its top
+    // the entry's; on Owlbear's page, the panel's corner and where it is in it (full screen: the window's).
+    const corner = FULL ? { left: 0, top: 0 } : readPanelPosition();
+    const r = from.getBoundingClientRect();
+    const box = from.closest(".dd-menu")?.getBoundingClientRect() ?? r;
+    const [width, height] = await Promise.all([OBR.viewport.getWidth(), OBR.viewport.getHeight()]).catch(() => [window.innerWidth, window.innerHeight]);
+    let left = corner.left + box.right + 2;
+    if (left + ELEVATION_WIDTH > width - 4) {
+      left = corner.left + box.left - ELEVATION_WIDTH - 2;
+    }
+    const top = Math.max(4, Math.min(height - page.height - 4, corner.top + r.top - 6));
+    from.classList.add("open");
+    elevationOpen = true;
+    await OBR.popover.open({
+      id: ELEVATION_POPOVER_ID,
+      url: `${page.url}&glass`,
+      width: ELEVATION_WIDTH,
+      height: page.height,
+      anchorReference: "POSITION",
+      anchorPosition: { left: Math.round(Math.max(4, left)), top: Math.round(top) },
+      anchorOrigin: { horizontal: "LEFT", vertical: "TOP" },
+      transformOrigin: { horizontal: "LEFT", vertical: "TOP" },
+      hidePaper: true,
+      // No layer of Owlbear's over the screen to close it (a right click there got the browser's menu,
+      // and a press on the Vistazo never reached it): closed by the Vistazo, or the selection changing.
+      disableClickAway: true,
+    });
+  };
+  /** The token whose Elevation is open: picked something else (or nothing, on the map), it's closed. */
+  let elevationFor: string | null = null;
+  OBR.player.onChange((player) => {
+    const picked = player.selection ?? [];
+    if (elevationOpen && elevationFor && !(picked.length === 1 && picked[0] === elevationFor)) {
+      closeItemMenu();
+    }
+  });
+  /** Closed with its menu, by a press back in the Vistazo (Owlbear's click away doesn't see one in here), or Esc. */
+  const closeElevation = () => {
+    document.querySelector(".dd-sub.open")?.classList.remove("open");
+    elevationFor = null;
+    if (elevationOpen) {
+      elevationOpen = false;
+      void OBR.popover.close(ELEVATION_POPOVER_ID).catch(() => {});
+    }
+  };
+  // (Not a press on its own entry: that leaves it open.)
+  document.addEventListener("pointerdown", (event) => !(event.target as Element | null)?.closest?.(".dd-sub.open") && closeElevation(), true);
+  document.addEventListener("keydown", (event) => event.key === "Escape" && closeElevation(), true);
   const openItemMenu = (id: string, x: number, y: number) => {
     closeItemMenu();
     const item = (scene?.tokens.find((tk) => tk.id === id) ?? scene?.props.find((p) => p.id === id))?.item;
@@ -1675,16 +1743,41 @@ async function start() {
     const menu = document.createElement("div");
     menu.className = "dd-menu";
     menu.setAttribute("role", "menu");
-    const entry = (key: TranslationKey, run: () => Promise<unknown> | void, danger = false) => {
+    /** An entry; `sub`: it opens a submenu beside it (the menu stays), run with its own element. */
+    const entry = (key: TranslationKey, run: (el: HTMLElement) => Promise<unknown> | void, danger = false, sub = false) => {
       const el = document.createElement("div");
-      el.className = danger ? "dd-item danger" : "dd-item";
+      el.className = (danger ? "dd-item danger" : "dd-item") + (sub ? " dd-sub" : "");
       el.setAttribute("role", "menuitem");
       el.tabIndex = -1;
       el.textContent = t(key);
-      el.onpointerenter = () => el.focus({ preventScroll: true });
+      if (sub) {
+        el.setAttribute("aria-haspopup", "true");
+        el.insertAdjacentHTML("beforeend", `<span class="dd-chev" aria-hidden="true">${icon("expand", 270)}</span>`);
+      }
+      const go = () => void Promise.resolve(run(el)).catch((error) => console.error("Rising Ranges: 3D Glance couldn't change the item", error));
+      // A mouse resting on a submenu's entry opens it, as Owlbear's menus do; on another, it's closed.
+      let rest = 0;
+      el.onpointerenter = (event) => {
+        el.focus({ preventScroll: true });
+        if (event.pointerType !== "mouse") {
+          return;
+        }
+        if (!sub) {
+          closeElevation();
+        } else if (!el.classList.contains("open")) {
+          rest = window.setTimeout(go, SUBMENU_HOVER_MS);
+        }
+      };
+      el.onpointerleave = () => clearTimeout(rest);
       el.onclick = () => {
-        closeItemMenu();
-        void Promise.resolve(run()).catch((error) => console.error("Rising Ranges: 3D Glance couldn't change the item", error));
+        clearTimeout(rest);
+        if (!sub) {
+          closeItemMenu();
+        } else if (el.classList.contains("open")) {
+          // Open already (the mouse rested on it): left so.
+          return;
+        }
+        go();
       };
       el.onkeydown = (e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -1721,6 +1814,13 @@ async function start() {
           await OBR.player.select([copy]);
         }
       });
+    }
+    // Before Borrar: the token's Elevation (or Footprint) entry, the 2D menu's own page (not in a tab of its own: its
+    // window would open in Owlbear's, not here).
+    if (may(item, "UPDATE") && !TAB) {
+      const settings = globalSettingsFromMetadata(sceneMetadata);
+      const altitude = (settings.enableAltitude ?? true) && !!settings.showAltitudeMenu;
+      entry(altitude ? "toolbar.altura" : "footprint.label", (el) => openElevation(id, el, altitude), false, true);
     }
     if (may(item, "DELETE")) {
       entry("vistazo.delete", () => itemActions.remove(id), true);

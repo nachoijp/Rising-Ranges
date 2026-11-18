@@ -52,11 +52,16 @@ export function removeTokenMenu(id: string) {
  * same images as that one.
  */
 export function createTokenFootprintMenu(language: Language, tall: boolean, base: BaseShown) {
-  createWithBase(getPluginId("menu/tokenFootprint"), footprintIcon, translate(language, "footprint.label"), base, (withBase) => ({
+  createWithBase(getPluginId("menu/tokenFootprint"), footprintIcon, translate(language, "footprint.label"), base, (withBase) => footprintPage(tall, withBase));
+}
+
+/** The footprint entry's page (see createTokenFootprintMenu); the Vistazo's token menu opens it too. */
+export function footprintPage(tall: boolean, withBase: boolean) {
+  return {
     url: `/token-height.html?view=footprint${tallParam(tall)}${baseParam(withBase)}`,
     // The 8px padding around its sections, without the divider above the first.
     height: 16 + footprintSectionHeight(tall, withBase) - 17,
-  }));
+  };
 }
 
 /**
@@ -71,12 +76,17 @@ export function createTokenFootprintMenu(language: Language, tall: boolean, base
  * got into the old terrain menu that way).
  */
 export function createTokenHeightMenu(language: Language, heightStep: HeightStep, tall: boolean, base: BaseShown) {
-  createWithBase(getPluginId("menu/tokenHeight"), heightIcon, translate(language, "toolbar.altura"), base, (withBase) => ({
+  createWithBase(getPluginId("menu/tokenHeight"), heightIcon, translate(language, "toolbar.altura"), base, (withBase) => elevationPage(heightStep, tall, withBase));
+}
+
+/** The Elevation entry's page (see createTokenHeightMenu); the Vistazo's token menu opens it too. */
+export function elevationPage(heightStep: HeightStep, tall: boolean, withBase: boolean) {
+  return {
     url: `/token-height.html?view=elevation${tallParam(tall)}${baseParam(withBase)}`,
     // Bandas: the table's 150 px (see ElevationPanel) plus the 8px padding around it.
     // Cells: one 36px row plus the same padding.
     height: (heightStep === "unit" ? 52 : 166) + SECTION_TITLE_HEIGHT + footprintSectionHeight(tall, withBase),
-  }));
+  };
 }
 
 /** Each section's title (.section-title). */
