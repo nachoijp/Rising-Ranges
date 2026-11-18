@@ -2943,6 +2943,8 @@ async function start() {
    * since: those that overlap taken as one): moved where they are (see VistazoView.reheight).
    */
   let heightsOnly: Region[] | null = null;
+  /** The last dab's own box (scene px): its 3D done at once, the rest of heightsOnly a little at a time (see VistazoView.reheight). */
+  let lastDab: Region | null = null;
   /**
    * How long (ms) after a brush's dab the 3D follows it (see refreshNow): 50, or twice what it took the last
    * time if more (a slow computer). The page is the 2D map's twice as long as the 3D's then: the brush keeps
@@ -2975,9 +2977,11 @@ async function start() {
       // A brush's dab: the heights moved where they are, nothing built again (or all of it, if that can't be).
       if (heightsOnly && scene && builtWith === `${reliefs.key}${reliefs.surfaced}`) {
         const regions = heightsOnly;
+        const focus = lastDab ?? undefined;
         heightsOnly = null;
+        lastDab = null;
         const reheightFrom = performance.now();
-        const reheighted = time("vistazo.reheight", () => view.reheight(scene!, regions));
+        const reheighted = time("vistazo.reheight", () => view.reheight(scene!, regions, focus));
         reheightAfter = Math.min(1500, Math.max(50, 2 * (performance.now() - reheightFrom)));
         if (reheighted) {
           syncTemplates();
@@ -3202,7 +3206,7 @@ async function start() {
         reliefs.byImage.set(image, relief);
         showDoors();
       },
-      onRelief: (image, relief, lite, heights, moving, settle) => {
+      onRelief: (image, relief, lite, heights, moving, settle, dab) => {
         reliefs.byImage.set(image, relief);
         // A brush let go, where it can be drawn so: the scene kept, built again from it (see settles).
         if (settle && !wholeAlways && !lite && scene && brushed && !dragging && builtWith === `${reliefs.key}${reliefs.surfaced}` && settles(scene, brushed)) {
@@ -3235,12 +3239,20 @@ async function start() {
         if (lite && heights && map) {
           // The same pieces (their surfaces read the relief as it is): only their heights moved, there.
           const anchor = anchorOf(map);
-          const corners = [
-            [heights.x0, heights.y0],
-            [heights.x1, heights.y0],
-            [heights.x1, heights.y1],
-            [heights.x0, heights.y1],
-          ].map(([x, y]) => cellToScene(anchor, dpi, x, y));
+          const cornersOf = (b: { x0: number; y0: number; x1: number; y1: number }) =>
+            [
+              [b.x0, b.y0],
+              [b.x1, b.y0],
+              [b.x1, b.y1],
+              [b.x0, b.y1],
+            ].map(([x, y]) => cellToScene(anchor, dpi, x, y));
+          const corners = cornersOf(heights);
+          const boxOf = (points: { x: number; y: number }[]): Region => ({
+            x0: Math.min(...points.map((p) => p.x)),
+            y0: Math.min(...points.map((p) => p.y)),
+            x1: Math.max(...points.map((p) => p.x)),
+            y1: Math.max(...points.map((p) => p.y)),
+          });
           const grow = (before: Region | null): Region => ({
             x0: Math.min(before?.x0 ?? Infinity, ...corners.map((p) => p.x)),
             y0: Math.min(before?.y0 ?? Infinity, ...corners.map((p) => p.y)),
@@ -3249,6 +3261,8 @@ async function start() {
           });
           // This dab's box, with those it overlaps (they, and it, then one box round them), the others as they are.
           let box = grow(null);
+          // The brush's own circle (not what else moved with it) the 3D does first.
+          lastDab = dab ? boxOf(cornersOf(dab)) : box;
           const apart: Region[] = [];
           for (const other of heightsOnly ?? []) {
             if (other.x0 <= box.x1 && other.x1 >= box.x0 && other.y0 <= box.y1 && other.y1 >= box.y0) {

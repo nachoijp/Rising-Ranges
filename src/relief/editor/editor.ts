@@ -168,6 +168,8 @@ export class ReliefEditor {
   heightsOnly = false;
   /** Where the brush's dabs changed the heights since it was last asked (see takeDirty), cells. */
   private dirty: Box | null = null;
+  /** The last dab's own circle's box (cells), till asked (see takeDab): its 3D done first. */
+  private dab: Box | null = null;
   /** Ctrl held while brushing: raise and lower swapped. */
   flip = false;
   cursor: { x: number; y: number; snap?: Snap | null } | null = null;
@@ -205,6 +207,13 @@ export class ReliefEditor {
   /** Only the doors changed: kept and shown; the terrain built again unless only their leaves' looks did (`terrain` false). */
   doorsChanged(terrain = true) {
     this.host.doorsChanged(terrain);
+  }
+
+  /** The last dab's own box (cells: its radius round it, see paint), and none from then. */
+  takeDab(): Box | null {
+    const box = this.dab;
+    this.dab = null;
+    return box;
   }
 
   /**
@@ -1095,6 +1104,7 @@ export class ReliefEditor {
     time("editor.brush", () => paintBrush(this.relief, p, { kind: this.brushKind, radius, strength, level, groundOnly }));
     // A flattening brush reaches a cell past its edge (see brush.ts); one more for the surfaces between points.
     const reach = radius + 2;
+    this.dab = { x0: p.x - radius, y0: p.y - radius, x1: p.x + radius, y1: p.y + radius };
     const d = this.dirty;
     this.dirty = {
       x0: Math.min(d?.x0 ?? Infinity, p.x - reach),

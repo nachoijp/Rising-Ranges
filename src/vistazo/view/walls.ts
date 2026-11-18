@@ -14,12 +14,24 @@ export type Region = { x0: number; y0: number; x1: number; y1: number };
  * cut in half cells, not quarters (a drag's).
  */
 export function computeWalls(scene: VistazoScene, base: number, region?: Region | Region[], done?: Set<string>, coarse = false): Wall[] {
+  const walls: Wall[] = [];
+  for (const [seg, theirs] of wallsByEdge(scene, base, region, coarse)) {
+    done?.add(seg);
+    walls.push(...theirs);
+  }
+  return walls;
+}
+
+/**
+ * computeWalls an edge at a time: each edge that reaches into `region` (all, without one), with its walls
+ * (maybe none). A brush's 3D works them out a few at a time (see VistazoView.reheightSteps).
+ */
+export function* wallsByEdge(scene: VistazoScene, base: number, region?: Region | Region[], coarse = false): Generator<[string, Wall[]], void, void> {
   const regions = region === undefined ? null : Array.isArray(region) ? region : [region];
   const probe = scene.dpi * 0.03;
   const l = Math.hypot(...LIGHT);
   // A surface that isn't flat about: its heights change along an edge.
   const sloped = scene.pieces.some((piece) => piece.surface);
-  const walls: Wall[] = [];
   const reach = probe * 2;
   for (const [pi, piece] of scene.pieces.entries()) {
     for (const [gi, polygon] of piece.shape.entries()) {
@@ -45,11 +57,12 @@ export function computeWalls(scene: VistazoScene, base: number, region?: Region 
             continue;
           }
           const seg = `${pi}:${gi}:${ri}:${i}`;
-          done?.add(seg);
+          const walls: Wall[] = [];
           const dx = bx - ax;
           const dy = by - ay;
           const len = Math.hypot(dx, dy);
           if (len < probe) {
+            yield [seg, walls];
             continue;
           }
           const nx = (flip ? -dy : dy) / len;
@@ -100,9 +113,9 @@ export function computeWalls(scene: VistazoScene, base: number, region?: Region 
               along: start + (len * j) / steps,
             });
           }
+          yield [seg, walls];
         }
       }
     }
   }
-  return walls;
 }

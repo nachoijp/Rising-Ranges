@@ -109,7 +109,7 @@ export type SessionOptions = {
    * The relief changed (`lite`: while something's in hand; `heights`: only its heights, there). Let go,
    * `settle`: what was in hand only changed heights (a brush), see vistazo/settle.ts.
    */
-  onRelief: (imageId: string, relief: Relief, lite: boolean, heights?: Box | null, moving?: Moving | null, settle?: boolean) => void;
+  onRelief: (imageId: string, relief: Relief, lite: boolean, heights?: Box | null, moving?: Moving | null, settle?: boolean, dab?: Box | null) => void;
   /** The scene's items and its dpi now (for its old terrain zones). */
   scene: () => { items: Item[]; dpi: number };
   /** Only the relief's doors changed: shown again, nothing else built. */
@@ -742,7 +742,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
         // A whole shape (or those picked) dragged: moved as it is, nothing worked out again till it's let go.
         const moving = editor.xf && editor.xfMap && sel?.kind === "shape" ? { shapes: [sel.i, ...(sel.more ?? [])], map: editor.xfMap } : null;
         gesture = editor.heightsOnly && gesture !== "more" ? "heights" : "more";
-        o.onRelief(image.id, editor.relief, busy() || editor.heightsOnly, editor.heightsOnly ? editor.takeDirty() : null, moving);
+        o.onRelief(image.id, editor.relief, busy() || editor.heightsOnly, editor.heightsOnly ? editor.takeDirty() : null, moving, false, editor.heightsOnly ? editor.takeDab() : null);
       },
       showProps: () => {
         panel();

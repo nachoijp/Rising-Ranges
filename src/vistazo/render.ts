@@ -26,7 +26,7 @@ import { BASE_TEXTURE_MAX, DETAIL_SIZE, FULL_BUDGET, LIGHT, QUALITY, SOURCE_BUDG
 import { isShared, patternTexture } from "./view/patterns";
 import { floorOf, mediaElement, propsKey, stopVideo, propToken, raised, skinAcross, skinPoint, visibleOnScreen } from "./view/helpers";
 import { AnimatedImage, animationOf, mayAnimate, stopAnimation } from "./view/animated";
-import { computeWalls, type Region } from "./view/walls";
+import { computeWalls, wallsByEdge, type Region } from "./view/walls";
 import { BaseBatch, moveBase, ringMaterial, type BaseSeat } from "./view/bases";
 import { UNDER_FRAGMENT, UNDER_VERTEX } from "./view/shaders";
 import { FILL_BANDS, FILL_CELLS, FOG_GLSL, baseTexture, based, clouded, detailed, fogCut, fogCutShader, fogged, foggedToo, grained, gridded, layer, tinted, toneAttribute, toned } from "./view/layers";
@@ -617,44 +617,190 @@ export class VistazoView {
    * within `regions` (scene px), where the heights changed (the dabs since
    * the last time: not the box round them all, most of the map on a slow
    * computer's long stroke).
+   *
+   * `focus` (the last dab's box, within them) is done now: the 3D under the brush follows it at once
+   * (its surface, and the heights the 3D brush paints on; its walls with the rest, the nearest first). The rest a little at a time between the page's frames (see runReheight; a second or two of it,
+   * the page stuck meanwhile, on a slow computer), the nearest to the brush first.
    */
-  reheight(scene: VistazoScene, regions: Region[]): boolean {
+  reheight(scene: VistazoScene, regions: Region[], focus?: Region): boolean {
     if (regions.length === 0) {
       return true;
     }
-    // The box round them all (a piece out of it is out of them all).
-    const region: Region = {
-      x0: Math.min(...regions.map((r) => r.x0)),
-      y0: Math.min(...regions.map((r) => r.y0)),
-      x1: Math.max(...regions.map((r) => r.x1)),
-      y1: Math.max(...regions.map((r) => r.y1)),
-    };
-    const boxes = regions.map((r) => [r.x0 * this.u, r.y0 * this.u, r.x1 * this.u, r.y1 * this.u]);
     if (!this.scene || scene.terrainKey !== this.terrainKey) {
       return false;
     }
-    this.terrainEdits++;
-    const u = this.u;
-    const k = this.k;
     const pieces = this.terrainGroup.children.filter((child) => child.userData.piece) as THREE.Mesh[];
     if (pieces.some((mesh) => !(mesh.userData.piece as Piece).surface)) {
       return false;
     }
+    this.terrainEdits++;
+    this.scene = scene;
+    this.reheightScene = scene;
+    if (focus) {
+      this.sliceEnd = Infinity;
+      time("3d.reheight.focus", () => {
+        for (const _ of this.reheightSteps(scene, focus, false)) {
+          // (Never stops: no end to its slice.)
+        }
+      });
+      this.afterSlice();
+    }
+    // Queued: one inside another waiting, or that overlaps it so much the box round both is no bigger than
+    // they are apart, taken together with it (not a long stroke's dabs as the box round them all).
+    const area = (r: Region) => (r.x1 - r.x0) * (r.y1 - r.y0);
+    for (const region of regions) {
+      let box = region;
+      for (let joined = true; joined; ) {
+        joined = false;
+        for (const [n, other] of this.reheightQueue.entries()) {
+          const both = { x0: Math.min(box.x0, other.x0), y0: Math.min(box.y0, other.y0), x1: Math.max(box.x1, other.x1), y1: Math.max(box.y1, other.y1) };
+          if (area(both) <= area(box) + area(other)) {
+            box = both;
+            this.reheightQueue.splice(n, 1);
+            joined = true;
+            break;
+          }
+        }
+      }
+      this.reheightQueue.push(box);
+    }
+    const at = focus ?? regions[regions.length - 1];
+    this.reheightAt = [(at.x0 + at.x1) / 2, (at.y0 + at.y1) / 2];
+    this.scheduleReheight();
+    return true;
+  }
+
+  /** What reheight still has to do (see runReheight): the boxes waiting (scene px), the one under way. */
+  private reheightQueue: Region[] = [];
+  /** Where the brush last was (scene px): the nearest waiting done first. */
+  private reheightAt: [number, number] = [0, 0];
+  private reheightRun: Generator<void, void, void> | null = null;
+  private reheightScene: VistazoScene | null = null;
+  private reheightTimer = 0;
+  /**
+   * When the slice under way ends (see reheightSteps: it stops there, all it did shown); when the last ended
+   * (performance.now: not stamp, 0 with the stopwatch off).
+   */
+  private sliceEnd = Infinity;
+  private lastSliceEnd = 0;
+  /** A top cut small by reheightSteps (see afterSlice). */
+  private refined = false;
+
+  /** A slice of reheight's work soon (one at a time). */
+  private scheduleReheight() {
+    if (this.reheightTimer) {
+      return;
+    }
+    this.reheightTimer = window.setTimeout(() => {
+      this.reheightTimer = 0;
+      // As long as the page had for itself since the last (its frames, the 2D brush): the 3D gets about
+      // half the time, however slow the computer; not under a frame, nor more than a few.
+      const budget = Math.min(150, Math.max(16, performance.now() - this.lastSliceEnd));
+      const finished = time("3d.reheight.slice", () => this.runReheight(budget));
+      this.lastSliceEnd = performance.now();
+      if (!finished) {
+        this.scheduleReheight();
+      }
+    }, 0);
+  }
+
+  /** reheight's work for `budget` ms (or till it's done: true). */
+  private runReheight(budget: number): boolean {
+    const scene = this.reheightScene;
+    if (!scene) {
+      return true;
+    }
+    this.sliceEnd = performance.now() + budget;
+    for (;;) {
+      if (!this.reheightRun) {
+        const next = this.nextRegion();
+        if (!next) {
+          break;
+        }
+        this.reheightRun = this.reheightSteps(scene, next);
+      }
+      if (this.reheightRun.next().done) {
+        this.reheightRun = null;
+        continue;
+      }
+      // It stopped: its slice is over.
+      break;
+    }
+    this.terrainEdits++;
+    this.afterSlice();
+    if (this.reheightRun || this.reheightQueue.length) {
+      return false;
+    }
+    // All done: the shadows owed once the brush stops a moment (see brushDab).
+    clearTimeout(this.shadowsTimer);
+    this.shadowsTimer = window.setTimeout(() => this.owedShadows(), SHADOWS_AFTER_MS);
+    return true;
+  }
+
+  /** The box waiting nearest the brush, taken out (none: null). */
+  private nextRegion(): Region | null {
+    const [ax, ay] = this.reheightAt;
+    const far = (r: Region) => Math.hypot((r.x0 + r.x1) / 2 - ax, (r.y0 + r.y1) / 2 - ay);
+    let best = -1;
+    for (const [n, r] of this.reheightQueue.entries()) {
+      if (best < 0 || far(r) < far(this.reheightQueue[best])) {
+        best = n;
+      }
+    }
+    return best < 0 ? null : this.reheightQueue.splice(best, 1)[0];
+  }
+
+  private afterSlice() {
+    if (this.refined) {
+      this.refined = false;
+      this.highlight(this.picked.shapes);
+    }
+    this.requestApply();
+  }
+
+  /**
+   * reheight's work still waiting dropped (the terrain built whole again: its pieces, walls and heights
+   * worked out from the relief as it is). Whether there was some.
+   */
+  private endReheight(): boolean {
+    clearTimeout(this.reheightTimer);
+    this.reheightTimer = 0;
+    const some = this.reheightRun !== null || this.reheightQueue.length > 0;
+    this.reheightRun = null;
+    this.reheightQueue = [];
+    return some;
+  }
+
+
+  /**
+   * The heights changed within `region` (scene px), in 3D: the pieces' corners there, the heights grid, the
+   * walls of the edges through it and their tiles drawn again (their shadows owed; not `walls` false: the
+   * brush's own dab, what it paints on first, its walls from the queue a moment later). It stops once its
+   * slice is over (sliceEnd), with all it did till then in place (nothing of it half drawn).
+   */
+  private *reheightSteps(scene: VistazoScene, region: Region, walls = true): Generator<void, void, void> {
+    const u = this.u;
+    const k = this.k;
     const [x0, y0, x1, y1] = [region.x0 * u, region.y0 * u, region.x1 * u, region.y1 * u];
-    let refine = false;
-    const t0 = stamp();
-    // Those changed here: drawn by themselves from now on (see batchTops).
-    const reshaped: THREE.Mesh[] = [];
+    const over = () => performance.now() > this.sliceEnd;
+    // The pieces' corners within it (by the cells they're in: see vertexCells).
+    const pieces = this.terrainGroup.children.filter((child) => child.userData.piece) as THREE.Mesh[];
     for (const mesh of pieces) {
+      if (mesh.parent !== this.terrainGroup) {
+        continue;
+      }
       const piece = mesh.userData.piece as Piece;
       let geometry = mesh.geometry;
       if (!geometry.boundingBox) {
         geometry.computeBoundingBox();
       }
       const near = geometry.boundingBox!;
+      if (near.max.x < x0 || near.min.x > x1 || near.max.y < y0 || near.min.y > y1) {
+        continue;
+      }
       // Drawn by its outline alone, and now its heights vary inside it (painted on, a soft edge over it),
       // or drawn lean (few triangles, none where the brush may paint): cut small, there and then.
-      if (!mesh.userData.fine && !(near.max.x < x0 || near.min.x > x1 || near.max.y < y0 || near.min.y > y1) && (mesh.userData.lean || piece.fine?.())) {
+      if (!mesh.userData.fine && (mesh.userData.lean || piece.fine?.())) {
         // Readied beforehand (see prepareBrush), or now.
         const fine = (mesh.userData.fineReady as THREE.BufferGeometry | undefined) ?? this.fineFor(mesh, piece);
         mesh.userData.fineReady = undefined;
@@ -663,38 +809,164 @@ export class VistazoView {
         mesh.userData.fine = true;
         mesh.userData.lean = false;
         geometry = fine;
-        refine = true;
+        this.refined = true;
       }
       const box = geometry.boundingBox!;
       if (box.max.x < x0 || box.min.x > x1 || box.max.y < y0 || box.min.y > y1) {
         continue;
       }
-      reshaped.push(mesh);
       const position = geometry.getAttribute("position") as THREE.BufferAttribute;
-      for (let i = 0; i < position.count; i++) {
-        const [x, y] = [position.getX(i), position.getY(i)];
-        if (x >= x0 && x <= x1 && y >= y0 && y <= y1 && boxes.some(([bx0, by0, bx1, by1]) => x >= bx0 && x <= bx1 && y >= by0 && y <= by1)) {
-          position.setZ(i, pieceHeight(piece, x / u, y / u) * k);
+      const cells = this.vertexCells(geometry);
+      const [i0, i1, j0, j1] = [Math.floor(x0 / VIEW_CELL), Math.floor(x1 / VIEW_CELL), Math.floor(y0 / VIEW_CELL), Math.floor(y1 / VIEW_CELL)];
+      let moved = false;
+      for (let j = j0; j <= j1; j++) {
+        for (let i = i0; i <= i1; i++) {
+          const list = cells.get(cellKey(i, j));
+          if (!list) {
+            continue;
+          }
+          for (const v of list) {
+            const [x, y] = [position.getX(v), position.getY(v)];
+            if (x >= x0 && x <= x1 && y >= y0 && y <= y1) {
+              position.setZ(v, pieceHeight(piece, x / u, y / u) * k);
+              moved = true;
+            }
+          }
+          if (moved && over()) {
+            position.needsUpdate = true;
+            this.loosen([mesh]);
+            moved = false;
+            yield;
+            // Built whole again meanwhile: nothing more of it (see endReheight).
+            if (mesh.geometry !== geometry) {
+              return;
+            }
+          }
         }
       }
-      position.needsUpdate = true;
+      if (moved) {
+        position.needsUpdate = true;
+        this.loosen([mesh]);
+      }
     }
-    this.loosen(reshaped);
-    since("3d.reheight.vertices", t0);
-    this.scene = scene;
-    // The heights grid there too (what the pointer finds on the terrain: the 3D brush paints on it).
-    time("3d.reheight.grid", () => regions.forEach((r) => this.regridIn(r)));
-    // The walls of the edges through the region worked out again; the others as they were.
-    const done = new Set<string>();
-    const fresh = time("3d.reheight.computeWalls", () => computeWalls(scene, this.base, regions, done));
-    const before = this.walls;
-    this.walls = [...before.filter((wall) => !done.has(wall.seg)), ...fresh];
+    // The heights grid there too (what the pointer finds on the terrain: the 3D brush paints on it), a row at a time.
+    {
+      const { x0: gx, y0: gy, step, w, h, cells } = this.grid;
+      const i0 = Math.max(0, Math.floor((region.x0 - gx) / step));
+      const i1 = Math.min(w - 1, Math.ceil((region.x1 - gx) / step));
+      const j0 = Math.max(0, Math.floor((region.y0 - gy) / step));
+      const j1 = Math.min(h - 1, Math.ceil((region.y1 - gy) / step));
+      for (let j = j0; j <= j1; j++) {
+        for (let i = i0; i <= i1; i++) {
+          cells[j * w + i] = scene.heightAt(gx + i * step, gy + j * step) ?? NaN;
+        }
+        if (over() && j < j1) {
+          yield;
+          if (this.grid.cells !== cells) {
+            return;
+          }
+        }
+      }
+    }
+    if (!walls) {
+      return;
+    }
+    // The walls of the edges through it worked out again, a few at a time (each lot put in place before
+    // it stops), the others as they were; the tiles whose walls changed noted.
+    const tiles = new Set<string>();
+    let done = new Set<string>();
+    let fresh: Wall[] = [];
+    const settle = () => {
+      if (done.size === 0) {
+        return;
+      }
+      const before = this.walls;
+      this.walls = [];
+      for (const wall of before) {
+        if (done.has(wall.seg)) {
+          tiles.add(this.wallTile(wall));
+        } else {
+          this.walls.push(wall);
+        }
+      }
+      for (const wall of fresh) {
+        tiles.add(this.wallTile(wall));
+        this.walls.push(wall);
+      }
+      done = new Set();
+      fresh = [];
+    };
+    for (const [seg, walls] of wallsByEdge(scene, this.base, region)) {
+      done.add(seg);
+      fresh.push(...walls);
+      if (over()) {
+        settle();
+        yield;
+      }
+    }
+    settle();
     // Drawn by tiles of the map (see wallTile): the first stroke since the scene was built puts every wall
     // in its tile; the next ones build again only the tiles whose walls changed (all of them each stroke
-    // was most of its time: 25 of 26 ms, measured in a room).
-    const touched = this.wallsTiled ? new Set([...before.filter((wall) => done.has(wall.seg)), ...fresh].map((wall) => this.wallTile(wall))) : null;
-    this.dropWalls(touched);
-    // Every wall by its tile (the shadows want the tiles round a tile's too).
+    // was most of its time: 25 of 26 ms, measured in a room). Their shadows (a third of each dab's work: see
+    // owedShadows) once the brush stops a moment; meanwhile none there (they went with their tiles' walls).
+    if (!this.wallsTiled) {
+      this.tileWalls(tiles);
+      return;
+    }
+    const byTile = () => {
+      const all = new Map<string, Wall[]>();
+      for (const wall of this.walls) {
+        const tile = this.wallTile(wall);
+        if (tiles.has(tile)) {
+          const list = all.get(tile);
+          if (list) {
+            list.push(wall);
+          } else {
+            all.set(tile, [wall]);
+          }
+        }
+      }
+      return all;
+    };
+    let all = byTile();
+    for (const tile of tiles) {
+      this.dropWalls(new Set([tile]));
+      this.buildWalls(all.get(tile) ?? [], null, undefined, tile);
+      this.shadowsOwed.add(tile);
+      if (over()) {
+        yield;
+        // The walls may have changed meanwhile (the brush's next dab, done at once).
+        all = byTile();
+      }
+    }
+  }
+
+  /** Each piece's corners by the cell they're in (VIEW_CELL a side): the brush moves only those under it. */
+  private vertexCellsOf = new WeakMap<THREE.BufferGeometry, Map<number, number[]>>();
+  private vertexCells(geometry: THREE.BufferGeometry): Map<number, number[]> {
+    let cells = this.vertexCellsOf.get(geometry);
+    if (!cells) {
+      cells = new Map();
+      const position = geometry.getAttribute("position") as THREE.BufferAttribute;
+      for (let v = 0; v < position.count; v++) {
+        const key = cellKey(Math.floor(position.getX(v) / VIEW_CELL), Math.floor(position.getY(v) / VIEW_CELL));
+        const list = cells.get(key);
+        if (list) {
+          list.push(v);
+        } else {
+          cells.set(key, [v]);
+        }
+      }
+      this.vertexCellsOf.set(geometry, cells);
+    }
+    return cells;
+  }
+
+  /**
+   * Every wall put in its tile (see wallTile), the walls drawn whole till now taken away; their shadows
+   * now, but those of `owed` (see shadowsOwed).
+   */
+  private tileWalls(owed: Set<string>) {
     const all = new Map<string, Wall[]>();
     for (const wall of this.walls) {
       const tile = this.wallTile(wall);
@@ -705,40 +977,28 @@ export class VistazoView {
         all.set(tile, [wall]);
       }
     }
-    const built = [...all].filter(([tile]) => !touched || touched.has(tile));
-    time("3d.reheight.buildWalls", () => built.forEach(([tile, walls]) => this.buildWalls(walls, null, undefined, tile)));
-    // Their shadows (a third of each dab's work: see owedShadows) once the brush stops a moment, where the
-    // walls changed; meanwhile none there (they went with their tiles' walls: none left where the heights
-    // moved under them). The other tiles built here (every one, the first stroke since a whole build): now.
-    const changed = new Set([...before.filter((wall) => done.has(wall.seg)), ...fresh].map((wall) => this.wallTile(wall)));
-    for (const [tile] of built) {
-      if (changed.has(tile)) {
-        this.shadowsOwed.add(tile);
+    this.dropWalls(null);
+    for (const [tile, walls] of all) {
+      this.buildWalls(walls, null, undefined, tile);
+    }
+    for (const [tile, walls] of all) {
+      if (owed.has(tile)) {
+        continue;
       }
+      const [i, j] = tile.split(",").map(Number);
+      const around: Wall[] = [];
+      for (let dj = -1; dj <= 1; dj++) {
+        for (let di = -1; di <= 1; di++) {
+          around.push(...(all.get(`${i + di},${j + dj}`) ?? []));
+        }
+      }
+      this.buildWallShadows(walls, undefined, tile, around);
     }
-    const now = built.filter(([tile]) => !changed.has(tile));
-    if (now.length) {
-      time("3d.reheight.wallShadows", () =>
-        now.forEach(([tile, walls]) => {
-          const [i, j] = tile.split(",").map(Number);
-          const around: Wall[] = [];
-          for (let dj = -1; dj <= 1; dj++) {
-            for (let di = -1; di <= 1; di++) {
-              around.push(...(all.get(`${i + di},${j + dj}`) ?? []));
-            }
-          }
-          this.buildWallShadows(walls, undefined, tile, around);
-        })
-      );
+    for (const tile of owed) {
+      this.shadowsOwed.add(tile);
     }
-    clearTimeout(this.shadowsTimer);
-    this.shadowsTimer = window.setTimeout(() => this.owedShadows(), SHADOWS_AFTER_MS);
     this.wallsTiled = true;
-    if (refine) {
-      this.highlight(this.picked.shapes);
-    }
     this.requestApply();
-    return true;
   }
 
   /** A piece's top cut small (see reheight), with its picture, tone and heights as they are now. */
@@ -804,34 +1064,13 @@ export class VistazoView {
       if (piece?.surface && !mesh.userData.fine && !mesh.userData.fineReady && (mesh.userData.lean || piece.fine?.())) {
         mesh.userData.fineReady = this.fineFor(mesh, piece);
       }
+      // Its corners by cells (see vertexCells), the top the brush will move.
+      if (piece?.surface) {
+        this.vertexCells((mesh.userData.fineReady as THREE.BufferGeometry | undefined) ?? mesh.geometry);
+      }
     }
     if (!this.wallsTiled && this.walls.length) {
-      const all = new Map<string, Wall[]>();
-      for (const wall of this.walls) {
-        const tile = this.wallTile(wall);
-        const list = all.get(tile);
-        if (list) {
-          list.push(wall);
-        } else {
-          all.set(tile, [wall]);
-        }
-      }
-      this.dropWalls(null);
-      for (const [tile, walls] of all) {
-        this.buildWalls(walls, null, undefined, tile);
-      }
-      for (const [tile, walls] of all) {
-        const [i, j] = tile.split(",").map(Number);
-        const around: Wall[] = [];
-        for (let dj = -1; dj <= 1; dj++) {
-          for (let di = -1; di <= 1; di++) {
-            around.push(...(all.get(`${i + di},${j + dj}`) ?? []));
-          }
-        }
-        this.buildWallShadows(walls, undefined, tile, around);
-      }
-      this.wallsTiled = true;
-      this.requestApply();
+      this.tileWalls(new Set());
     }
   }
 
@@ -923,6 +1162,7 @@ export class VistazoView {
    */
   moveShapes(shapes: number[], map: [number, number, number, number, number, number]): "started" | "moved" | false {
     let started = false;
+    this.endReheight();
     this.terrainEdits++;
     const scene = this.scene;
     if (!scene) {
@@ -1144,12 +1384,14 @@ export class VistazoView {
       this.requestApply(true);
       return;
     }
+    // What a brush's 3D still had to do: dropped (built whole now); its walls then not kept (not all there yet).
+    const behind = this.endReheight();
     const sameBase = base === this.base;
     this.terrainKey = scene.terrainKey;
     this.base = base;
     // Its walls kept when a brush's let go settles (its outlines haven't changed), as its level: for the
     // page, if it works the terrain out itself (the worker works them out again, away from the page).
-    this.keepWalls = settling && sameBase ? this.walls : undefined;
+    this.keepWalls = settling && sameBase && !behind ? this.walls : undefined;
     if (settling) {
       // Its relief changed where it is, its key the same: the terrain worked out from it again (by the
       // worker, sent the relief again; meanwhile what the brush left stays drawn).
@@ -2062,21 +2304,6 @@ export class VistazoView {
     this.requestApply(part);
   }
 
-  /** The heights grid within a region (scene px) worked out again. */
-  private regridIn(region: Region) {
-    const scene = this.scene!;
-    const { x0, y0, step, w, h, cells } = this.grid;
-    const i0 = Math.max(0, Math.floor((region.x0 - x0) / step));
-    const i1 = Math.min(w - 1, Math.ceil((region.x1 - x0) / step));
-    const j0 = Math.max(0, Math.floor((region.y0 - y0) / step));
-    const j1 = Math.min(h - 1, Math.ceil((region.y1 - y0) / step));
-    for (let j = j0; j <= j1; j++) {
-      for (let i = i0; i <= i1; i++) {
-        cells[j * w + i] = scene.heightAt(x0 + i * step, y0 + j * step) ?? NaN;
-      }
-    }
-  }
-
   /**
    * The relief editor's terrain brush, where it'd paint from here (its outline round the pointer on the
    * terrain, scene px; null: none), laid on the terrain as it is now.
@@ -2693,6 +2920,7 @@ export class VistazoView {
 
   /** The scene drawn (`now`: its terrain worked out here, not waited for from the worker). */
   private build(now = false) {
+    this.endReheight();
     this.terrainEdits++;
     const scene = this.scene;
     if (!scene) {
@@ -5457,6 +5685,9 @@ type PropAnimation = {
 
 /** A wall tile's side (cells): the walls a brush stroke changes are built again by these (see reheight). */
 const WALL_TILE = 8;
+
+/** A cell's key (see VistazoView.vertexCells). */
+const cellKey = (i: number, j: number) => (i + 32768) * 65536 + (j + 32768);
 
 /** A map's media let go: a video stopped and emptied, an animation closed. */
 function stopMedia(media: CanvasImageSource) {
