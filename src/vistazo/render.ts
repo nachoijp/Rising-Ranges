@@ -534,7 +534,18 @@ export class VistazoView {
       this.pointerAt = { x: event.clientX - this.stageAt.x, y: event.clientY - this.stageAt.y };
       this.showDoorButtons();
     });
-    stage.addEventListener("pointerleave", () => {
+    // A finger: no pointer hovering, so where it last touched counts (a tap near a door shows its button,
+    // there till a tap elsewhere); it's gone once the finger lifts, but not that.
+    stage.addEventListener("pointerdown", (event) => {
+      if (event.pointerType === "touch") {
+        this.pointerAt = { x: event.clientX - this.stageAt.x, y: event.clientY - this.stageAt.y };
+        this.showDoorButtons();
+      }
+    });
+    stage.addEventListener("pointerleave", (event) => {
+      if (event.pointerType === "touch") {
+        return;
+      }
       this.pointerAt = null;
       this.showDoorButtons();
     });

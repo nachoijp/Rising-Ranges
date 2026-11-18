@@ -1040,6 +1040,13 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     // A finger held on a shape (the touch layout): picking several, as photos in a phone's gallery (its menu's
     // the ⋯ in the panel).
     if (touch && touchUi) {
+      // On a vertex or a height point, picking vertices: added to what's picked, or taken out (Shift+click's).
+      if (editor.togglePointAt(at, { shift: true })) {
+        swallowNextClick();
+        editor.host.showProps();
+        map.redraw();
+        return;
+      }
       if (i >= 0) {
         swallowNextClick();
         pickSeveral(i);

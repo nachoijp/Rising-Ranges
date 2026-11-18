@@ -161,6 +161,9 @@ export const nameOf = (t: T, s: Shape, i: number) => s.name || t("relief.shape.n
 export const tip = (title: string, sub = "", key = "", side: "below" | "right" = "below") =>
   `data-tip="${esc(title)}"${sub ? ` data-tip-sub="${esc(sub)}"` : ""}${key ? ` data-tip-key="${esc(key)}"` : ""}${side === "right" ? ' data-tip-side="right"' : ""} aria-label="${esc(sub ? `${title}. ${sub}` : title)}"`;
 
+/** A finger held this long (ms) on a button: its tip (see installTips). */
+const TIP_HOLD_MS = 500;
+
 /** The one tooltip of the editor, shown by whatever has `data-tip` under the pointer (or focused from the keyboard). */
 export function installTips(root: HTMLElement): () => void {
   const box = document.createElement("div");
@@ -206,17 +209,73 @@ export function installTips(root: HTMLElement): () => void {
     }
   };
   const hide = () => show(null);
+  // A finger held on a button (as a phone's long press): its tip, the button not pressed by that touch;
+  // shown a moment after it lifts. Not on the shapes' rows (held, they're dragged).
+  let held: { timer: ReturnType<typeof setTimeout>; x: number; y: number } | null = null;
+  let fade: ReturnType<typeof setTimeout> | undefined;
+  const letGo = () => {
+    if (held) {
+      clearTimeout(held.timer);
+      held = null;
+    }
+  };
+  const touchDown = (event: PointerEvent) => {
+    letGo();
+    clearTimeout(fade);
+    const el = (event.target as HTMLElement).closest<HTMLElement>("[data-tip]");
+    if (event.pointerType !== "touch" || !el || el.closest(".re-shapes .item")) {
+      return;
+    }
+    held = {
+      x: event.clientX,
+      y: event.clientY,
+      timer: setTimeout(() => {
+        held = null;
+        show(el);
+        // The click its lift makes: not the button's.
+        const swallow = (e: Event) => {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        };
+        window.addEventListener("click", swallow, { capture: true, once: true });
+        setTimeout(() => window.removeEventListener("click", swallow, true), 800);
+      }, TIP_HOLD_MS),
+    };
+  };
+  const touchMove = (event: PointerEvent) => {
+    if (held && Math.hypot(event.clientX - held.x, event.clientY - held.y) > 8) {
+      letGo();
+    }
+  };
+  const touchUp = (event: PointerEvent) => {
+    letGo();
+    if (event.pointerType === "touch" && shown) {
+      fade = setTimeout(hide, 1500);
+    }
+  };
   root.addEventListener("pointerover", over);
   root.addEventListener("focusin", focus);
   root.addEventListener("pointerdown", hide);
-  root.addEventListener("pointerleave", hide);
+  root.addEventListener("pointerdown", touchDown);
+  root.addEventListener("pointermove", touchMove);
+  root.addEventListener("pointerup", touchUp);
+  root.addEventListener("pointercancel", touchUp);
+  // (A finger's leave comes as it lifts: its tip stays its moment, see touchUp.)
+  const leave = (event: PointerEvent) => event.pointerType !== "touch" && hide();
+  root.addEventListener("pointerleave", leave);
   root.addEventListener("focusout", hide);
   return () => {
+    letGo();
+    clearTimeout(fade);
+    root.removeEventListener("pointerdown", touchDown);
+    root.removeEventListener("pointermove", touchMove);
+    root.removeEventListener("pointerup", touchUp);
+    root.removeEventListener("pointercancel", touchUp);
     box.remove();
     root.removeEventListener("pointerover", over);
     root.removeEventListener("focusin", focus);
     root.removeEventListener("pointerdown", hide);
-    root.removeEventListener("pointerleave", hide);
+    root.removeEventListener("pointerleave", leave);
     root.removeEventListener("focusout", hide);
   };
 }
@@ -791,7 +850,7 @@ export function toolButton(ed: ReliefEditor, t: T): string {
 /** Every key of the tool in hand, and those for everything. */
 /** What a finger does (the touch layout's help, in place of the keys'). */
 export function gesturesHtml(t: T): string {
-  const list = (["hold", "two", "three", "hand", "second", "double", "more"] as const).map((g) => `<dt>${esc(t(`relief.gesture.${g}`))}</dt><dd>${esc(t(`relief.gesture.${g}Do`))}</dd>`).join("");
+  const list = (["hold", "holdVertex", "two", "three", "hand", "second", "double", "more"] as const).map((g) => `<dt>${esc(t(`relief.gesture.${g}`))}</dt><dd>${esc(t(`relief.gesture.${g}Do`))}</dd>`).join("");
   // Its own ✕ (a finger has no Esc).
   return `<div class="re-pophead"><p class="ptitle">${esc(t("relief.gestures"))}</p><button type="button" class="ib sm" data-k="popClose" aria-label="${esc(t("relief.close"))}">${icon("close")}</button></div><dl>${list}</dl>`;
 }

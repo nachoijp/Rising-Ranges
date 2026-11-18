@@ -103,6 +103,9 @@ const FULL = new URLSearchParams(location.search).has("full") || TAB;
 /** The controls' help, one line each (the ? at the stage's corner). */
 /** A second finger this soon (ms) after the first one's brush stroke began: the stroke taken back, a pinch instead (as the 2D map's). */
 const SECOND_FINGER_MS = 200;
+/** A finger held this long (ms) on a token, within HOLD_SLOP px: its menu (as a right click). As the relief editor's hold. */
+const HOLD_MS = 550;
+const HOLD_SLOP = 8;
 const HELP_KEYS = ["vistazo.help1", "vistazo.help2", "vistazo.help3", "vistazo.help4", "vistazo.help5", "vistazo.help6", "vistazo.help7", "vistazo.help8"] as const;
 const FULL_MODAL_ID = getPluginId("vistazo/full");
 const CAMERA_KEY = "rising-ranges/vistazo-camera";
@@ -570,7 +573,21 @@ async function start() {
       const hint = document.createElement("div");
       hint.className = "pick-hint";
       hint.setAttribute("role", "status");
-      hint.textContent = t("vistazo.attachPick");
+      // A finger's: no Esc to tell of; a ✕ instead (any pointer's, beside the text).
+      const touch = matchMedia("(pointer: coarse)").matches;
+      const text = document.createElement("span");
+      text.textContent = t(touch ? "vistazo.attachPickTouch" : "vistazo.attachPick");
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "ib";
+      cancel.innerHTML = icon("close");
+      cancel.setAttribute("aria-label", t("relief.cancel"));
+      cancel.title = t("relief.cancel");
+      cancel.onclick = () => setAttaching(null);
+      for (const type of ["pointerdown", "pointerup"]) {
+        cancel.addEventListener(type, (event) => event.stopPropagation());
+      }
+      hint.append(text, cancel);
       $("stage").append(hint);
     }
   };
@@ -943,6 +960,29 @@ async function start() {
     );
   };
   fill();
+  // The "?" and the "i"s by a tap too (a finger has no hover, nor the keyboard's focus): open till
+  // another tap, on it or anywhere else.
+  const tapOpen = (el: HTMLElement) => {
+    el.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const open = !el.classList.contains("open");
+      for (const other of document.querySelectorAll(".help.open, .info.open")) {
+        other.classList.remove("open");
+      }
+      el.classList.toggle("open", open);
+    });
+  };
+  tapOpen($("help").parentElement!);
+  for (const el of document.querySelectorAll<HTMLElement>(".info")) {
+    tapOpen(el);
+  }
+  document.addEventListener("pointerdown", (event) => {
+    for (const el of document.querySelectorAll(".help.open, .info.open")) {
+      if (!el.contains(event.target as Node)) {
+        el.classList.remove("open");
+      }
+    }
+  }, true);
   // Put together (its look, icons and texts): shown in place of the spinner (see vistazo.html).
   requestAnimationFrame(() => document.documentElement.classList.add("ready"));
 
@@ -1710,6 +1750,17 @@ async function start() {
   // ---------- The stage's pointer, wheel and keys: orbit, pan, zoom, dragging tokens and templates, the free point ----------
   /** A right press on an item: its menu, if let go there (a right drag turns the camera instead). */
   let rightPress: { token: string; x: number; y: number } | null = null;
+  /**
+   * A finger held still on a token or a prop (a phone has no right button): its menu, as a right click
+   * opens it. Where it went down, till it moves or lifts (see HOLD_MS).
+   */
+  let hold: { timer: number; x: number; y: number } | null = null;
+  const dropHold = () => {
+    if (hold) {
+      clearTimeout(hold.timer);
+      hold = null;
+    }
+  };
   stage.addEventListener("mousedown", (event) => {
     if (event.button === 1) {
       event.preventDefault();
@@ -1837,10 +1888,36 @@ async function start() {
       mode = moving ? "token" : handleDrag ? "handle" : pointDrag ? "point" : event.button === 1 || event.shiftKey ? "pan" : "orbit";
       last = [event.clientX, event.clientY];
     }
+    dropHold();
+    const held = press?.token;
+    if (event.pointerType === "touch" && pointers.size === 1 && held && scene && [...scene.tokens, ...scene.props].some((p) => p.id === held)) {
+      const [x, y] = [event.clientX, event.clientY];
+      hold = {
+        x,
+        y,
+        timer: window.setTimeout(() => {
+          hold = null;
+          if (moving?.started || pointers.size !== 1) {
+            return;
+          }
+          // Not moved, nor turned round it, nor picked: only its menu.
+          if (moving) {
+            endMove();
+          }
+          mode = null;
+          last = null;
+          press = null;
+          openItemMenu(held, x, y);
+        }, HOLD_MS),
+      };
+    }
   });
   stage.addEventListener("pointermove", (event) => {
     if (!pointers.has(event.pointerId)) {
       return;
+    }
+    if (hold && Math.hypot(event.clientX - hold.x, event.clientY - hold.y) > HOLD_SLOP) {
+      dropHold();
     }
     pointers.set(event.pointerId, [event.clientX, event.clientY]);
     if (mode === "turn" && turnAt && pointers.size >= 3) {
@@ -1946,6 +2023,7 @@ async function start() {
     view.apply();
   });
   const up = (event: PointerEvent) => {
+    dropHold();
     const move = moving;
     if (move && (move.started || move.own !== move.startOwn) && event.type === "pointerup") {
       press = null;
