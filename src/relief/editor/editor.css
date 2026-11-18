@@ -1569,6 +1569,13 @@
   left: 8px;
   width: auto;
 }
+/* The gestures' title and its ✕ (a finger's: see gesturesHtml). */
+.re-pophead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 
 /* "Generar relieve" (generateDialog.ts): a panel in the middle of the map, over everything of the editor's. */
 .re-gen {

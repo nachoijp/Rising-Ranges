@@ -1328,6 +1328,13 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     return true;
   }
 
+  // The gestures' ✕ (see gesturesHtml): closed as the "?" would.
+  $("pop").addEventListener("click", (event) => {
+    if ((event.target as HTMLElement).closest('[data-k="popClose"]')) {
+      toggleHelp();
+    }
+  });
+
   // The keys, all of them (the "?").
   function toggleHelp() {
     const pop = $("pop");

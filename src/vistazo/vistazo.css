@@ -1316,3 +1316,72 @@ input[type="checkbox"]:focus-visible {
   cursor: progress;
   opacity: 0.6;
 }
+
+/* A phone's height buttons (see syncHeightPad): over the stage's left, a thumb's reach, and under them
+   the height of what they move, named as the Medición names it. */
+.hbox {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.hbox[hidden] {
+  display: none;
+}
+/* The extension's glass, as its menus (see .dd-menu): the theme's colours, light or dark. */
+.hpad,
+.hval {
+  box-sizing: border-box;
+  background: var(--glass-outer, rgba(48, 52, 63, 0.62));
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  border: 1px solid var(--divider, var(--line));
+  border-radius: 12px;
+  box-shadow: 0 10px 34px -10px rgba(0, 0, 0, 0.55);
+  color: var(--fg);
+}
+.hpad {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+}
+.hpad button {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  touch-action: manipulation;
+}
+.hpad button:hover {
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+.hpad button:active {
+  background: color-mix(in srgb, var(--fg) 16%, transparent);
+}
+.hpad button:focus-visible {
+  outline: 2px solid var(--accent, #bb99ff);
+  outline-offset: -2px;
+}
+.hpad svg.ri {
+  width: 24px;
+  height: 24px;
+}
+.hval {
+  padding: 8px 12px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}

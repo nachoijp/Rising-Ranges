@@ -988,7 +988,11 @@ async function start() {
       sendCamera();
     }
     showCameraTexts();
+    // (Each frame drawn: a token picked up, the free point put down, a template grabbed all draw one.)
+    syncPad();
   };
+  /** The touch layout's height buttons brought up to date (see syncHeightPad: set once all it reads is there). */
+  let syncPad = () => {};
   /** The camera's readings and the view's button, in the language now (also after a change of it). */
   /** What showCameraTexts last wrote, each (each write, even of the same, has the page lay itself out again: every frame of an orbit). */
   const cameraTexts = new Map<string, string>();
@@ -1980,73 +1984,134 @@ async function start() {
     },
     { passive: false }
   );
+  // ---------- Heights: the scene's raise/lower/ground keys, and the touch layout's buttons ----------
+  /** A height a step up (1), down (-1), or back to the ground (0), as the scene's keys step it. */
+  const stepped = (value: number, dir: 1 | -1 | 0) => {
+    const bandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
+    return dir === 0 ? 0 : stepHeight(value, dir, bandSet);
+  };
+  /** The template last put down or grabbed (no token moving), a step: its tip, if that's what was grabbed. Whether it moved. */
+  const nudgeTemplate = (dir: 1 | -1 | 0): boolean => {
+    const active = activeTemplate && !moving ? templates.find((t) => t.id === activeTemplate) : undefined;
+    if (!active || !scene) {
+      return false;
+    }
+    // Its tip (a cone's or a line's, if that's what was grabbed): its own height over the origin.
+    const tip = activePart === "tip" && (active.shape === "cone" || active.shape === "line");
+    const before = tip ? active.rise : active.lift;
+    const value = stepped(before, dir);
+    if (value === before || !mayTemplate("UPDATE")) {
+      return value !== before;
+    }
+    const next = tip ? { ...active, rise: Math.max(-active.size, Math.min(active.size, value)) } : { ...active, lift: value, z: scene.measuredAt(active.x, active.y) + value };
+    saveTemplate(next);
+    return true;
+  };
+  /** The free point (no token moving), a step. Whether it moved. */
+  const nudgePoint = (dir: 1 | -1 | 0): boolean => {
+    if (moving || !freePoint) {
+      return false;
+    }
+    const before = freePoint.own;
+    freePoint.own = stepped(before, dir);
+    if (freePoint.own === before) {
+      return false;
+    }
+    placePoint(freePoint);
+    return true;
+  };
+  /** The token being moved, a step of its own height (as in the Medición). Whether it moved. */
+  const nudgeToken = (dir: 1 | -1 | 0): boolean => {
+    if (!moving || !(globalSettingsFromMetadata(sceneMetadata).enableAltitude ?? true)) {
+      return false;
+    }
+    const before = moving.own;
+    moving.own = stepped(before, dir);
+    if (moving.own === before) {
+      return false;
+    }
+    showTokenAt(moving.id, moving.position, moving.own);
+    mirrorMeasure();
+    return true;
+  };
+  // A phone's (no keys): two floating, over the left of the stage, while there's something to raise:
+  // the buttons (up, back to the ground, down), and under them the height it's at, named as the Medición names it.
+  const coarse = matchMedia("(pointer: coarse)");
+  const heightPad = document.createElement("div");
+  heightPad.className = "hpad";
+  heightPad.setAttribute("role", "group");
+  const heightValue = document.createElement("output");
+  heightValue.className = "hval";
+  heightValue.setAttribute("aria-live", "polite");
+  // One over the other, the buttons first.
+  const heightBox = document.createElement("div");
+  heightBox.className = "hbox";
+  heightBox.hidden = true;
+  heightBox.append(heightPad, heightValue);
+  const padButtons: [1 | -1 | 0, string, TranslationKey][] = [
+    [1, icon("arrow"), "settings.global.hotkeyRaise"],
+    [0, icon("to-ground"), "settings.global.hotkeyGround"],
+    [-1, icon("arrow", 180), "settings.global.hotkeyLower"],
+  ];
+  for (const [dir, svg, key] of padButtons) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ib";
+    button.dataset.label = key;
+    button.innerHTML = svg;
+    button.onclick = () => nudgeHeight(dir);
+    heightPad.append(button);
+  }
+  // Their own: not the stage's (a second finger there would pinch, and let go of the token held).
+  for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel", "wheel", "contextmenu"]) {
+    heightBox.addEventListener(type, (event) => event.stopPropagation());
+  }
+  stage.append(heightBox);
+  /** What showed last (written again only when it changed). */
+  let padShown = "";
+  /** The touch layout's height buttons shown (or not), and the height of what they'd move. */
+  function syncHeightPad() {
+    let text: string | null = null;
+    if (coarse.matches && scene) {
+      const settings = globalSettingsFromMetadata(sceneMetadata);
+      const bandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
+      // As the Medición: above its own ground, or above the fixed one (see GlobalSettings.groundLevel).
+      const named = (at: { x: number; y: number }, own: number) => heightLabelText(fixedGround(settings) ? scene!.measuredAt(at.x, at.y) + own : own, bandSet, scene!.scale, language);
+      const active = activeTemplate && !moving ? templates.find((t) => t.id === activeTemplate) : undefined;
+      if (active) {
+        const tip = activePart === "tip" && (active.shape === "cone" || active.shape === "line");
+        text = heightLabelText(tip ? active.rise : active.lift, bandSet, scene.scale, language);
+      } else if (!moving && freePoint) {
+        text = named(freePoint, freePoint.own);
+      } else if (moving && (settings.enableAltitude ?? true)) {
+        text = named(moving.position, moving.own);
+      }
+    }
+    const shown = text === null ? "" : `${language}|${text}`;
+    if (shown === padShown) {
+      return;
+    }
+    padShown = shown;
+    heightBox.hidden = text === null;
+    heightValue.textContent = text ?? "";
+    heightPad.setAttribute("aria-label", t("relief.height"));
+    for (const button of heightPad.querySelectorAll<HTMLButtonElement>("button")) {
+      button.setAttribute("aria-label", t(button.dataset.label as TranslationKey));
+    }
+  }
+  coarse.addEventListener("change", () => syncPad());
+  /** What a step moves, the first there is: the template, the free point, the token being moved. */
+  const nudgeHeight = (dir: 1 | -1 | 0): boolean => {
+    const moved = nudgeTemplate(dir) || nudgePoint(dir) || nudgeToken(dir);
+    syncPad();
+    return moved;
+  };
   stage.addEventListener("keydown", (event) => {
-    // The template last put down or grabbed (no token moving): raised and lowered by the same keys.
-    const active = activeTemplate && !moving && !event.repeat ? templates.find((t) => t.id === activeTemplate) : undefined;
-    if (active && scene) {
-      const settings = globalSettingsFromMetadata(sceneMetadata);
-      const bandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
-      // Its tip (a cone's or a line's, if that's what was grabbed): its own height over the origin.
-      const tip = activePart === "tip" && (active.shape === "cone" || active.shape === "line");
-      const before = tip ? active.rise : active.lift;
-      let value = before;
-      if (event.code === letterToCode(settings.hotkeyRaise)) {
-        value = stepHeight(value, 1, bandSet);
-      } else if (event.code === letterToCode(settings.hotkeyLower)) {
-        value = stepHeight(value, -1, bandSet);
-      } else if (event.code === letterToCode(groundHotkey(settings))) {
-        value = 0;
-      }
-      if (value !== before) {
-        event.preventDefault();
-        if (!mayTemplate("UPDATE")) {
-          return;
-        }
-        const next = tip
-          ? { ...active, rise: Math.max(-active.size, Math.min(active.size, value)) }
-          : { ...active, lift: value, z: scene.measuredAt(active.x, active.y) + value };
-        saveTemplate(next);
-        return;
-      }
-    }
-    // The free point (no token moving): raised and lowered by the same keys.
-    if (!moving && freePoint && !event.repeat) {
-      const settings = globalSettingsFromMetadata(sceneMetadata);
-      const bandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
-      const before = freePoint.own;
-      if (event.code === letterToCode(settings.hotkeyRaise)) {
-        freePoint.own = stepHeight(freePoint.own, 1, bandSet);
-      } else if (event.code === letterToCode(settings.hotkeyLower)) {
-        freePoint.own = stepHeight(freePoint.own, -1, bandSet);
-      } else if (event.code === letterToCode(groundHotkey(settings))) {
-        freePoint.own = 0;
-      }
-      if (freePoint.own !== before) {
-        event.preventDefault();
-        placePoint(freePoint);
-        return;
-      }
-    }
-    // While a token's being moved: its own height, by the scene's keys (as in the Medición).
-    if (moving && !event.repeat) {
-      const settings = globalSettingsFromMetadata(sceneMetadata);
-      if (settings.enableAltitude ?? true) {
-        const bandSet = onGrid(bandSetFromMetadata(sceneMetadata), gridType);
-        const before = moving.own;
-        if (event.code === letterToCode(settings.hotkeyRaise)) {
-          moving.own = stepHeight(moving.own, 1, bandSet);
-        } else if (event.code === letterToCode(settings.hotkeyLower)) {
-          moving.own = stepHeight(moving.own, -1, bandSet);
-        } else if (event.code === letterToCode(groundHotkey(settings))) {
-          moving.own = 0;
-        }
-        if (moving.own !== before) {
-          event.preventDefault();
-          showTokenAt(moving.id, moving.position, moving.own);
-          mirrorMeasure();
-          return;
-        }
-      }
+    const settings = globalSettingsFromMetadata(sceneMetadata);
+    const dir = event.code === letterToCode(settings.hotkeyRaise) ? 1 : event.code === letterToCode(settings.hotkeyLower) ? -1 : event.code === letterToCode(groundHotkey(settings)) ? 0 : null;
+    if (dir !== null && !event.repeat && nudgeHeight(dir)) {
+      event.preventDefault();
+      return;
     }
     const keys: Record<string, () => void> = {
       ArrowLeft: () => (camera.yaw = wrapYaw(camera.yaw + 5)),
@@ -2309,6 +2374,7 @@ async function start() {
   };
   /** The free point (scene px, and its own height over the ground there), or none. */
   let freePoint: { x: number; y: number; own: number } | null = null;
+  syncPad = syncHeightPad;
   /** This Vistazo's Medición (a token dragged, or the free point) on the maps too (see mirrorOut.ts). */
   const mirrorOut = new MirrorOut();
   /** What's measured here now, as the maps show it: a token dragged (not a hidden one: secret, as the map's), or the free point. */
