@@ -129,7 +129,7 @@ type Transform = Grab & {
   idx: number[];
   ramps: { s: Shape; a: Pt; b: Pt }[];
   center: Pt;
-  detail?: { s: Shape; m: Affine };
+  details: { s: Shape; m: Affine }[];
   /** The moved shapes' height points (see pointsOf), and where they started. */
   points: { i: number; at: Pt }[];
 };
@@ -153,6 +153,8 @@ export class ReliefEditor {
   /** Where what's dragged (a vertex, a height point, the first of a group) started, for how far it's gone (see dragMoved). */
   private dragStart: Pt | null = null;
   xf: Transform | null = null;
+  /** A press on a picked shape while picking several by finger (see down): taken out if it's let go unmoved. */
+  private tapToggle: { si: number; mark: number } | null = null;
   /** The drag in hand as a map of the relief's cells (from where it started), while it lasts. */
   xfMap: Affine | null = null;
   knife: { a: Pt; b: Pt; only: number | null } | null = null;
@@ -589,6 +591,16 @@ export class ReliefEditor {
     }
     if (this.tool === "edit" && !this.drawing && (mods.ctrl || this.multi)) {
       const si = this.shapeAt(p.x, p.y);
+      // Picking several by finger: a press on one already picked may drag them all (let go without moving,
+      // it's a tap: taken out, see up).
+      const picked = this.sel?.kind === "shape" && (this.sel.i === si || !!this.sel.more?.includes(si));
+      if (si >= 0 && this.multi && !mods.ctrl && picked) {
+        const mark = this.undoMark();
+        if (this.startTransform(p)) {
+          this.tapToggle = { si, mark };
+          return;
+        }
+      }
       if (si >= 0) {
         togglePick(this, si);
         this.notice = null;
@@ -964,8 +976,18 @@ export class ReliefEditor {
       this.host.redraw();
     }
     if (this.xf) {
+      const xf = this.xf;
+      const tap = this.tapToggle;
+      this.tapToggle = null;
       this.xf = null;
       this.xfMap = null;
+      // Not moved (see down, picking several by finger): a tap on a picked shape, taken out.
+      if (tap && xf.idx.every((i, k) => this.data.verts[i].x === xf.start[k][0] && this.data.verts[i].y === xf.start[k][1])) {
+        this.dropSince(tap.mark);
+        togglePick(this, tap.si);
+        this.notice = null;
+        this.host.redraw();
+      }
       this.host.showProps();
     }
     if (this.shape) {
@@ -1376,11 +1398,17 @@ export class ReliefEditor {
 
   // ---------- Transforms ----------
 
-  /** The vertices a transform moves: the picked shape's, or the picked vertices. */
+  /** The shapes picked (the first one and those with it); none if what's picked isn't shapes. */
+  pickedShapes(): Shape[] {
+    const sel = this.sel;
+    return sel?.kind === "shape" ? [sel.i, ...(sel.more ?? [])].map((i) => this.data.shapes[i]).filter((x): x is Shape => !!x) : [];
+  }
+
+  /** The vertices a transform moves: the picked shapes' (all of them, not only the first), or the picked vertices. */
   selectedVerts(): number[] {
     const sel = this.sel;
     if (sel?.kind === "shape") {
-      return [...new Set(vertsOf(this.data.shapes[sel.i]))];
+      return [...new Set(this.pickedShapes().flatMap(vertsOf))];
     }
     return sel?.kind === "verts" ? sel.list : [];
   }
@@ -1430,7 +1458,8 @@ export class ReliefEditor {
     if (handle && !onVertex) {
       return { kind: "scale", h, handle };
     }
-    const inside = this.sel?.kind === "shape" ? inShape(p.x, p.y, ...this.relief.coordsOf(this.data.shapes[this.sel.i])) : inBox(h.box, p.x, p.y);
+    // Inside any of the picked shapes: all of them moved.
+    const inside = this.sel?.kind === "shape" ? this.pickedShapes().some((x) => inShape(p.x, p.y, ...this.relief.coordsOf(x))) : inBox(h.box, p.x, p.y);
     return inside ? { kind: "move", h } : null;
   }
 
@@ -1479,16 +1508,16 @@ export class ReliefEditor {
     }
     this.pushUndo();
     const idx = this.selectedVerts();
-    const s = this.sel?.kind === "shape" ? this.data.shapes[this.sel.i] : null;
+    const shapes = this.pickedShapes();
     this.xf = {
       ...grab,
       from: p,
       start: idx.map((i): Pt => [this.data.verts[i].x, this.data.verts[i].y]),
       idx,
-      ramps: s?.ramp ? [{ s, a: [...s.ramp.a] as Pt, b: [...s.ramp.b] as Pt }] : [],
+      ramps: shapes.filter((x) => x.ramp).map((x) => ({ s: x, a: [...x.ramp!.a] as Pt, b: [...x.ramp!.b] as Pt })),
       center: [(grab.h.box.x0 + grab.h.box.x1) / 2, (grab.h.box.y0 + grab.h.box.y1) / 2],
-      // A shape's painted relief goes with it, and its height points.
-      detail: s?.detail ? { s, m: s.detail.m } : undefined,
+      // The shapes' painted relief goes with them, and their height points.
+      details: shapes.filter((x) => x.detail).map((x) => ({ s: x, m: x.detail!.m })),
       points: (this.sel?.kind === "shape" ? pointsOf(this, [this.sel.i, ...(this.sel.more ?? [])]) : []).map((i) => ({ i, at: [this.data.points[i].x, this.data.points[i].y] as Pt })),
     };
     return true;
@@ -1558,16 +1587,21 @@ export class ReliefEditor {
     for (const { i, at } of xf.points) {
       [this.data.points[i].x, this.data.points[i].y] = f(...at);
     }
-    if (xf.detail?.s.detail) {
+    if (xf.details.length) {
+      // One map for all of them (the move, the turn or the size): each one's relief from where it began.
       const map = affineFrom(xf.start, xf.idx.map((i): Pt => [this.data.verts[i].x, this.data.verts[i].y]));
       if (map) {
-        xf.detail.s.detail.m = compose(map, xf.detail.m);
+        for (const d of xf.details) {
+          if (d.s.detail) {
+            d.s.detail.m = compose(map, d.m);
+          }
+        }
       }
     }
     this.changed();
   }
 
-  /** The picked vertices (and a picked shape's ramp arrow and painted relief) moved by `f`. */
+  /** The picked vertices (and the picked shapes' ramp arrows and painted relief) moved by `f`. */
   moveSelection(f: (x: number, y: number) => Pt) {
     for (const i of this.selectedVerts()) {
       [this.data.verts[i].x, this.data.verts[i].y] = f(this.data.verts[i].x, this.data.verts[i].y);
@@ -1578,14 +1612,15 @@ export class ReliefEditor {
     for (const i of points) {
       [this.data.points[i].x, this.data.points[i].y] = f(this.data.points[i].x, this.data.points[i].y);
     }
-    const s = this.sel?.kind === "shape" ? this.data.shapes[this.sel.i] : null;
-    if (s?.ramp) {
-      s.ramp.a = f(...s.ramp.a);
-      s.ramp.b = f(...s.ramp.b);
-    }
-    if (s?.detail) {
-      const [o, ex, ey] = [f(0, 0), f(1, 0), f(0, 1)];
-      s.detail.m = compose([ex[0] - o[0], ex[1] - o[1], ey[0] - o[0], ey[1] - o[1], o[0], o[1]], s.detail.m);
+    for (const x of this.pickedShapes()) {
+      if (x.ramp) {
+        x.ramp.a = f(...x.ramp.a);
+        x.ramp.b = f(...x.ramp.b);
+      }
+      if (x.detail) {
+        const [o, ex, ey] = [f(0, 0), f(1, 0), f(0, 1)];
+        x.detail.m = compose([ex[0] - o[0], ex[1] - o[1], ey[0] - o[0], ey[1] - o[1], o[0], o[1]], x.detail.m);
+      }
     }
   }
 
