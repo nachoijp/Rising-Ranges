@@ -29,6 +29,8 @@ const es = {
   "settings.bandSet.exportHint": "Guardar en un archivo los sets personalizados de esta sala",
   "settings.bandSet.import": "Importar",
   "settings.bandSet.importHint": "Traer sets desde un archivo (de otra sala, o de otro DJ)",
+  "settings.bandSet.edit": "Editar este set",
+  "settings.bandSet.editDone": "Listo",
   "settings.bandSet.fileName": "rising-ranges-sets.json",
   "settings.bandSet.imported": "Sets importados: {n}.",
   "settings.bandSet.importedSome": "Sets importados: {n}. No entraron {skipped} (máximo {max} por sala).",
@@ -41,6 +43,7 @@ const es = {
   "settings.band.newName": "Banda {n}",
 
   "settings.bandSetEditor.addBanda": "Agregar Banda",
+  "settings.bandSetEditor.removeBanda": "Quitar esta Banda",
 
   "settings.bandShape.tooltip": "Forma de los anillos alrededor del Origen.",
   "settings.bandShape.circleAria": "Círculo",

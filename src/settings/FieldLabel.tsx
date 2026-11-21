@@ -22,11 +22,17 @@ export function FieldLabel({
         {children}
       </SmallLabel>
       <Tooltip title={tooltip}>
-        <InfoOutlined sx={{ fontSize: 14, opacity: 0.6 }} />
+        {/* Reached with the keyboard too, as the "!" beside it and the Vistazo's "i"s. */}
+        <InfoOutlined
+          sx={{ fontSize: 14, opacity: 0.6, borderRadius: "50%", "&:focus-visible": { opacity: 1, outline: 2, outlineColor: "primary.main", outlineOffset: 1 } }}
+          tabIndex={0}
+          // Its hint as its name (MUI hides an icon from screen readers without one).
+          titleAccess={typeof tooltip === "string" ? tooltip : undefined}
+        />
       </Tooltip>
       {warning && (
         <Tooltip title={warning}>
-          <ErrorOutlineRounded color="warning" sx={{ fontSize: 15 }} tabIndex={0} aria-label={typeof warning === "string" ? warning : undefined} />
+          <ErrorOutlineRounded color="warning" sx={{ fontSize: 15 }} tabIndex={0} titleAccess={typeof warning === "string" ? warning : undefined} />
         </Tooltip>
       )}
     </Stack>

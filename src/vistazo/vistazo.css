@@ -652,13 +652,18 @@ button.ghost[aria-pressed="true"] {
   min-width: 0;
 }
 .template-list button {
+  display: grid;
+  place-items: center;
   border: 0;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  font-size: 15px;
-  line-height: 1;
-  padding: 2px 4px;
+  padding: 2px;
+  border-radius: 4px;
+}
+.template-list button svg {
+  width: 16px;
+  height: 16px;
 }
 .template-list button:hover {
   color: var(--fg);

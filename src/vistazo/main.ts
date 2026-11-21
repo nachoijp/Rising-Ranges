@@ -790,8 +790,12 @@ async function start() {
         name.textContent = `${templateName(template)} · ${formatDistance(scale, template.size)}`;
         const remove = document.createElement("button");
         remove.type = "button";
-        remove.textContent = "✕";
+        // As the Vistazo's other ways to close or take away: its icon, named.
+        remove.innerHTML = icon("close");
+        // Its name in the language shown, now and when it changes (see fill).
+        remove.dataset.title = "vistazo.templateRemove";
         remove.title = t("vistazo.templateRemove");
+        remove.setAttribute("aria-label", remove.title);
         remove.onclick = () => mayTemplate("DELETE") && removeTemplates([template.id]);
         item.append(name, remove);
         return item;
@@ -948,7 +952,13 @@ async function start() {
     }
     for (const el of document.querySelectorAll<HTMLElement>("[data-title]")) {
       el.title = t(el.dataset.title as TranslationKey);
-      el.setAttribute("aria-label", el.title);
+      // An icon's (or the "?"'s) name; one with words of its own keeps them as its name, the hint
+      // (its title) its description, as the settings' buttons have it.
+      if ((el.textContent ?? "").trim().length > 1) {
+        el.removeAttribute("aria-label");
+      } else {
+        el.setAttribute("aria-label", el.title);
+      }
     }
     // The controls' help, a list (the ? at the stage's corner); its own tooltip, not the browser's.
     $("help").removeAttribute("title");

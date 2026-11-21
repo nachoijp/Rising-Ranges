@@ -229,6 +229,65 @@ html.glass #root {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--obr-text-secondary, inherit);
+  /* Its "i" beside it, and the hint's box across its width (see InfoTip). */
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* A section's "i" (as the settings' InfoOutlined: 14px, 60%) and its hint, MUI's grey tooltip. */
+.info-tip {
+  display: inline-grid;
+  place-items: center;
+  color: var(--obr-text-primary, inherit);
+  opacity: 0.6;
+  cursor: help;
+  outline: 0;
+  border-radius: 50%;
+}
+.info-tip:focus-visible,
+.info-tip.open {
+  opacity: 1;
+}
+.info-tip:focus-visible {
+  outline: 2px solid var(--obr-primary-main, #3b82f6);
+  outline-offset: 1px;
+}
+.info-tip-text {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 10;
+  visibility: hidden;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(97, 97, 97, 0.94);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: normal;
+  line-height: 1.4;
+  text-transform: none;
+  pointer-events: none;
+}
+.info-tip.up .info-tip-text {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+.info-tip:focus-visible .info-tip-text,
+.info-tip.open .info-tip-text {
+  visibility: visible;
+}
+/* On the pointer only where there is one: a tap leaves :hover stuck on a phone, and a second tap must close it. */
+@media (hover: hover) {
+  .info-tip:hover {
+    opacity: 1;
+  }
+  .info-tip:hover .info-tip-text {
+    visibility: visible;
+  }
 }
 
 /* The Vistazo 3D's base: the picture with a cross where it stands, Auto and a hint beside it. */

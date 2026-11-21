@@ -186,9 +186,11 @@ export function BandSetSelector({
         }}
       />
       {isCustom && !outdatedBandSet && showEditButton && (
-        <IconButton onClick={onEdit} size="small">
-          {isEditing ? <CheckRounded /> : <EditRounded />}
-        </IconButton>
+        <Tooltip title={t(isEditing ? "settings.bandSet.editDone" : "settings.bandSet.edit")}>
+          <IconButton onClick={onEdit} size="small">
+            {isEditing ? <CheckRounded /> : <EditRounded />}
+          </IconButton>
+        </Tooltip>
       )}
     </Stack>
   );

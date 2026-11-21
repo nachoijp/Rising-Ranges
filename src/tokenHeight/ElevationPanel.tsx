@@ -1,6 +1,7 @@
 import { TokenHeightPicker } from "./TokenHeightPicker";
 import { FootprintPicker } from "./FootprintPicker";
 import { VistazoBasePicker } from "./VistazoBasePicker";
+import { InfoTip } from "./InfoTip";
 import { heightStepOf } from "../engine/heights";
 import { useOBRContext } from "../settings/OBRContext";
 import { useTranslation } from "../i18n/useTranslation";
@@ -41,8 +42,9 @@ export function ElevationPanel({ elevation = true }: { elevation?: boolean }) {
       {tall && (
         <>
           <hr className="section-divider" />
-          <div className="section-title" title={t("footprint.tallTooltip")}>
+          <div className="section-title">
             {t("footprint.tallSection")}
+            <InfoTip text={t("footprint.tallTooltip")} />
           </div>
           <FootprintPicker part="tall" />
         </>
@@ -50,8 +52,9 @@ export function ElevationPanel({ elevation = true }: { elevation?: boolean }) {
       {base && (
         <>
           <hr className="section-divider" />
-          <div className="section-title" title={t("footprint.baseTooltip")}>
+          <div className="section-title">
             {t("footprint.baseSection")}
+            <InfoTip text={t("footprint.baseTooltip")} />
           </div>
           <VistazoBasePicker />
         </>

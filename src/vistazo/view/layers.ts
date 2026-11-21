@@ -296,7 +296,7 @@ export const FILL_CELLS = 16;
  * the whole steps of the cell it's in from the Origen's cells, as
  * cellStepsFrom), the first Banda whose edge it's within, and its color
  * fading in across the Banda (5% at its inner edge, 25% at its ring; on hex
- * cells by the point's own distance, not whole steps). Sharp at any zoom.
+ * cells by the point's own hex steps, not whole ones). Sharp at any zoom.
  */
 export const BAND_GLSL = /* glsl */ `
   uniform float uFillU;
@@ -339,11 +339,36 @@ export const BAND_GLSL = /* glsl */ `
     }
     return horizontal ? vec2(rr * C30, rq + rr * 0.5) : vec2(rq + rr * 0.5, rr * C30);
   }
+  // cellStepsG: a hex cell's whole steps from the Origen's cells (as cellStepsFrom).
+  float cellStepsG(vec2 cell, bool horizontal) {
+    float best = 1e9;
+    for (int k = 0; k < ${FILL_CELLS}; k++) {
+      if (k >= uFillCellCount) break;
+      best = min(best, hexStepsG(cell - uFillCells[k], horizontal));
+    }
+    if (uFillCellCount > 1) best += 1.0;
+    return floor(best + 0.5);
+  }
+  // bandOfG: the first Banda whose edge a distance is within (uFillBands: past them all).
+  float bandOfG(float across) {
+    for (int k = 0; k < ${FILL_BANDS}; k++) {
+      if (k >= uFillBands) break;
+      if (across <= uFillEdges[k]) return float(k);
+    }
+    return float(uFillBands);
+  }
   vec3 paintBands(vec3 color, vec2 at, bool tint) {
     if (uFillBands == 0) return color;
     vec2 d = (at - uFillOrigin) / uFillDpi;
+    // How fast d changes from one pixel to the next (taken here, where every pixel gets: the rings' width).
+    vec2 dx = dFdx(d);
+    vec2 dy = dFdy(d);
     float across;
     float far = length(d);
+    // On hex cells: how far (in pixels) the nearest cell edge with another Banda across it is, and that
+    // edge's Banda (the inner one's, as a circle's ring is its Banda's edge).
+    float hexLine = 1e9;
+    float hexInk = 0.0;
     if (uFillShape < 0.5) {
       across = far;
     } else if (uFillShape < 1.5) {
@@ -353,13 +378,32 @@ export const BAND_GLSL = /* glsl */ `
       bool horizontal = uFillShape < 2.5;
       vec2 base = uFillCells[0];
       vec2 cell = base + nearestCellG(d - base, horizontal);
-      float best = 1e9;
+      across = cellStepsG(cell, horizontal);
+      // Its tint follows the point's own hex steps (as the map's gradient, ring.frag hexFrom), not
+      // how far it is in a straight line: hexagons, as its Bandas are.
+      far = 1e9;
       for (int k = 0; k < ${FILL_CELLS}; k++) {
         if (k >= uFillCellCount) break;
-        best = min(best, hexStepsG(cell - uFillCells[k], horizontal));
+        far = min(far, hexStepsG(d - uFillCells[k], horizontal));
       }
-      if (uFillCellCount > 1) best += 1.0;
-      across = floor(best + 0.5);
+      if (uFillCellCount > 1) far += 1.0;
+      float own = bandOfG(across);
+      vec2 off = d - cell;
+      // Its six neighbours, one cell away (their edges half a cell from its middle).
+      float first = horizontal ? 0.5235988 : 0.0;
+      for (int k = 0; k < 6; k++) {
+        float angle = first + float(k) * 1.0471976;
+        vec2 n = vec2(cos(angle), sin(angle));
+        float px = max(abs(dot(dx, n)) + abs(dot(dy, n)), 1e-6);
+        float e = (0.5 - dot(off, n)) / px;
+        if (e < 2.0 && e < hexLine) {
+          float other = bandOfG(cellStepsG(cell + n, horizontal));
+          if (other != own) {
+            hexLine = e;
+            hexInk = min(own, other);
+          }
+        }
+      }
     }
     int index = -1;
     float inner = 0.0;
@@ -373,10 +417,7 @@ export const BAND_GLSL = /* glsl */ `
       }
       inner = uFillEdges[k];
     }
-    // How fast across and the Banda change from one pixel to the next (worked out here, where every
-    // pixel gets: the rings' width from them).
     float step = max(fwidth(across), 1e-6);
-    float banded = fwidth(float(index < 0 ? uFillBands : index));
     if (tint && uFillTint > 0.5 && index >= 0) {
       float t = clamp((far - inner) / max(outer - inner, 1e-6), 0.0, 1.0);
       color = mix(color, uFillColors[index], 0.05 + 0.2 * t * t);
@@ -394,10 +435,14 @@ export const BAND_GLSL = /* glsl */ `
             ink = uFillColors[k];
           }
         }
-      } else if (banded > 0.0) {
-        // Hex cells: where the Banda changes, between cells.
-        line = 1.0;
-        ink = uFillColors[index < 0 ? uFillBands - 1 : index];
+      } else if (hexLine < 2.0) {
+        // Hex cells: on the cell edges where the Banda changes, as wide and smooth as a circle's
+        // (both sides of the edge, a pixel and a half each).
+        line = 1.0 - smoothstep(0.5, 1.5, hexLine);
+        for (int k = 0; k < ${FILL_BANDS}; k++) {
+          if (k >= uFillBands) break;
+          if (float(k) == min(hexInk, float(uFillBands - 1))) ink = uFillColors[k];
+        }
       }
       color = mix(color, ink, 0.95 * line);
     }

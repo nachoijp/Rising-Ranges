@@ -8,6 +8,7 @@ import TextField from "@mui/material/TextField";
 import InputAdornment from "@mui/material/InputAdornment";
 import CloseRounded from "@mui/icons-material/CloseRounded";
 import IconButton from "@mui/material/IconButton";
+import Tooltip from "@mui/material/Tooltip";
 import { keyframes } from "@mui/material/styles";
 
 import { type Band, type BandShape, type IconShape } from "../engine/types";
@@ -193,9 +194,11 @@ export function BandItem({
         />
       )}
       {onDelete && (
-        <IconButton size="small" onClick={onDelete} sx={{ p: 0.25 }}>
-          <CloseRounded />
-        </IconButton>
+        <Tooltip title={t("settings.bandSetEditor.removeBanda")}>
+          <IconButton size="small" onClick={onDelete} sx={{ p: 0.25 }}>
+            <CloseRounded />
+          </IconButton>
+        </Tooltip>
       )}
       <Box
         style={{ "--width": `${complete * 100}%` } as React.CSSProperties}

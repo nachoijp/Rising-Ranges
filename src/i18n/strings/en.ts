@@ -34,6 +34,8 @@ const en: Record<TranslationKey, string> = {
   "settings.bandSet.exportHint": "Save this room's custom sets to a file",
   "settings.bandSet.import": "Import",
   "settings.bandSet.importHint": "Bring in sets from a file (from another room, or another GM)",
+  "settings.bandSet.edit": "Edit this set",
+  "settings.bandSet.editDone": "Done",
   "settings.bandSet.fileName": "rising-ranges-sets.json",
   "settings.bandSet.imported": "Sets imported: {n}.",
   "settings.bandSet.importedSome": "Sets imported: {n}. {skipped} didn't fit (up to {max} per room).",
@@ -46,6 +48,7 @@ const en: Record<TranslationKey, string> = {
   "settings.band.newName": "Range {n}",
 
   "settings.bandSetEditor.addBanda": "Add Range",
+  "settings.bandSetEditor.removeBanda": "Remove this Range",
 
   "settings.bandShape.tooltip": "Shape of the rings around the Origin.",
   "settings.bandShape.circleAria": "Circle",

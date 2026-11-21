@@ -4,7 +4,9 @@ import {
   buildShape,
   Command,
   isEffect,
+  isLabel,
   isPath,
+  Math2,
   type PathCommand,
   type GridScale,
   type Item,
@@ -72,13 +74,19 @@ function hexRingOutline(center: Vector2, radius: number, dpi: number, shape: "he
           ...outline.slice(1).map((p): [Command.LINE, number, number] => [Command.LINE, p.x, p.y]),
           [Command.CLOSE],
         ];
-  return { commands, halfHeight: Math.max(0, ...outline.map((p) => Math.abs(p.y))) };
+  // How far up it goes (where its label sits): from a corner it's not as far up as down, or the other way.
+  return { commands, top: Math.max(0, ...outline.map((p) => -p.y)) };
+}
+
+/** A hex ring's label's offset from the Origen: above the ring's top, as a circle's or a square's is. */
+function hexLabelOffset(center: Vector2, radius: number, dpi: number, shape: "hexHorizontal" | "hexVertical"): Vector2 {
+  return { x: 0, y: hexRingOutline(center, radius, dpi, shape).top + LABEL_OFFSET };
 }
 
 const RING_RADIUS_KEY = getPluginId("hexRingRadius");
 
 function hexRing(center: Vector2, radius: number, dpi: number, shape: "hexHorizontal" | "hexVertical", color: string) {
-  const { commands, halfHeight } = hexRingOutline(center, radius, dpi, shape);
+  const { commands } = hexRingOutline(center, radius, dpi, shape);
   const item = buildPath()
     .commands(commands)
     .position(center)
@@ -88,13 +96,13 @@ function hexRing(center: Vector2, radius: number, dpi: number, shape: "hexHorizo
   item.layer = "POPOVER";
   // Its radius, to be redrawn for another Origen (see reshapeOrigin).
   item.metadata[RING_RADIUS_KEY] = radius;
-  return { item, offset: { x: 0, y: 0 }, halfHeight };
+  return { item, offset: { x: 0, y: 0 } };
 }
 
 /**
  * A free hex Medición's Origen moved from a cell's center to a corner or
- * back (see snapToOrigin): its rings and gradient take the new shape, in
- * place. `drafts` are its origin items; true if any changed.
+ * back (see snapToOrigin): its rings, their labels and gradient take the
+ * new shape, in place. `drafts` are its origin items; true if any changed.
  */
 export function reshapeOrigin(drafts: Item[], center: Vector2, bandSet: BandSet, dpi: number): boolean {
   if (!isHexShape(bandSet.shape)) {
@@ -106,6 +114,12 @@ export function reshapeOrigin(drafts: Item[], center: Vector2, bandSet: BandSet,
     const radius = draft.metadata[RING_RADIUS_KEY];
     if (isPath(draft) && typeof radius === "number") {
       draft.commands = hexRingOutline(center, radius, dpi, shape).commands;
+      changed = true;
+    } else if (isLabel(draft) && typeof radius === "number") {
+      // Still above its ring's top, which is higher or lower from a corner.
+      const offset = hexLabelOffset(center, radius, dpi, shape);
+      draft.metadata[getPluginId("offset")] = offset;
+      draft.position = Math2.subtract(center, offset);
       changed = true;
     } else if (isEffect(draft)) {
       const origins = draft.uniforms.find((uniform) => uniform.name === "origins");
@@ -189,11 +203,15 @@ export function buildBandRingItems(
       parts.push(flattenGridScale(gridScale, band.radius));
     }
     if (parts.length > 0) {
-      const { halfHeight } = isHexShape(bandSet.shape)
-        ? hexRing(center, radius, dpi, bandSet.shape, color)
-        : floorExtent(radius, bandSet.shape, axonometry);
-      const labelOffset = { x: 0, y: halfHeight + LABEL_OFFSET };
-      items.push(getBandLabel(center, labelOffset, parts.join(" "), baseColor, 1, ringLabelSize));
+      const labelOffset = isHexShape(bandSet.shape)
+        ? hexLabelOffset(center, radius, dpi, bandSet.shape)
+        : { x: 0, y: floorExtent(radius, bandSet.shape, axonometry).halfHeight + LABEL_OFFSET };
+      const label = getBandLabel(center, labelOffset, parts.join(" "), baseColor, 1, ringLabelSize);
+      if (isHexShape(bandSet.shape)) {
+        // Its ring's radius, to be put back above it for another Origen (see reshapeOrigin).
+        label.metadata[RING_RADIUS_KEY] = radius;
+      }
+      items.push(label);
     }
   });
   return items;

@@ -36,6 +36,8 @@ export function BandIconShapeMenu({
             size="small"
             sx={{ p: 0.25 }}
             disabled={disabled}
+            // Its name on the button itself: the Tooltip's goes to the span around it (there for when it's disabled).
+            aria-label={t("settings.bandIconShape.tooltip")}
             onClick={(e) => menu.open(e.currentTarget)}
           >
             <ShapePreview shape={effectiveShape} />

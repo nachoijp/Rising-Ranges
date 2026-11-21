@@ -35,6 +35,8 @@ const ptBR: Record<TranslationKey, string> = {
   "settings.bandSet.exportHint": "Salvar os conjuntos personalizados desta sala em um arquivo",
   "settings.bandSet.import": "Importar",
   "settings.bandSet.importHint": "Trazer conjuntos de um arquivo (de outra sala ou de outro GM)",
+  "settings.bandSet.edit": "Editar este conjunto",
+  "settings.bandSet.editDone": "Concluído",
   "settings.bandSet.fileName": "rising-ranges-sets.json",
   "settings.bandSet.imported": "Conjuntos importados: {n}.",
   "settings.bandSet.importedSome": "Conjuntos importados: {n}. {skipped} não couberam (até {max} por sala).",
@@ -47,6 +49,7 @@ const ptBR: Record<TranslationKey, string> = {
   "settings.band.newName": "Alcance {n}",
 
   "settings.bandSetEditor.addBanda": "Adicionar Alcance",
+  "settings.bandSetEditor.removeBanda": "Remover este Alcance",
 
   "settings.bandShape.tooltip": "Forma dos anéis ao redor da Origem.",
   "settings.bandShape.circleAria": "Círculo",
