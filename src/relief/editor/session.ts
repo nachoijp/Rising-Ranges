@@ -821,8 +821,8 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
         const [x, y] = sceneToCell(anchor, dpi, snapped.x, snapped.y);
         return { x, y };
       },
-      // A move by the grid's own steps (in the scene, the image turned and scaled as it is), so what's on it stays on it.
-      gridStep: (dx, dy) => {
+      // A move on the scene's grid (in the scene, the image turned and scaled as it is): see EditorHost.gridStep.
+      gridStep: (dx, dy, at) => {
         const on = sceneGrid();
         if (!on || on === "free") {
           return on === "free" ? [dx, dy] : null;
@@ -832,6 +832,18 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
         const o1 = cellToScene(anchor, dpi, dx, dy);
         const v = { x: o1.x - o0.x, y: o1.y - o0.y };
         const half = dpi / 2;
+        if (hex && at) {
+          // Still till it's gone a quarter cell (a hand's tremble doesn't move it); then its point on the grid.
+          if (Math.hypot(v.x, v.y) < dpi / 4) {
+            return [0, 0];
+          }
+          const from = cellToScene(anchor, dpi, at[0], at[1]);
+          const to = snapToHalfCell({ x: from.x + v.x, y: from.y + v.y }, hex.center, dpi, hex.shape);
+          const [x, y] = sceneToCell(anchor, dpi, to.x, to.y);
+          // Rounded off (the way there and back leaves a hair): back on itself, not moved at all.
+          const exact = (d: number) => Math.round(d * 1e9) / 1e9;
+          return [exact(x - at[0]), exact(y - at[1])];
+        }
         const step = hex ? snapToCell(v, { x: 0, y: 0 }, dpi, hex.shape) : { x: Math.round(v.x / half) * half, y: Math.round(v.y / half) * half };
         return sceneToCell(anchor, dpi, o0.x + step.x, o0.y + step.y);
       },

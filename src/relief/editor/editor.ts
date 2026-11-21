@@ -72,11 +72,12 @@ export interface EditorHost {
    */
   gridSnap?(p: { x: number; y: number }): { x: number; y: number } | null;
   /**
-   * A move (cells) rounded to one the scene's grid repeats by, so what's on it stays on it: a half cell's
-   * steps on a square one, a cell's (center to center) on a hex one; as it is if it can't be (a hex grid
-   * whose cells aren't known yet); null, by the map's own half cells (no grid).
+   * A move (cells) on the scene's grid: on a square one, by its half cells (what's on it stays on it); on
+   * a hex one, so that `at` (the moved point nearest the pointer) lands on one of its half cells' points
+   * (see gridSnap), not till the pointer's gone a quarter cell. As it is if it can't be (a hex grid whose
+   * cells aren't known yet); null, by the map's own half cells (no grid).
    */
-  gridStep?(dx: number, dy: number): Pt | null;
+  gridStep?(dx: number, dy: number, at?: Pt): Pt | null;
   /** How near (cells) a vertex or a height point is picked (snapReach without it): a finger's wider. */
   pickReach?(): number;
   /** How far (cells) a finger goes before what it pressed on (a vertex, a height point) moves: a tap only picks it. 0 with a mouse. */
@@ -164,6 +165,8 @@ export class ReliefEditor {
   /** Where what's dragged (a vertex, a height point, the first of a group) started, for how far it's gone (see dragMoved). */
   private dragStart: Pt | null = null;
   xf: Transform | null = null;
+  /** The drag griddedBy last moved (where it was grabbed) and its point put on the grid. */
+  private gridGrab: { from: { x: number; y: number }; at: Pt | undefined } | null = null;
   /** A press on a picked shape while picking several by finger (see down): taken out if it's let go unmoved. */
   private tapToggle: { si: number; mark: number } | null = null;
   /** The drag in hand as a map of the relief's cells (from where it started), while it lasts. */
@@ -907,7 +910,7 @@ export class ReliefEditor {
       const verts = this.data.verts;
       if ("group" in this.drag) {
         const drag = this.drag;
-        const [dx, dy] = this.griddedBy(p.x - drag.from.x, p.y - drag.from.y);
+        const [dx, dy] = this.griddedBy(p.x - drag.from.x, p.y - drag.from.y, drag.from, [...drag.start, ...drag.pstart]);
         drag.group.forEach((i, k) => {
           verts[i].x = drag.start[k][0] + dx;
           verts[i].y = drag.start[k][1] + dy;
@@ -1062,7 +1065,7 @@ export class ReliefEditor {
     const [a, b] = grab.start;
     let next: [Pt, Pt];
     if (grab.end === "body") {
-      const [dx, dy] = this.griddedBy(p.x - grab.from.x, p.y - grab.from.y);
+      const [dx, dy] = this.griddedBy(p.x - grab.from.x, p.y - grab.from.y, grab.from, [a, b]);
       next = [[a[0] + dx, a[1] + dy], [b[0] + dx, b[1] + dy]];
     } else if (grab.end === "a") {
       next = [doorPoint(this, b, p, mods), b];
@@ -1540,14 +1543,28 @@ export class ReliefEditor {
   }
 
   /**
-   * How far (cells) what's dragged goes for the pointer's `dx`, `dy`, when the grid's on: by the steps
-   * the scene's grid repeats by (see EditorHost.gridStep), or else the map's own half cells.
+   * How far (cells) what's dragged goes for the pointer's `dx`, `dy`, when the grid's on: on the scene's
+   * grid (see EditorHost.gridStep: on a hex one, the point of `starts` nearest `from`, where it was
+   * grabbed, put on its half cells' points), or else by the map's own half cells.
    */
-  griddedBy(dx: number, dy: number): Pt {
+  griddedBy(dx: number, dy: number, from?: { x: number; y: number }, starts: Pt[] = []): Pt {
     if (!this.settings.grid) {
       return [dx, dy];
     }
-    return this.host.gridStep?.(dx, dy) ?? [this.onGrid(dx), this.onGrid(dy)];
+    // Of what's moved, the point where it started nearest where it was grabbed: found once a drag.
+    let at: Pt | undefined = from && this.gridGrab?.from === from ? this.gridGrab.at : undefined;
+    if (from && this.gridGrab?.from !== from) {
+      let best = Infinity;
+      for (const s of starts) {
+        const d = Math.hypot(s[0] - from.x, s[1] - from.y);
+        if (d < best) {
+          best = d;
+          at = s;
+        }
+      }
+      this.gridGrab = { from, at };
+    }
+    return this.host.gridStep?.(dx, dy, at) ?? [this.onGrid(dx), this.onGrid(dy)];
   }
 
   /** A point on the half-cell grid, when it's on: the scene's (square or hex), or else the map's own. */
@@ -1573,7 +1590,7 @@ export class ReliefEditor {
     const xf = this.xf!;
     let f: (x: number, y: number) => Pt;
     if (xf.kind === "move") {
-      const [dx, dy] = this.griddedBy(p.x - xf.from.x, p.y - xf.from.y);
+      const [dx, dy] = this.griddedBy(p.x - xf.from.x, p.y - xf.from.y, xf.from, xf.start);
       f = (x, y) => [x + dx, y + dy];
       this.xfMap = [1, 0, 0, 1, dx, dy];
     } else if (xf.kind === "rotate") {
