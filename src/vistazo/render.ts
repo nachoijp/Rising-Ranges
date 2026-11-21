@@ -1,3 +1,4 @@
+import type { GridLook } from "./gridLook";
 import type { TextStyle } from "@owlbear-rodeo/sdk";
 import { labelFont } from "./labelFonts";
 import * as THREE from "three";
@@ -422,6 +423,12 @@ export class VistazoView {
     uGridDpi: { value: 1 },
     uGridCenter: { value: new THREE.Vector2() },
     uGridU: { value: 1 },
+    // Owlbear's grid lines (see setGridLook): width (scene px, as it draws it: wider as it's zoomed in;
+    // 0: not known yet), colour, opacity and type (0 solid, 1 dashed, 2 dotted).
+    uGridWidth: { value: 0 },
+    uGridColor: { value: new THREE.Color(0, 0, 0) },
+    uGridOpacity: { value: 0.35 },
+    uGridDash: { value: 0 },
   };
   /** Bumped when the video maps start or stop (their frame callbacks see they're stale). */
   private mapsPlaying = 0;
@@ -2868,6 +2875,24 @@ export class VistazoView {
         this.materialPool.delete(key);
         this.retired.push(entry.material);
       }
+    }
+  }
+
+  /** Owlbear's grid lines as its scene has them: the ground's drawn so (as wide, coloured, dashed). */
+  setGridLook(look: GridLook) {
+    const g = this.gridUniforms;
+    const dash = look.line === "DASHED" ? 1 : look.line === "DOTTED" ? 2 : 0;
+    const was = `${g.uGridWidth.value}|${g.uGridColor.value.getHexString()}|${g.uGridOpacity.value}|${g.uGridDash.value}`;
+    g.uGridWidth.value = look.width;
+    g.uGridColor.value.set(look.color);
+    g.uGridOpacity.value = look.opacity;
+    g.uGridDash.value = dash;
+    if (was === `${g.uGridWidth.value}|${g.uGridColor.value.getHexString()}|${g.uGridOpacity.value}|${g.uGridDash.value}`) {
+      return;
+    }
+    if (this.options.grid) {
+      this.dirty = "all";
+      this.drawSoon();
     }
   }
 

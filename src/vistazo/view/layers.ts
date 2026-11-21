@@ -83,8 +83,8 @@ export function detailed<M extends THREE.MeshBasicMaterial>(material: M, uniform
 /**
  * The grid's cells drawn over a ground material, worked out at each pixel
  * from where it is (scene px: the view units over uGridU): sharp at any
- * zoom, a line about a fiftieth of a cell wide (a pixel at least), darker
- * as the map's grid was; fading out where the cells get too small to tell
+ * zoom, a line as Owlbear's grid has it (its width, colour and opacity; solid,
+ * dashed or dotted; a pixel wide at least); fading out where the cells get too small to tell
  * apart. Square: lines every cell (dpi). Hex, as Owlbear lays them out from
  * a cell's center, a cell (dpi) between neighbours: flat-topped (2) in
  * columns, every other one half a cell down; pointy (3) in rows, every
@@ -98,7 +98,7 @@ export function gridded(material: THREE.MeshBasicMaterial, uniforms: Record<stri
       .replace("#include <begin_vertex>", "#include <begin_vertex>\nvGridAt = (modelMatrix * vec4(position, 1.0)).xy / uGridU;");
     shader.fragmentShader = shader.fragmentShader
       .replace("#include <common>", `#include <common>\nvarying vec2 vGridAt;\n${GRID_GLSL}`)
-      .replace("#include <map_fragment>", "#include <map_fragment>\ndiffuseColor.rgb *= 1.0 - 0.35 * gridLine(vGridAt);");
+      .replace("#include <map_fragment>", "#include <map_fragment>\ndiffuseColor.rgb = mix(diffuseColor.rgb, uGridColor, uGridOpacity * gridLine(vGridAt));");
   };
   material.customProgramCacheKey = () => "rising-ranges/gridded";
 }
@@ -246,14 +246,19 @@ export const BASE_GLSL = /* glsl */ `
 export const GRID_GLSL = /* glsl */ `
   uniform float uGridKind;
   uniform float uGridDpi;
+  uniform float uGridWidth;
+  uniform vec3 uGridColor;
+  uniform float uGridOpacity;
+  uniform float uGridDash;
   uniform vec2 uGridCenter;
   // A flat-topped hex's distance from its middle, in the way its edges go (its apothem at the edge).
   float hexFlat(vec2 q) {
     q = abs(q);
     return max(q.y, 0.8660254 * q.x + 0.5 * q.y);
   }
-  // How far a point is inside its cell's edge (scene px): the nearest of two offset lattices' centers.
-  float hexEdge(vec2 p, bool flatTop) {
+  // A point by its cell's nearest edge (scene px): how far inside it, how far along it (0 to 1, corner
+  // to corner), and how far from that edge's nearer corner. The nearest of two offset lattices' centers.
+  vec3 hexEdge(vec2 p, bool flatTop) {
     float d = uGridDpi;
     float s = 0.8660254 * d;
     vec2 q = p - uGridCenter;
@@ -262,23 +267,48 @@ export const GRID_GLSL = /* glsl */ `
     vec2 a = q - period * floor(q / period + 0.5);
     vec2 qb = q - vec2(s, 0.5 * d);
     vec2 b = qb - period * floor(qb / period + 0.5);
-    return 0.5 * d - min(hexFlat(a), hexFlat(b));
+    vec2 v = hexFlat(a) < hexFlat(b) ? a : b;
+    // Turned so its nearest edge (normals at 30° + 60° k) is the top one, at y = d / 2.
+    float k = floor((atan(v.y, v.x) - 0.5235988) / 1.0471976 + 0.5);
+    float turn = 1.0471976 * (1.0 - k);
+    vec2 r = vec2(cos(turn) * v.x - sin(turn) * v.y, sin(turn) * v.x + cos(turn) * v.y);
+    float side = d * 0.5773503;
+    return vec3(0.5 * d - hexFlat(v), r.x / side + 0.5, length(vec2(abs(r.x) - 0.5 * side, r.y - 0.5 * d)));
   }
   float gridLine(vec2 p) {
+    // How far a pixel goes here (taken first, where every pixel gets: a derivative needs them all).
+    float px = length(fwidth(p));
     if (uGridKind < 0.5) return 0.0;
     float d = uGridDpi;
     float dist;
+    float along;
+    float corner;
     if (uGridKind < 1.5) {
-      vec2 f = abs(fract(p / d + 0.5) - 0.5) * d;
+      vec2 g = p / d;
+      vec2 f = abs(fract(g + 0.5) - 0.5) * d;
       dist = min(f.x, f.y);
+      along = f.x < f.y ? fract(g.y) : fract(g.x);
+      corner = length(f);
     } else {
-      dist = hexEdge(p, uGridKind < 2.5);
+      vec3 h = hexEdge(p, uGridKind < 2.5);
+      dist = h.x;
+      along = h.y;
+      corner = h.z;
     }
-    float px = length(fwidth(p));
+    // As wide as Owlbear draws it (its line width, scene px; a fiftieth of a cell till it's known).
+    float width = uGridWidth > 0.0 ? uGridWidth : d * 0.02;
+    if (uGridDash > 1.5) {
+      // Dotted, as Owlbear's: a dot on each corner, as wide round as the line is wide.
+      dist = corner;
+      width *= 2.0;
+    } else if (uGridDash > 0.5 && abs(fract(along * 3.0) - 0.5) > 0.25) {
+      // Dashed, as Owlbear's: three dashes a side, each a sixth of it (by the side, not the width).
+      return 0.0;
+    }
     // A pixel wide at least; thinner than that, as much fainter as it's thinner (as a picture of it
     // made smaller would be), not wider.
-    float halfWidth = max(d * 0.01, px * 0.5);
-    float cover = min(1.0, d * 0.02 / (2.0 * halfWidth));
+    float halfWidth = max(width * 0.5, px * 0.5);
+    float cover = min(1.0, width / (2.0 * halfWidth));
     float line = (1.0 - smoothstep(halfWidth - px * 0.5, halfWidth + px * 0.5, dist)) * cover;
     // Too far to tell the cells apart: gone, not a grey haze.
     return line * (1.0 - smoothstep(d * 0.12, d * 0.35, px));

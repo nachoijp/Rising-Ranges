@@ -4,6 +4,7 @@ import { doorOpening } from "../relief/doorCut";
 import { languageFromMetadata, type Language } from "../i18n/language";
 import { translate, type TranslationKey } from "../i18n/translate";
 import { formatDistance } from "../util/flattenGridScale";
+import { gridLookOf, readGridLook } from "./gridLook";
 import { getGridType } from "../util/gridAxonometry";
 import { axonometryOf } from "../engine/axonometry";
 import { bandSetFromMetadata } from "../bandSets/bandSets";
@@ -2573,6 +2574,9 @@ async function start() {
   const findHexCenter = async () =>
     gridType === "HEX_HORIZONTAL" || gridType === "HEX_VERTICAL" ? await OBR.scene.grid.snapPosition({ x: 0, y: 0 }, 1, false, true) : null;
   let hexCenter = await findHexCenter().catch(() => null);
+  // Owlbear's grid lines (width, colour, opacity, type): the 3D's grid and the relief editor's map drawn so.
+  let gridLook = await readGridLook();
+  view.setGridLook(gridLook);
 
   // ---------- What's measured: the selection, the Mediciones (own, fixed, others'), the free point, the lines ----------
   let selection: string[] = (await OBR.player.getSelection()) ?? [];
@@ -3668,7 +3672,13 @@ async function start() {
         // at once (a height, a vertex let go): drawn at once, not after a wait.
         soon(!lite ? 0 : view.terrainAway ? 40 : 150);
       },
-      scene: () => ({ items, dpi }),
+      scene: () => ({
+        items,
+        dpi,
+        grid: gridType === "SQUARE" ? "square" : gridType === "HEX_HORIZONTAL" || gridType === "HEX_VERTICAL" ? "hex" : "none",
+        hex: scene?.hexGrid ?? null,
+        gridLook,
+      }),
       // The edited image's shapes, as the scene numbers them (see VistazoScene.firstShape): not another image's of the same number.
       onPick: (shapes) => {
         const at = (session && scene?.firstShape[session.imageId]) ?? 0;
@@ -3796,6 +3806,10 @@ async function start() {
     [dpi, scale] = await Promise.all([OBR.scene.grid.getDpi(), OBR.scene.grid.getScale()]);
     $("templateUnit").textContent = scale.parsed.unit;
     hexCenter = await findHexCenter().catch(() => null);
+    gridLook = gridLookOf(grid);
+    view.setGridLook(gridLook);
+    // The relief editor's map too, if it's open (its cells follow once the scene's built again).
+    session?.redraw();
     // The free point on the new grid's cells (or a corner), as the map's Medición.
     if (freePoint) {
       placePoint(freePoint);

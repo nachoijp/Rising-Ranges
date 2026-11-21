@@ -43,7 +43,8 @@ import {
 import { groupPicked, nameGroups, ungroup } from "./groups";
 import { copyShapes, duplicate, nameShapes, paste, prunePoints, setType, swap, togglePick } from "./shapes";
 import { installSplit, type Split } from "./split";
-import { MapView } from "./view2d";
+import { cellScale, hexGridShape, MapView, squareGridShape, type GridDraw, type HexGrid } from "./view2d";
+import { DEFAULT_GRID_LOOK, type GridLook } from "../../vistazo/gridLook";
 import { time } from "../../timing";
 
 // Editing a relief in the Vistazo 3D (its full screen, the GM's): the map in
@@ -75,6 +76,8 @@ export type EditSession = {
   pending(): boolean;
   /** The language changed: texts again. */
   retext(): void;
+  /** Something the map draws from outside it changed (Owlbear's grid): drawn again. */
+  redraw(): void;
   /** Saved now, and the editor's pieces taken away; `switching`: another image's editor follows. */
   stop(switching?: boolean): void;
   /**
@@ -114,8 +117,11 @@ export type SessionOptions = {
   onRelief: (imageId: string, relief: Relief, lite: boolean, heights?: Box | null, moving?: Moving | null, settle?: boolean, dab?: Box | null) => void;
   /** The brush taken in hand, or put down (another tool): what the 3D readies for its first dab (see VistazoView.setEditing). */
   onBrushTool?: (inHand: boolean) => void;
-  /** The scene's items and its dpi now (for its old terrain zones). */
-  scene: () => { items: Item[]; dpi: number };
+  /**
+   * The scene's items and its dpi now (its old terrain zones); its grid (drawn on the map): hex (its
+   * cells, or null while they aren't known), square, or none to draw; and its lines' look.
+   */
+  scene: () => { items: Item[]; dpi: number; grid?: "square" | "hex" | "none"; hex?: HexGrid | null; gridLook?: GridLook };
   /** Only the relief's doors changed: shown again, nothing else built. */
   onDoors?: (imageId: string, relief: Relief) => void;
   /** What's picked changed: these shapes (their indexes) are, shown in the 3D. */
@@ -814,6 +820,27 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
   const texts = () => ({ rampNoArrow: t("relief.label.rampNoArrow"), inclined: t("relief.label.inclined"), relative: t("relief.label.relative") });
   map = new MapView(o.map, editor, texts());
   map.big = touchUi;
+  // Owlbear's grid over the map, where the scene has it (hex cells; or the map's own square ones), as it
+  // draws it: its cells worked out again only when the grid or the image (moved, turned, scaled) changes.
+  let gridKey = "";
+  let gridShape: Pick<GridDraw, "lines" | "corners" | "side"> | null = null;
+  map.grid = () => {
+    const { items, dpi, grid = "square", hex, gridLook } = o.scene();
+    // A hex grid whose cells aren't known yet: none (not square lines Owlbear doesn't draw).
+    if (grid === "none" || (grid === "hex" && !hex)) {
+      return null;
+    }
+    const look = gridLook ?? DEFAULT_GRID_LOOK;
+    const anchor = anchorOf(items.find((item): item is Image => item.id === image.id && item.type === "IMAGE") ?? image);
+    const key = JSON.stringify([grid, hex ?? null, dpi, anchor, editor.data.w, editor.data.h]);
+    if (key !== gridKey || !gridShape) {
+      gridKey = key;
+      gridShape = hex ? hexGridShape(anchor, dpi, hex, editor.data.w, editor.data.h) : squareGridShape(anchor, dpi, editor.data.w, editor.data.h);
+    }
+    // Its width in the map's cells (scene px over a cell's, the image scaled as it is); a pixel till it's known.
+    const width = look.width / (dpi * cellScale(anchor));
+    return { ...gridShape, width, color: look.color, opacity: look.opacity, line: look.line };
+  };
   // What the keys do in what's being done, on the map while it's being done.
   const chip = $("chip");
   const drawMap = map.redraw.bind(map);
@@ -1470,6 +1497,9 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
         }
       }
       return false;
+    },
+    redraw() {
+      map.redraw();
     },
     retext() {
       barTexts();

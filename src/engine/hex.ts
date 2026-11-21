@@ -104,6 +104,11 @@ const cellAt = (q: number, r: number, shape: HexShape): Point => {
   return { x: q * a.x + r * b.x, y: q * a.y + r * b.y };
 };
 
+/** The axial axes (q, r) of a hex grid, in cells: a cell's center is q·first + r·second from another's. */
+export function hexAxes(shape: HexShape): [Point, Point] {
+  return AXES[shape];
+}
+
 /**
  * The hex steps of the cell a point is in, from the Origen's cells (offsets in cells, see
  * originCellsAt): which Banda a point on the map is in, whole cells at a time (the rings' gradient

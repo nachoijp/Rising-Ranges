@@ -6,6 +6,122 @@ import type { Mods, ReliefEditor } from "./editor";
 import { prefabOutlines } from "./prefabs";
 import { vertsOf } from "./shapes";
 import { time } from "../../timing";
+import { cellToScene, sceneToCell, type Anchor } from "../anchor";
+import { cellCorners, hexAxes } from "../../engine/hex";
+import type { GridLineType } from "@owlbear-rodeo/sdk";
+
+/** Owlbear's hex grid over the scene: its orientation and one cell's center (scene px). */
+export type HexGrid = { shape: "hexHorizontal" | "hexVertical"; center: { x: number; y: number } };
+
+/**
+ * Owlbear's grid over the editor's map, in the map's cells (its own units): its lines as a path, its
+ * cells' corners (a dotted grid's dots), a cell side's length (a dashed one's dashes go by it), and its
+ * lines' look (width in cells, colour, opacity, type).
+ */
+export type GridDraw = { lines: Path2D; corners: number[]; side: number; width: number; color: string; opacity: number; line: GridLineType };
+
+/** How big an image cell is against a scene's (its scale, the same both ways or not: their mean). */
+export function cellScale(anchor: Anchor): number {
+  return Math.sqrt(Math.abs(anchor.scaleX * anchor.scaleY)) || 1;
+}
+
+/**
+ * The scene's corners of a map image `w` × `h` of its own cells, as a lattice of `a`, `b` (scene px)
+ * from `origin` counts them: the range of each count over the image, a cell more each way.
+ */
+function latticeRange(anchor: Anchor, dpi: number, w: number, h: number, origin: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }) {
+  const det = a.x * b.y - a.y * b.x;
+  const qs: number[] = [];
+  const rs: number[] = [];
+  for (const [cx, cy] of [[0, 0], [w, 0], [w, h], [0, h]]) {
+    const p = cellToScene(anchor, dpi, cx, cy);
+    const dx = p.x - origin.x;
+    const dy = p.y - origin.y;
+    qs.push((dx * b.y - dy * b.x) / det);
+    rs.push((a.x * dy - a.y * dx) / det);
+  }
+  return {
+    q0: Math.floor(Math.min(...qs)) - 1,
+    q1: Math.ceil(Math.max(...qs)) + 1,
+    r0: Math.floor(Math.min(...rs)) - 1,
+    r1: Math.ceil(Math.max(...rs)) + 1,
+  };
+}
+
+/**
+ * Owlbear's square grid over a map image `w` × `h` of its own cells, where the scene has it (a line
+ * every dpi, as the 3D's), in those cells: its lines across the image, and their crossings.
+ */
+export function squareGridShape(anchor: Anchor, dpi: number, w: number, h: number): Pick<GridDraw, "lines" | "corners" | "side"> {
+  const lines = new Path2D();
+  const corners: number[] = [];
+  const { q0, q1, r0, r1 } = latticeRange(anchor, dpi, w, h, { x: 0, y: 0 }, { x: dpi, y: 0 }, { x: 0, y: dpi });
+  const at = (x: number, y: number) => sceneToCell(anchor, dpi, x, y);
+  for (let q = q0; q <= q1; q++) {
+    const [ax, ay] = at(q * dpi, r0 * dpi);
+    const [bx, by] = at(q * dpi, r1 * dpi);
+    lines.moveTo(ax, ay);
+    lines.lineTo(bx, by);
+  }
+  for (let r = r0; r <= r1; r++) {
+    const [ax, ay] = at(q0 * dpi, r * dpi);
+    const [bx, by] = at(q1 * dpi, r * dpi);
+    lines.moveTo(ax, ay);
+    lines.lineTo(bx, by);
+  }
+  for (let q = q0; q <= q1; q++) {
+    for (let r = r0; r <= r1; r++) {
+      const [cx, cy] = at(q * dpi, r * dpi);
+      if (cx >= -1 && cy >= -1 && cx <= w + 1 && cy <= h + 1) {
+        corners.push(cx, cy);
+      }
+    }
+  }
+  // Its lines start on a crossing (its range's first): a dashed one's dashes keep to the sides.
+  return { lines, corners, side: 1 / cellScale(anchor) };
+}
+
+/**
+ * Owlbear's hex cells over a map image `w` × `h` of its own cells, where the scene has them, in those
+ * cells: each cell's three edges on one side (its neighbours draw the others), so every edge is drawn
+ * once; every corner once.
+ */
+export function hexGridShape(anchor: Anchor, dpi: number, hex: HexGrid, w: number, h: number): Pick<GridDraw, "lines" | "corners" | "side"> {
+  const lines = new Path2D();
+  const corners: number[] = [];
+  const seen = new Set<string>();
+  const [a, b] = hexAxes(hex.shape).map((axis) => ({ x: axis.x * dpi, y: axis.y * dpi }));
+  // The axial range over the image's corners (where it lies in the scene, turned and scaled as it is).
+  const { q0, q1, r0, r1 } = latticeRange(anchor, dpi, w, h, hex.center, a, b);
+  // A hex cell and a bit, in the image's cells (smaller than a hex one when the image is scaled down).
+  const margin = 1.2 / Math.min(Math.abs(anchor.scaleX) || 1, Math.abs(anchor.scaleY) || 1);
+  const cellCorner = cellCorners(dpi / 2, hex.shape);
+  for (let q = q0; q <= q1; q++) {
+    for (let r = r0; r <= r1; r++) {
+      const x = hex.center.x + q * a.x + r * b.x;
+      const y = hex.center.y + q * a.y + r * b.y;
+      const [cx, cy] = sceneToCell(anchor, dpi, x, y);
+      // Only round the image (the range over its corners takes more when it's turned).
+      if (cx < -margin || cy < -margin || cx > w + margin || cy > h + margin) {
+        continue;
+      }
+      const at = cellCorner.map((c) => sceneToCell(anchor, dpi, x + c.x, y + c.y));
+      lines.moveTo(at[0][0], at[0][1]);
+      for (const [px, py] of at.slice(1, 4)) {
+        lines.lineTo(px, py);
+      }
+      for (const [px, py] of at) {
+        const key = `${Math.round(px * 1000)},${Math.round(py * 1000)}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          corners.push(px, py);
+        }
+      }
+    }
+  }
+  // A side, corner to corner (a cell across over √3), in the image's cells.
+  return { lines, corners, side: 1 / (Math.sqrt(3) * cellScale(anchor)) };
+}
 
 // The editor's map view: the map image (its own grid over it), and over it
 // the relief as the editor has it — heights tinted, the shapes' outlines
@@ -55,7 +171,6 @@ const C = {
   pickFill: "rgba(106,60,240,0.2)",
   /** Inclined shapes' vertices, ramps' arrows. */
   slope: "#7fd3ff",
-  grid: "rgba(0,0,0,0.12)",
   /** A soft edge's halo. */
   halo: "rgba(127,211,255,0.22)",
   slabFill: "rgba(120,180,255,0.25)",
@@ -109,6 +224,8 @@ export class MapView {
   hand = false;
   /** The touch layout's: vertices and height points drawn bigger (seen round a finger). */
   big = false;
+  /** Owlbear's grid over the map, as it draws it (see GridDraw); null: none. */
+  grid: () => GridDraw | null = () => null;
   onUp: () => void = () => {};
   /** A right click (pressed and let go without moving): its menu, at (sx, sy) on the canvas. */
   onMenu: (sx: number, sy: number, at: { x: number; y: number }, touch: boolean) => void = () => {};
@@ -400,21 +517,38 @@ export class MapView {
     if (this.picture) {
       ctx.drawImage(this.picture, x0, y0, W * this.scale, H * this.scale);
     }
-    // The map's own grid, faint.
-    ctx.strokeStyle = C.grid;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let i = 0; i <= W; i++) {
-      const [x] = this.toScreen(i, 0);
-      ctx.moveTo(x, y0);
-      ctx.lineTo(x, y0 + H * this.scale);
+    // Owlbear's grid as it draws it (its cells, width, colour, opacity, type).
+    const grid = this.grid();
+    if (grid) {
+      ctx.save();
+      // Over the map alone; the paths in cells, a pixel wide at least.
+      ctx.beginPath();
+      ctx.rect(x0, y0, W * this.scale, H * this.scale);
+      ctx.clip();
+      ctx.transform(this.scale, 0, 0, this.scale, this.ox, this.oy);
+      ctx.globalAlpha = grid.opacity;
+      const width = Math.max(1 / this.scale, grid.width);
+      if (grid.line === "DOTTED") {
+        // A dot on each corner, as wide round as the line is wide.
+        ctx.fillStyle = grid.color;
+        ctx.beginPath();
+        for (let i = 0; i < grid.corners.length; i += 2) {
+          ctx.moveTo(grid.corners[i] + width, grid.corners[i + 1]);
+          ctx.arc(grid.corners[i], grid.corners[i + 1], width, 0, Math.PI * 2);
+        }
+        ctx.fill();
+      } else {
+        ctx.strokeStyle = grid.color;
+        ctx.lineWidth = width;
+        if (grid.line === "DASHED") {
+          // Three dashes a side, each a sixth of it, the corners bare.
+          ctx.setLineDash([grid.side / 6, grid.side / 6]);
+          ctx.lineDashOffset = grid.side / 4;
+        }
+        ctx.stroke(grid.lines);
+      }
+      ctx.restore();
     }
-    for (let j = 0; j <= H; j++) {
-      const [, y] = this.toScreen(0, j);
-      ctx.moveTo(x0, y);
-      ctx.lineTo(x0 + W * this.scale, y);
-    }
-    ctx.stroke();
     time("editor.2d.relief", () => this.drawRelief());
     time("editor.2d.shapes", () => this.drawShapes());
     time("editor.2d.marks", () => this.drawMarks());
