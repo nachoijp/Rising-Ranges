@@ -1427,7 +1427,17 @@ async function start() {
     startOwn: number;
     started: boolean;
     interaction: Promise<InteractionManager<Image>> | null;
+    /** Where it's shown (and measured from): on the grid, as Owlbear's own drag shows it. */
     position: Vector2;
+    /** Where the cursor has taken it, off the grid (stopped and slid at the walls): what it's snapped from. */
+    free: Vector2;
+    /**
+     * The last snap asked of Owlbear, and the last one shown: one coming back older than that is dropped
+     * (not every one but the last: asked at each move, they'd all be, while the pointer keeps going).
+     * Infinity once it's let go. Null shown: none yet (the first shows, even where it was).
+     */
+    snapAsk: number;
+    snapShown: number | null;
     path: DragPath;
     /**
      * How near the fog's walls its middle may come (see wallReach: its light's source radius, and a hair
@@ -1950,6 +1960,9 @@ async function start() {
           started: false,
           interaction: null,
           position: pressed.item.position,
+          free: pressed.item.position,
+          snapAsk: 0,
+          snapShown: null,
           path: new DragPath(pressed.item.position),
           reach: null,
           local: localItems,
@@ -2101,26 +2114,44 @@ async function start() {
         const at = stagePoint(event);
         const ground = view.pickPlane(at.x, at.y, move.level);
         if (ground) {
-          // Following the cursor as it goes, unsnapped: Owlbear stops a drag at the walls of the
-          // dynamic fog (its own, or Smoke & Spectre's), and a jump from cell to cell across a
-          // corner would cut through one. Snapped to the grid on release (finishMove). Stopped at
-          // those walls here too, as Owlbear's map does (else it'd go through, its light showing
-          // what's beyond, and go back once dropped).
+          // Its way follows the cursor, unsnapped: Owlbear stops a drag at the walls of the dynamic
+          // fog (its own, or Smoke & Spectre's), and a jump from cell to cell across a corner would
+          // cut through one. Stopped at those walls here too, as Owlbear's map does (else it'd go
+          // through, its light showing what's beyond, and go back once dropped).
           const wanted = { x: ground.x + move.grab.x, y: ground.y + move.grab.y };
-          const position = move.reach !== null ? slideAtWalls(move.position, wanted, items, move.local, move.reach) : wanted;
-          move.position = position;
-          move.path.add(position, dpi * 0.1);
-          void move.interaction?.then(([update]) => {
-            if (moving === move) {
-              update((token) => {
-                token.position = position;
+          const free = move.reach !== null ? slideAtWalls(move.free, wanted, items, move.local, move.reach) : wanted;
+          move.free = free;
+          move.path.add(free, dpi * 0.1);
+          // Shown on the grid, cell to cell, as Owlbear's own drag (where it's snapped to as it's let go:
+          // see finishMove); where a wall's between, where it is. Till Owlbear tells, where it was shown.
+          const ask = ++move.snapAsk;
+          void OBR.scene.grid.snapPosition(free).then(
+            (near) => {
+              if (moving !== move || move.snapAsk === Infinity || (move.snapShown !== null && ask <= move.snapShown)) {
+                return;
+              }
+              const first = move.snapShown === null;
+              move.snapShown = ask;
+              const reached = move.reach !== null ? stopAtWalls(free, near, items, move.local, move.reach) : near;
+              const position = Math.hypot(reached.x - near.x, reached.y - near.y) < 0.5 ? near : free;
+              if (!first && position.x === move.position.x && position.y === move.position.y) {
+                return;
+              }
+              move.position = position;
+              void move.interaction?.then(([update]) => {
+                if (moving === move) {
+                  update((token) => {
+                    token.position = position;
+                  });
+                }
               });
-            }
-          });
-          showTokenAt(move.id, position, move.own);
-          // To the others' Vistazos too, unless it's hidden; and on the maps, its Medición.
-          dragSender().move(move.id, position, visibleNow(itemsById(), move.item));
-          mirrorMeasure();
+              showTokenAt(move.id, position, move.own);
+              // To the others' Vistazos too, unless it's hidden; and on the maps, its Medición.
+              dragSender().move(move.id, position, visibleNow(itemsById(), move.item));
+              mirrorMeasure();
+            },
+            () => {}
+          );
         }
         return;
       }
@@ -3142,9 +3173,10 @@ async function start() {
         const [update, stop] = await move.interaction;
         // Snapped to the grid where it's let go, as Owlbear's own move does; not across a wall (Owlbear
         // would stop it there): then where it was let go.
-        const near = await OBR.scene.grid.snapPosition(move.position);
-        const reached = move.reach !== null ? stopAtWalls(move.position, near, items, move.local, move.reach) : near;
-        const snapped = Math.hypot(reached.x - near.x, reached.y - near.y) < 0.5 ? near : move.position;
+        move.snapAsk = Infinity;
+        const near = await OBR.scene.grid.snapPosition(move.free);
+        const reached = move.reach !== null ? stopAtWalls(move.free, near, items, move.local, move.reach) : near;
+        const snapped = Math.hypot(reached.x - near.x, reached.y - near.y) < 0.5 ? near : move.free;
         move.position = snapped;
         // Shown there now (not where it was let go, nor the steps it's saved along: see endMove); the
         // drag's over (it isn't taken for one again: showTokenAt would).

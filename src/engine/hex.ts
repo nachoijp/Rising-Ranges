@@ -258,3 +258,25 @@ export function snapToCell(point: Point, gridCenter: Point, dpi: number, shape: 
   const cell = nearestCell((point.x - gridCenter.x) / dpi, (point.y - gridCenter.y) / dpi, shape);
   return { x: gridCenter.x + cell.x * dpi, y: gridCenter.y + cell.y * dpi };
 }
+
+/**
+ * A point moved to the nearest of its cell's center, corners and sides' middles (a hex grid's half
+ * cell, as a square one's are its centers, corners and sides' middles), given one cell's center
+ * (`gridCenter`) and the cell size: where the relief editor's grid puts what's drawn on it.
+ */
+export function snapToHalfCell(point: Point, gridCenter: Point, dpi: number, shape: HexShape): Point {
+  const local = { x: (point.x - gridCenter.x) / dpi, y: (point.y - gridCenter.y) / dpi };
+  const cell = nearestCell(local.x, local.y, shape);
+  const corners = cellCorners(0.5, shape);
+  const candidates = [{ x: 0, y: 0 }, ...corners, ...corners.map((c, i) => ({ x: (c.x + corners[(i + 1) % 6].x) / 2, y: (c.y + corners[(i + 1) % 6].y) / 2 }))];
+  let best = candidates[0];
+  let bestD = Infinity;
+  for (const c of candidates) {
+    const d = Math.hypot(local.x - cell.x - c.x, local.y - cell.y - c.y);
+    if (d < bestD) {
+      bestD = d;
+      best = c;
+    }
+  }
+  return { x: gridCenter.x + (cell.x + best.x) * dpi, y: gridCenter.y + (cell.y + best.y) * dpi };
+}

@@ -1,5 +1,6 @@
 import type { Image, Item } from "@owlbear-rodeo/sdk";
-import { anchorOf, reliefSize } from "../anchor";
+import { anchorOf, cellToScene, reliefSize, sceneToCell } from "../anchor";
+import { snapToCell, snapToHalfCell } from "../../engine/hex";
 import { emptyRelief, fromStored, toStored, type StoredRelief } from "../codec";
 import type { Box } from "../geom";
 import { Relief } from "../relief";
@@ -765,6 +766,22 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       editor.data.shapes.forEach((s) => seen.add(s));
     }
   };
+  /**
+   * The scene's grid the editor puts things on (see EditorHost.gridSnap): where the image lies in it,
+   * its dpi, and its hex cells (none: square); "free" for a hex grid whose cells aren't known yet;
+   * null with no grid.
+   */
+  const sceneGrid = (): { anchor: ReturnType<typeof anchorOf>; dpi: number; hex: HexGrid | null } | "free" | null => {
+    const { items, dpi, grid = "square", hex } = o.scene();
+    if (grid === "none") {
+      return null;
+    }
+    if (grid === "hex" && !hex) {
+      return "free";
+    }
+    const anchor = anchorOf(items.find((item): item is Image => item.id === image.id && item.type === "IMAGE") ?? image);
+    return { anchor, dpi, hex: grid === "hex" ? hex! : null };
+  };
   /** What the pointer pressed has changed, till it's let go: nothing, only heights (a brush), more. */
   let gesture: "none" | "heights" | "more" = "none";
   const editor: ReliefEditor = new ReliefEditor(
@@ -791,6 +808,33 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
       setCursor: (cursor) => (o.map.style.cursor = cursor),
       // Some pixels on screen; more for a finger (the touch layout).
       snapReach: () => (touchUi ? 20 : 10) / map.scale,
+      // On the scene's grid, as it's drawn on the map (see map.grid): its half cells, square or hex.
+      gridSnap: (p) => {
+        const on = sceneGrid();
+        if (!on || on === "free") {
+          return on === "free" ? p : null;
+        }
+        const { anchor, dpi, hex } = on;
+        const at = cellToScene(anchor, dpi, p.x, p.y);
+        const half = dpi / 2;
+        const snapped = hex ? snapToHalfCell(at, hex.center, dpi, hex.shape) : { x: Math.round(at.x / half) * half, y: Math.round(at.y / half) * half };
+        const [x, y] = sceneToCell(anchor, dpi, snapped.x, snapped.y);
+        return { x, y };
+      },
+      // A move by the grid's own steps (in the scene, the image turned and scaled as it is), so what's on it stays on it.
+      gridStep: (dx, dy) => {
+        const on = sceneGrid();
+        if (!on || on === "free") {
+          return on === "free" ? [dx, dy] : null;
+        }
+        const { anchor, dpi, hex } = on;
+        const o0 = cellToScene(anchor, dpi, 0, 0);
+        const o1 = cellToScene(anchor, dpi, dx, dy);
+        const v = { x: o1.x - o0.x, y: o1.y - o0.y };
+        const half = dpi / 2;
+        const step = hex ? snapToCell(v, { x: 0, y: 0 }, dpi, hex.shape) : { x: Math.round(v.x / half) * half, y: Math.round(v.y / half) * half };
+        return sceneToCell(anchor, dpi, o0.x + step.x, o0.y + step.y);
+      },
       // A vertex or a height point picked from further for a finger (a 64 px target), and a tap on one
       // only picks it: it moves once the finger has gone 8 px.
       pickReach: () => (touchUi ? 32 : 10) / map.scale,
@@ -835,7 +879,7 @@ export function startEditing(o: SessionOptions, imageId = o.images[0]?.id ?? "",
     const key = JSON.stringify([grid, hex ?? null, dpi, anchor, editor.data.w, editor.data.h]);
     if (key !== gridKey || !gridShape) {
       gridKey = key;
-      gridShape = hex ? hexGridShape(anchor, dpi, hex, editor.data.w, editor.data.h) : squareGridShape(anchor, dpi, editor.data.w, editor.data.h);
+      gridShape = grid === "hex" && hex ? hexGridShape(anchor, dpi, hex, editor.data.w, editor.data.h) : squareGridShape(anchor, dpi, editor.data.w, editor.data.h);
     }
     // Its width in the map's cells (scene px over a cell's, the image scaled as it is); a pixel till it's known.
     const width = look.width / (dpi * cellScale(anchor));
