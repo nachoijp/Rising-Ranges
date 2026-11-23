@@ -52,6 +52,8 @@ export function wallBuffers(list: Wall[], c: WallContext): WallBuffers[] {
     }
     const fromMap = (style === "stretch" || style === "fold" || style === "skin") && c.box !== null;
     const blend = style === "blend";
+    // A pattern's (brick, stones, earth, planks): coloured as a blended wall is (see below), its tile over it.
+    const pattern = style === "stone" || style === "rubble" || style === "earth" || style === "wood";
     const positions: number[] = [];
     const colors: number[] = [];
     const uvs: number[] = [];
@@ -87,14 +89,20 @@ export function wallBuffers(list: Wall[], c: WallContext): WallBuffers[] {
       };
       const mapUv = (x: number, y: number) => uvAt(x, y);
       const height = zt - zb;
-      if (blend) {
+      if (blend || pattern) {
         // Blended from the map: its colours along it (every half cell), the higher side's (a little
-        // into it) at the top, running into the lower side's at the foot; its grain in its material.
+        // into it) at the top, running into the lower side's at the foot; its grain in its material. A
+        // pattern's coloured so too (not one colour a wall, in bands), its tile over it: 2 cells a tile,
+        // along the wall and up from the ground level (so courses line up).
         const reach = 0.3 * (VIEW_CELL / u);
         const tone = (x: number, y: number, shade: number) => (c.colors ? softColorAt(c.colors, ...read(x, y)) : rgb).map((v) => (v / 255) * s * shade);
+        const tile = VIEW_CELL * 2;
+        // Along the wall's own direction (not x + y): steps of one straight edge then run on without a jump.
+        const s0 = (wall.along !== undefined ? wall.along * u : (ax * (bx - ax) + ay * (by - ay)) / (length || 1)) / tile;
         const point = (f: number) => {
           const [x, y] = [wall.ax + (wall.bx - wall.ax) * f, wall.ay + (wall.by - wall.ay) * f];
           return {
+            s: s0 + (f * length) / tile,
             x: x * u,
             y: y * u,
             zt: zt0 + (zt1 - zt0) * f,
@@ -109,7 +117,11 @@ export function wallBuffers(list: Wall[], c: WallContext): WallBuffers[] {
           const b = point(j / n);
           positions.push(a.x, a.y, a.zt, b.x, b.y, b.zt, b.x, b.y, b.zb, a.x, a.y, a.zt, b.x, b.y, b.zb, a.x, a.y, a.zb);
           colors.push(...a.top, ...b.top, ...b.bottom, ...a.top, ...b.bottom, ...a.bottom);
-          uvs.push(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+          if (pattern) {
+            uvs.push(a.s, a.zt / tile, b.s, b.zt / tile, b.s, b.zb / tile, a.s, a.zt / tile, b.s, b.zb / tile, a.s, a.zb / tile);
+          } else {
+            uvs.push(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+          }
           a = b;
         }
       } else if (style === "skin" && wall.skin) {

@@ -32,14 +32,26 @@ export const DETAIL_GLSL = /* glsl */ `
 
 /**
  * A blended wall's (see buildWalls) grain: what its colour is multiplied by
- * at a point (view units; `cell` a cell's size in them). Subtle, the height
- * in it too, so a wall gets its own down it.
+ * at a point (view units; `cell` a cell's size in them), about 1 on average:
+ * broad stains, streaks down a wall, a fine grain that fades out further off.
  */
 export const WALL_GRAIN = /* glsl */ `
   float wallGrain(vec3 p, float cell) {
-    vec2 q = vec2(p.x + p.z * 0.7, p.y - p.z * 0.7) / cell;
-    float grain = noise(q * 6.0) * 0.6 + noise(q * 17.0) * 0.4;
-    return 0.92 + grain * 0.16;
+    // On the face itself: a wall's along it and up it (the way it faces, from the screen's derivatives:
+    // the same over a face); a top's or an underside's across the ground. No slant streaking it.
+    vec3 n = normalize(cross(dFdx(p), dFdy(p)));
+    bool upright = abs(n.z) < 0.5;
+    // Along it: weighed by how it faces, so a round tower's faces run on into each other (no jump at 45°).
+    float along = (p.x * abs(n.y) + p.y * abs(n.x)) / max(abs(n.x) + abs(n.y), 1e-4);
+    vec2 q = (upright ? vec2(along, p.z) : p.xy) / cell;
+    float stain = noise(q * 1.6);
+    // Streaks down a wall (long up it, narrow along it); on a flat face, more stains.
+    float streak = upright ? noise(vec2(q.x * 4.0, q.y * 0.7)) : noise(q * 3.1 + 7.0);
+    // The fine grain only where a pixel's smaller than it (else it shimmers): faded out further off.
+    float fineAt = fwidth(q.x) * 13.0;
+    float fine = mix(noise(q * 13.0), 0.5, smoothstep(0.35, 0.9, fineAt));
+    float grain = stain * 0.42 + streak * 0.33 + fine * 0.25;
+    return 0.88 + grain * 0.24;
   }
 `;
 
