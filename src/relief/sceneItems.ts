@@ -4,13 +4,18 @@ import { since, stamp } from "../timing";
 import { fromBase64, toBase64 } from "./codec";
 
 // A relief kept in the scene, so every client has it (Owlbear shares the
-// scene's items): in hidden items of its own, attached to the map image it
+// scene's items): in hidden items of its own (on RELIEF_LAYER), attached to the map image it
 // follows (deleted and copied with it), its stored JSON gzipped, in parts
 // of at most PART characters (an item's JSON is refused past about 1 MB,
 // measured). A version id the parts share: one written while another is
 // being read isn't mixed with it, and of two whole ones the newer wins.
 
 export const ITEM_KEY = getPluginId("relief");
+/**
+ * The layer its items go on: GRID, which Owlbear's own lists (the Outliner extension's too) leave
+ * out, so they aren't deleted there by mistake (on DRAWING before 2.9; moved by the store's migrate).
+ */
+export const RELIEF_LAYER = "GRID";
 /** The most characters of a relief in one item. */
 export const PART = 900_000;
 
@@ -60,7 +65,7 @@ export function itemsOf(image: Item, parts: ReliefPart[]): Item[] {
       .strokeOpacity(0)
       .strokeWidth(0)
       .position(image.position)
-      .layer("DRAWING")
+      .layer(RELIEF_LAYER)
       .attachedTo(image.id)
       .visible(false)
       .locked(true)

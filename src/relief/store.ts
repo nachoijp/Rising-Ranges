@@ -2,7 +2,7 @@ import OBR, { type Item } from "@owlbear-rodeo/sdk";
 import { getPluginId } from "../util/getPluginId";
 import { fromStored, toStored, type StoredRelief } from "./codec";
 import type { ReliefData } from "./types";
-import { ITEM_KEY, itemsOf, pack, partOf, partsOfText, reliefItemsKey, reliefsIn, unpack, versionId } from "./sceneItems";
+import { ITEM_KEY, RELIEF_LAYER, itemsOf, pack, partOf, partsOfText, reliefItemsKey, reliefsIn, unpack, versionId } from "./sceneItems";
 
 // Where reliefs are kept: in the scene, in hidden items of their own (see
 // sceneItems.ts; not the scene's metadata, 16 kB shared by every
@@ -246,7 +246,8 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
       return;
     }
     const parts = partsOfText(await pack(text), versionId());
-    if (old.length === parts.length) {
+    // In place while they're as many and on their layer (on another, an earlier version's: added anew there).
+    if (old.length === parts.length && old.every((item) => item.layer === RELIEF_LAYER)) {
       const order = [...old].sort((a, b) => partOf(a)!.index - partOf(b)!.index).map((item) => item.id);
       await OBR.scene.items.updateItems(order, (drafts) => {
         for (const draft of drafts) {
@@ -343,6 +344,15 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
         console.error("Rising Ranges: a relief kept on this device couldn't go up to the scene", error);
       }
     }
+    // Reliefs on another layer (DRAWING, before 2.9: the Outliner lists it, and one deleted there is
+    // lost): written again, on RELIEF_LAYER, one at a time with the saves.
+    for (const [image, text] of texts) {
+      const elsewhere = items.some((item) => item.attachedTo === image && partOf(item) !== undefined && item.layer !== RELIEF_LAYER);
+      if (elsewhere && !toWrite.has(image)) {
+        toWrite.set(image, { text });
+      }
+    }
+    void write();
   };
 
   OBR.broadcast.onMessage(CHANNEL, (event) => {
