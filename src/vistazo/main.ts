@@ -83,7 +83,7 @@ import "@fontsource/roboto/600.css";
 import "@fontsource/roboto/700.css";
 import { isMapImage } from "../relief/measure";
 import { mayOpen, setFogDoor } from "./doorControl";
-import { ROOM_KEY, differences, isFactory, ownAfter, ownFactory, ownMatters, ownReset, readOwn, readSeen, resolve, roomOf, roomText, saveOwn, saveSeen } from "./roomOptions";
+import { ROOM_KEY, differences, hidesRoom, isFactory, ownAfter, ownFactory, ownMatters, ownReset, ownTakeRoom, readOwn, readSeen, resolve, roomOf, roomText, saveOwn, saveSeen } from "./roomOptions";
 
 // Before any other key listener: an open dropdown's keys are its own (see dropdown.ts).
 enhanceSelects();
@@ -204,11 +204,11 @@ const SECTIONS_KEY = "rising-ranges/vistazo-sections-2";
 
 /**
  * Each section of the controls folds away by its title, remembered per
- * browser: all folded at first.
+ * browser: all folded at first but Settings (what's used every day).
  */
 function setUpSections() {
   const sections = [...document.querySelectorAll<HTMLFieldSetElement>("fieldset[data-section]")];
-  let folded: string[] = sections.map((section) => section.dataset.section!);
+  let folded: string[] = sections.map((section) => section.dataset.section!).filter((id) => id !== "settings");
   try {
     const stored = localStorage.getItem(SECTIONS_KEY);
     if (stored) {
@@ -2474,7 +2474,7 @@ async function start() {
   };
   /** A change by hand: shown, and kept as this browser's own where it differs from the room's. */
   const set = (change: Partial<Options>) => {
-    ownOptions = ownAfter(ownOptions, change, roomOptions);
+    ownOptions = ownAfter(ownOptions, change);
     saveOwn(ownOptions);
     applyOptions(change);
     showRoom();
@@ -2582,13 +2582,13 @@ async function start() {
   /** The room's buttons, and the note when the room's changed and one's own hide some of it. */
   function showRoom() {
     roomSave.hidden = !isGM;
-    roomSave.disabled = roomText(options) === roomStored;
+    roomSave.disabled = roomText(roomOptions, ownOptions) === roomStored;
     const matters = ownMatters(ownOptions, roomOptions);
     roomReset.disabled = !roomStored || !matters;
     factoryReset.disabled = isFactory(options);
     let note = false;
     if (roomStored && readSeen() !== roomStored) {
-      if (matters) {
+      if (hidesRoom(ownOptions, roomOptions)) {
         note = true;
       } else {
         saveSeen(roomStored);
@@ -2609,13 +2609,18 @@ async function start() {
     saveSeen(roomStored);
     followRoom();
   };
-  $("roomApply").onclick = backToRoom;
+  $("roomApply").onclick = () => {
+    ownOptions = ownTakeRoom(ownOptions, roomOptions);
+    saveOwn(ownOptions);
+    saveSeen(roomStored);
+    followRoom();
+  };
   $("roomDismiss").onclick = () => {
     saveSeen(roomStored);
     showRoom();
   };
   roomSave.onclick = async () => {
-    const text = roomText(options);
+    const text = roomText(roomOptions, ownOptions);
     roomSave.disabled = true;
     try {
       await OBR.room.setMetadata({ [ROOM_KEY]: text || undefined });

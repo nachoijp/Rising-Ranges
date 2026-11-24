@@ -36,21 +36,34 @@ export const DETAIL_GLSL = /* glsl */ `
  * broad stains, streaks down a wall, a fine grain that fades out further off.
  */
 export const WALL_GRAIN = /* glsl */ `
-  float wallGrain(vec3 p, float cell) {
-    // On the face itself: a wall's along it and up it (the way it faces, from the screen's derivatives:
-    // the same over a face); a top's or an underside's across the ground. No slant streaking it.
-    vec3 n = normalize(cross(dFdx(p), dFdy(p)));
-    bool upright = abs(n.z) < 0.5;
-    // Along it: weighed by how it faces, so a round tower's faces run on into each other (no jump at 45°).
-    float along = (p.x * abs(n.y) + p.y * abs(n.x)) / max(abs(n.x) + abs(n.y), 1e-4);
-    vec2 q = (upright ? vec2(along, p.z) : p.xy) / cell;
+  float grainOf(vec2 q, bool upright) {
     float stain = noise(q * 1.6);
     // Streaks down a wall (long up it, narrow along it); on a flat face, more stains.
     float streak = upright ? noise(vec2(q.x * 4.0, q.y * 0.7)) : noise(q * 3.1 + 7.0);
     // The fine grain only where a pixel's smaller than it (else it shimmers): faded out further off.
     float fineAt = fwidth(q.x) * 13.0;
     float fine = mix(noise(q * 13.0), 0.5, smoothstep(0.35, 0.9, fineAt));
-    float grain = stain * 0.42 + streak * 0.33 + fine * 0.25;
+    return stain * 0.42 + streak * 0.33 + fine * 0.25;
+  }
+  float wallGrain(vec3 p, float cell) {
+    // On the face itself: a wall's along it and up it (the way it faces, from the screen's derivatives:
+    // the same over a face); a top's or an underside's across the ground. No slant streaking it.
+    // A face seen edge-on (or too small for the derivatives) taken as a top: no NaN.
+    vec3 c = cross(dFdx(p), dFdy(p));
+    vec3 n = dot(c, c) > 1e-12 ? normalize(c) : vec3(0.0, 0.0, 1.0);
+    if (abs(n.z) >= 0.5) {
+      return 0.88 + grainOf(p.xy / cell, false) * 0.24;
+    }
+    // Along it: by x on a wall facing north or south, by y on one facing east or west, both blended
+    // in between (a diagonal wall runs along both; a round tower's faces run on into each other).
+    float toY = smoothstep(0.25, 0.75, n.x * n.x / max(dot(n.xy, n.xy), 1e-6));
+    float grain = 0.0;
+    if (toY < 1.0) {
+      grain += grainOf(vec2(p.x, p.z) / cell, true) * (1.0 - toY);
+    }
+    if (toY > 0.0) {
+      grain += grainOf(vec2(p.y, p.z) / cell, true) * toY;
+    }
     return 0.88 + grain * 0.24;
   }
 `;

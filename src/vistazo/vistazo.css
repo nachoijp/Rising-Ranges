@@ -978,7 +978,6 @@ fieldset fieldset {
 fieldset fieldset .section-toggle {
   font-size: 11px;
 }
-/* What's used every day, over the folded sections. */
 /* Quality: its three steps side by side, the hint behind the "i". */
 .titled {
   display: flex;

@@ -132,23 +132,43 @@ export function roomOf(metadata: Record<string, unknown>): Partial<Options> {
   return room;
 }
 
-/** The text to store for these options as the room's ("" for the factory's: nothing stored). */
-export function roomText(options: Options): string {
-  const room = differences(options, FACTORY);
-  for (const key of NOT_ROOM) {
-    delete room[key];
+/**
+ * This device's: a system asking for less motion gets low quality and still water, over the room's
+ * (never sent to the room, nor kept as chosen: see roomText, readOwn).
+ */
+export const DEVICE: Partial<Options> = (() => {
+  try {
+    return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? { quality: "low", waterMotion: false } : {};
+  } catch {
+    return {};
   }
-  return encode(room);
+})();
+/** The factory's on this device. */
+const BASE: Options = { ...FACTORY, ...DEVICE };
+
+/**
+ * The text to store as the room's for what one sees ("" for the factory's: nothing stored): the room's
+ * and one's own over the factory's, not this device's (another GM's reduced motion isn't everyone's).
+ */
+export function roomText(room: Partial<Options>, own: Partial<Options>): string {
+  const out = differences({ ...FACTORY, ...room, ...own }, FACTORY);
+  for (const key of NOT_ROOM) {
+    delete out[key];
+  }
+  return encode(out);
 }
 
-/** The options as shown: the factory's, the room's over them, one's own over those. */
+/** The options as shown: the factory's, the room's over them, this device's, one's own over those. */
 export function resolve(room: Partial<Options>, own: Partial<Options>): Options {
-  return { ...FACTORY, ...room, ...own };
+  return { ...FACTORY, ...room, ...DEVICE, ...own };
 }
 
-/** One's own after a change: kept only where they differ from the room's. */
-export function ownAfter(own: Partial<Options>, change: Partial<Options>, room: Partial<Options>): Partial<Options> {
-  return differences({ ...own, ...change }, resolve(room, {}));
+/**
+ * One's own after a change: what's changed by hand kept as chosen, even the same as the room's now
+ * (a later room save doesn't take it away).
+ */
+export function ownAfter(own: Partial<Options>, change: Partial<Options>): Partial<Options> {
+  return { ...own, ...change };
 }
 
 /** Back to the room's: one's own dropped, but for what that keeps. */
@@ -162,19 +182,35 @@ export function ownReset(own: Partial<Options>): Partial<Options> {
   return out as Partial<Options>;
 }
 
-/** One's own for the factory's options over the room's: the room's undone (what that keeps kept). */
+/** The room's taken (its note's "Use them"): one's own dropped only where the room sets something. */
+export function ownTakeRoom(own: Partial<Options>, room: Partial<Options>): Partial<Options> {
+  const out = { ...own };
+  for (const key of Object.keys(room) as (keyof Options)[]) {
+    if (!KEPT.has(key)) {
+      delete out[key];
+    }
+  }
+  return out;
+}
+
+/** One's own for the factory's options (this device's kept) over the room's: what that keeps kept. */
 export function ownFactory(own: Partial<Options>, room: Partial<Options>): Partial<Options> {
-  return { ...differences(FACTORY, resolve(room, {})), ...ownReset(own) };
+  return { ...differences(BASE, resolve(room, {})), ...ownReset(own) };
 }
 
-/** Whether the options shown are the factory's (the preview aside). */
+/** Whether the options shown are the factory's on this device (the preview aside). */
 export function isFactory(options: Options): boolean {
-  return Object.keys(withoutKept(differences(options, FACTORY))).length === 0;
+  return Object.keys(withoutKept(differences(options, BASE))).length === 0;
 }
 
-/** Whether one's own change anything the room's set (what a reset would change, the preview aside). */
+/** Whether one's own change anything from the room's (what a reset would change, the preview aside). */
 export function ownMatters(own: Partial<Options>, room: Partial<Options>): boolean {
   return Object.keys(differences(withoutKept(own), resolve(room, {}))).length > 0;
+}
+
+/** Whether one's own hide something the room sets (what its note offers to take). */
+export function hidesRoom(own: Partial<Options>, room: Partial<Options>): boolean {
+  return (Object.keys(room) as (keyof Options)[]).some((key) => !KEPT.has(key) && own[key] !== undefined && own[key] !== room[key]);
 }
 
 function withoutKept(own: Partial<Options>): Partial<Options> {
@@ -187,8 +223,7 @@ function withoutKept(own: Partial<Options>): Partial<Options> {
 
 /**
  * This browser's own options. The first time, those stored before (every option, as JSON) taken as
- * own where they differ from the factory's: what was changed then, by hand; and with nothing stored at
- * all, a system asking for less motion gets low quality and still water (as chosen, from then on).
+ * own where they differ from the factory's on this device: what was changed then, by hand.
  */
 export function readOwn(): Partial<Options> {
   try {
@@ -205,9 +240,8 @@ export function readOwn(): Partial<Options> {
         parsed.props = "flat";
         parsed.showProps = false;
       }
-      own = differences(decode(encode(parsed)), FACTORY);
-    } else if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
-      own = { quality: "low", waterMotion: false };
+      // (What this device sets by itself, as before, isn't taken as chosen: see DEVICE.)
+      own = differences(decode(encode(parsed)), BASE);
     }
     saveOwn(own);
     localStorage.removeItem(OLD_KEY);

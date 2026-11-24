@@ -310,8 +310,9 @@ function drawPattern(style: PatternStyle): HTMLCanvasElement {
       }
     }
   } else {
-    // Upright planks with dark gaps, each in two boards (their ends staggered), grain along them that
-    // bends round the odd knot.
+    // Upright planks with dark gaps, each one board with a joint across it (at its own height), grain
+    // along them that bends round the odd knot. (Two boards' worth of draws per plank: the second's
+    // unused, kept so the tiles' random stream, and so their look, stays as it is.)
     relief = 5;
     let x0 = 0;
     const planks = widths(random, 28, 44).map((w) => {

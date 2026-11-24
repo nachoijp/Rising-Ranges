@@ -265,7 +265,8 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
     }
   };
   // Writing (the GM's): one at a time, the newest for each image; `id`, the save it answers (none: put back after an undo).
-  const toWrite = new Map<string, { text: string; id?: string }>();
+  /** `move`: only to bring it onto RELIEF_LAYER (see migrate): skipped if it's there by then. */
+  const toWrite = new Map<string, { text: string; id?: string; move?: boolean }>();
   const answer = (image: string, id: string | undefined, ok: boolean) => {
     if (id) {
       send([{ kind: "saved", image, id, ok }]);
@@ -279,8 +280,14 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
     writing = true;
     try {
       while (toWrite.size > 0) {
-        const [image, { text, id }] = toWrite.entries().next().value as [string, { text: string; id?: string }];
+        const [image, { text, id, move }] = toWrite.entries().next().value as [string, { text: string; id?: string; move?: boolean }];
         toWrite.delete(image);
+        if (move) {
+          const parts = await OBR.scene.items.getItems((item) => item.attachedTo === image && partOf(item) !== undefined).catch(() => []);
+          if (parts.every((item) => item.layer === RELIEF_LAYER)) {
+            continue;
+          }
+        }
         try {
           await writeRelief(image, text);
           // Taken as it is now, without waiting to hear back from the scene (nor counting on it: the
@@ -345,11 +352,16 @@ export async function startReliefService(onChange: (image: string, data: ReliefD
       }
     }
     // Reliefs on another layer (DRAWING, before 2.9: the Outliner lists it, and one deleted there is
-    // lost): written again, on RELIEF_LAYER, one at a time with the saves.
+    // lost): written again, on RELIEF_LAYER, one at a time with the saves. By one GM only (the first by
+    // id of those here): two at once would each add a whole copy.
+    const gms = (await OBR.party.getPlayers().catch(() => [])).filter((player) => player.role === "GM").map((player) => player.id);
+    if (gms.some((id) => id < OBR.player.id)) {
+      return;
+    }
     for (const [image, text] of texts) {
       const elsewhere = items.some((item) => item.attachedTo === image && partOf(item) !== undefined && item.layer !== RELIEF_LAYER);
       if (elsewhere && !toWrite.has(image)) {
-        toWrite.set(image, { text });
+        toWrite.set(image, { text, move: true });
       }
     }
     void write();
