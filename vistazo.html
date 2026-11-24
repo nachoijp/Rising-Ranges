@@ -123,13 +123,19 @@
       <aside>
         <div class="aside-head" id="asideHead"><h1 data-t="vistazo.title"></h1></div>
         <p class="note" id="terrainOff" data-t="vistazo.terrainOff" hidden></p>
+        <p class="note room-note" id="roomNote" role="status" hidden
+          ><span data-t="vistazo.roomChanged"></span>
+          <button class="link" id="roomApply" type="button" data-t="vistazo.roomApply"></button>
+          <button class="room-dismiss" id="roomDismiss" type="button" data-title="vistazo.roomDismiss"><i data-icon="close"></i></button>
+        </p>
         <div class="buttons">
           <button class="primary" id="toggle" type="button"></button>
           <button class="ghost sync" id="sync" type="button" aria-pressed="false" data-title="vistazo.syncHint" data-t="vistazo.sync"></button>
           <button class="ghost" id="reliefEdit" type="button" data-title="vistazo.editReliefHint" data-t="vistazo.editRelief" hidden></button>
         </div>
 
-        <div class="everyday">
+        <fieldset data-section="settings">
+          <legend data-t="vistazo.settingsSection"></legend>
           <label class="check" for="showTok"><input id="showTok" type="checkbox" /><span data-t="vistazo.showTokens"></span></label>
           <label class="check" for="playerView" data-title="vistazo.playerViewHint"><input id="playerView" type="checkbox" /><span data-t="vistazo.playerView"></span></label>
           <div class="row quality" role="group" aria-labelledby="qualityLabel"
@@ -140,7 +146,12 @@
               <button type="button" value="high" data-t="vistazo.qualityHigh"></button>
             </div>
           </div>
-        </div>
+          <div class="buttons room-buttons">
+            <button class="ghost" id="roomSave" type="button" data-title="vistazo.roomSaveHint" data-t="vistazo.roomSave" hidden></button>
+            <button class="ghost" id="roomReset" type="button" data-title="vistazo.roomResetHint" data-t="vistazo.roomReset"></button>
+            <button class="ghost" id="factoryReset" type="button" data-title="vistazo.factoryResetHint" data-t="vistazo.factoryReset"></button>
+          </div>
+        </fieldset>
 
         <fieldset data-section="templates">
           <legend data-t="vistazo.templates"></legend>

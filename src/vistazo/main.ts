@@ -83,6 +83,7 @@ import "@fontsource/roboto/600.css";
 import "@fontsource/roboto/700.css";
 import { isMapImage } from "../relief/measure";
 import { mayOpen, setFogDoor } from "./doorControl";
+import { ROOM_KEY, differences, isFactory, ownAfter, ownFactory, ownMatters, ownReset, readOwn, readSeen, resolve, roomOf, roomText, saveOwn, saveSeen } from "./roomOptions";
 
 // Before any other key listener: an open dropdown's keys are its own (see dropdown.ts).
 enhanceSelects();
@@ -124,39 +125,6 @@ const CAMERA_KEY = "rising-ranges/vistazo-camera";
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 const POSE = { tilt: 55, yaw: -25 };
-const OPTIONS_KEY = "rising-ranges/vistazo-options";
-
-function readOptions(): Options {
-  const defaults: Options = { heightScale: 1, shade: 0.6, perspective: 45, tint: false, tokens: true, xray: false, edges: true, anchor: "center", levels: true, grid: false, distances: true, tokenLabels: "full", distanceLabels: "full", labelSize: 1, relief: 0.5, weather: true, clouds: "mist", waterMotion: true, videoMaps: true, quality: "high", props: "flat", showProps: true, propDistances: false, propShadows: true, propLines: true, propLabels: false, rings: true, ringFill: false, playerView: false };
-  // A system asking for less motion: the first time (nothing saved yet), low quality and still water.
-  // Changed here, it's as chosen from then on.
-  try {
-    if (!localStorage.getItem(OPTIONS_KEY) && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
-      defaults.quality = "low";
-      defaults.waterMotion = false;
-    }
-  } catch {
-    // The defaults as they are.
-  }
-  try {
-    const stored: Options = { ...defaults, ...JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? "{}") };
-    // "Hidden" was a position of the props once; now it's their own checkbox.
-    if (stored.props === "none") {
-      return { ...stored, props: "flat", showProps: false };
-    }
-    return stored;
-  } catch {
-    return defaults;
-  }
-}
-
-function saveOptions(options: Options) {
-  try {
-    localStorage.setItem(OPTIONS_KEY, JSON.stringify(options));
-  } catch {
-    // Only a convenience.
-  }
-}
 
 /**
  * What's under shapes being dragged, where they were (their outlines taken
@@ -236,7 +204,7 @@ const SECTIONS_KEY = "rising-ranges/vistazo-sections-2";
 
 /**
  * Each section of the controls folds away by its title, remembered per
- * browser: all folded at first, what's used every day above them.
+ * browser: all folded at first.
  */
 function setUpSections() {
   const sections = [...document.querySelectorAll<HTMLFieldSetElement>("fieldset[data-section]")];
@@ -1023,10 +991,14 @@ async function start() {
 
   // ---------- View ----------
   const stage = $("stage");
-  let options = readOptions();
+  // The options in layers (see roomOptions.ts): the factory's, the room's (a GM's), this browser's own.
+  let roomStored = String(((await OBR.room.getMetadata().catch(() => ({}))) as Record<string, unknown>)[ROOM_KEY] ?? "");
+  let roomOptions = roomOf({ [ROOM_KEY]: roomStored });
+  let ownOptions = readOwn();
   // A player sees the scene as a player, always (the option is the GM's preview of it).
+  const optionsShown = (): Options => (isGM ? resolve(roomOptions, ownOptions) : { ...resolve(roomOptions, ownOptions), playerView: true });
+  let options = optionsShown();
   if (!isGM) {
-    options = { ...options, playerView: true };
     $("playerView").closest("label")!.hidden = true;
   }
   const view = new VistazoView(stage, tokenText, options);
@@ -2476,9 +2448,9 @@ async function start() {
   function showCloudsChoice() {
     $("cloudsRow").hidden = !options.weather || !scene?.weather.some((weather) => weather.type === "CLOUD");
   }
-  const set = (change: Partial<Options>) => {
+  /** A change of the options as shown (by hand, or the room's changed). */
+  const applyOptions = (change: Partial<Options>) => {
     options = { ...options, ...change };
-    saveOptions(options);
     view.setOptions(change);
     showOptions();
     if ("playerView" in change) {
@@ -2499,6 +2471,13 @@ async function start() {
     if ("propDistances" in change || "showProps" in change) {
       showDistances();
     }
+  };
+  /** A change by hand: shown, and kept as this browser's own where it differs from the room's. */
+  const set = (change: Partial<Options>) => {
+    ownOptions = ownAfter(ownOptions, change, roomOptions);
+    saveOwn(ownOptions);
+    applyOptions(change);
+    showRoom();
   };
   const persp = $<HTMLInputElement>("persp");
   const hscale = $<HTMLInputElement>("hscale");
@@ -2586,6 +2565,78 @@ async function start() {
   relief.oninput = () => set({ relief: Number(relief.value) / 100 });
   anchor.onchange = () => set({ anchor: anchor.value === "base" ? "base" : "center" });
   showOptions();
+
+  // ---------- The room's options (see roomOptions.ts) ----------
+  // A GM keeps theirs as the room's; everyone sees those under their own, and can go back to them.
+  const roomSave = $<HTMLButtonElement>("roomSave");
+  const roomReset = $<HTMLButtonElement>("roomReset");
+  const factoryReset = $<HTMLButtonElement>("factoryReset");
+  /** The options as shown brought to what the layers say now. */
+  function followRoom() {
+    const change = differences(optionsShown(), options);
+    if (Object.keys(change).length > 0) {
+      applyOptions(change);
+    }
+    showRoom();
+  }
+  /** The room's buttons, and the note when the room's changed and one's own hide some of it. */
+  function showRoom() {
+    roomSave.hidden = !isGM;
+    roomSave.disabled = roomText(options) === roomStored;
+    const matters = ownMatters(ownOptions, roomOptions);
+    roomReset.disabled = !roomStored || !matters;
+    factoryReset.disabled = isFactory(options);
+    let note = false;
+    if (roomStored && readSeen() !== roomStored) {
+      if (matters) {
+        note = true;
+      } else {
+        saveSeen(roomStored);
+      }
+    }
+    $("roomNote").hidden = !note;
+  }
+  const backToRoom = () => {
+    ownOptions = ownReset(ownOptions);
+    saveOwn(ownOptions);
+    saveSeen(roomStored);
+    followRoom();
+  };
+  roomReset.onclick = backToRoom;
+  factoryReset.onclick = () => {
+    ownOptions = ownFactory(ownOptions, roomOptions);
+    saveOwn(ownOptions);
+    saveSeen(roomStored);
+    followRoom();
+  };
+  $("roomApply").onclick = backToRoom;
+  $("roomDismiss").onclick = () => {
+    saveSeen(roomStored);
+    showRoom();
+  };
+  roomSave.onclick = async () => {
+    const text = roomText(options);
+    roomSave.disabled = true;
+    try {
+      await OBR.room.setMetadata({ [ROOM_KEY]: text || undefined });
+    } catch {
+      void OBR.notification.show(t("vistazo.roomSaveFailed"), "ERROR");
+      showRoom();
+      return;
+    }
+    roomStored = text;
+    roomOptions = roomOf({ [ROOM_KEY]: text });
+    backToRoom();
+  };
+  OBR.room.onMetadataChange((metadata) => {
+    const text = String(metadata[ROOM_KEY] ?? "");
+    if (text !== roomStored) {
+      roomStored = text;
+      roomOptions = roomOf(metadata);
+      followRoom();
+    }
+  });
+  showRoom();
 
   // ---------- The scene's items and grid (kept up to date below) ----------
   let items = await OBR.scene.items.getItems();
@@ -3815,6 +3866,7 @@ async function start() {
       fitBar();
       session?.retext();
       showOptions();
+      showRoom();
       // What isn't filled in by key: the camera's readings, the templates' list, the tokens' labels.
       showCameraTexts();
       showTemplates();
